@@ -320,7 +320,7 @@ func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
 	if state.Pipeline.Status != "running" {
 		t.Fatalf("pipeline status = %q", state.Pipeline.Status)
 	}
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if recovered.Recovered || recovered.Safety != "blocked_recover_run_active" {
 		t.Fatalf("recover on active run = %#v", recovered)
 	}
@@ -341,7 +341,7 @@ func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || !state.Changed {
 		t.Fatalf("recover result = %#v", state)
 	}
@@ -390,7 +390,7 @@ func TestRecoverFastForwardRechecksCurrentBranchBeforeMerge(t *testing.T) {
 	f.service.beforeRecoverWorktreeMove = func() {
 		mustRun(t, f.local, "checkout", "-b", "other-clean-branch", f.submitted)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
 		t.Fatalf("recover after branch switch = %#v", state)
 	}
@@ -418,7 +418,7 @@ func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testin
 	if err := os.Chmod(hook, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || !state.Changed || state.Local.Head != f.preserved || state.State != StateDirty || state.Local.Clean || !strings.HasPrefix(state.Safety, "blocked_post_recover_") {
 		t.Fatalf("hook final state = %#v", state)
 	}
@@ -435,10 +435,10 @@ func TestRecoverIdempotentAfterSuccess(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
-	if first := f.service.Recover(f.ctx, false); !first.Recovered {
+	if first := f.service.Recover(f.ctx, false, nil); !first.Recovered {
 		t.Fatalf("first recover = %#v", first)
 	}
-	second := f.service.Recover(f.ctx, false)
+	second := f.service.Recover(f.ctx, false, nil)
 	if !second.Recovered || second.Changed || second.State != StateCustodyReturned {
 		t.Fatalf("second recover = %#v", second)
 	}
@@ -459,7 +459,7 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 	if inspected.NextAction == nil || inspected.NextAction.Code != "recover_custody" {
 		t.Fatalf("equal status without gate did not advertise recovery = %#v", inspected)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationEqual {
 		t.Fatalf("recover equal = %#v", state)
 	}
@@ -490,7 +490,7 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 	if inspected.NextAction == nil || inspected.NextAction.Code != "recover_custody" {
 		t.Fatalf("ahead status without gate did not advertise recovery = %#v", inspected)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationAhead {
 		t.Fatalf("recover ahead = %#v", state)
 	}
@@ -511,10 +511,11 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 	inspected := f.service.InspectCached(f.ctx)
+	assertManualReconciliationOffer(t, inspected)
 	if inspected.NextAction != nil && strings.Contains(inspected.NextAction.Command, "--keep-local") {
 		t.Fatalf("dirty worktree was offered keep-local: %#v", inspected.NextAction)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
 		t.Fatalf("recover dirty = %#v", state)
 	}
@@ -545,7 +546,7 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	inspected := f.service.InspectCached(f.ctx)
 	assertPinnedKeepLocalOffer(t, inspected, f.anchorRef())
 
-	refused := f.service.Recover(f.ctx, false)
+	refused := f.service.Recover(f.ctx, false, nil)
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {
 		t.Fatalf("recover diverged = %#v", refused)
 	}
@@ -559,7 +560,7 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 		t.Fatal("diverged refusal stamped custody")
 	}
 
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered || kept.Changed {
 		t.Fatalf("keep-local recover = %#v", kept)
 	}
@@ -600,7 +601,7 @@ func TestBoundArchiveOffersOnlyKeepLocalRecoveryForDivergentLaterHead(t *testing
 		t.Fatal("archive detection changed gate refs")
 	}
 
-	refused := f.service.Recover(f.ctx, false)
+	refused := f.service.Recover(f.ctx, false, nil)
 	if refused.Recovered || refused.Changed || refused.Safety != "blocked_recover_archive_requires_keep_local" || refused.NextAction == nil || refused.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
 		t.Fatalf("default archive recovery = %#v", refused)
 	}
@@ -611,7 +612,7 @@ func TestBoundArchiveOffersOnlyKeepLocalRecoveryForDivergentLaterHead(t *testing
 		t.Fatal("default archive refusal changed gate refs")
 	}
 
-	recovered := f.service.Recover(f.ctx, true)
+	recovered := f.service.Recover(f.ctx, true, nil)
 	if !recovered.Recovered || recovered.Changed {
 		t.Fatalf("keep-local archive recovery = %#v", recovered)
 	}
@@ -634,7 +635,7 @@ func TestBoundArchiveMovedAtRecoveryBoundaryRefusesWithoutRecoveryMutation(t *te
 	f.service.beforeGateReset = func() {
 		mustRun(t, f.local, "update-ref", archiveRef, f.submitted)
 	}
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_archive_moved" {
 		t.Fatalf("recovery after archive move = %#v", state)
 	}
@@ -683,7 +684,7 @@ func TestBoundArchiveProofMatrixFailsClosedWithoutGitMutation(t *testing.T) {
 		if after := gitSnapshot(); after != before {
 			t.Fatal("archive detection changed Git state")
 		}
-		recovered := f.service.Recover(f.ctx, true)
+		recovered := f.service.Recover(f.ctx, true, nil)
 		if recovered.Recovered || recovered.Changed || recovered.Safety != want {
 			t.Fatalf("recovery refusal = %#v, want %s", recovered, want)
 		}
@@ -797,7 +798,7 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty rescope\n")
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if !state.Recovered || state.Changed {
 		t.Fatalf("keep-local dirty recover = %#v", state)
 	}
@@ -832,7 +833,7 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 		mustRun(t, writer, "commit", "-m", "out of band gate commit")
 		mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
 		movedGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
-		state := f.service.Recover(f.ctx, false)
+		state := f.service.Recover(f.ctx, false, nil)
 		if !state.Recovered || !state.Changed {
 			t.Fatalf("recover with moved gate = %#v", state)
 		}
@@ -848,7 +849,7 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
 		mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
-		state := f.service.Recover(f.ctx, false)
+		state := f.service.Recover(f.ctx, false, nil)
 		if !state.Recovered || !state.Changed {
 			t.Fatalf("recover with deleted gate branch = %#v", state)
 		}
@@ -862,7 +863,7 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 		if err := os.RemoveAll(f.gate); err != nil {
 			t.Fatal(err)
 		}
-		state := f.service.Recover(f.ctx, false)
+		state := f.service.Recover(f.ctx, false, nil)
 		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
 			t.Fatalf("recover with missing gate = %#v", state)
 		}
@@ -883,7 +884,7 @@ func TestRecoverReachableHeadRejectsConflictingGateAnchor(t *testing.T) {
 	inspected := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, inspected)
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_anchor_mismatch" {
 		t.Fatalf("recover with conflicting anchor = %#v", state)
 	}
@@ -905,7 +906,7 @@ func TestRecoverRejectsUnpeelableGateAnchorWithoutOverwritingIt(t *testing.T) {
 	blob := mustRun(t, f.gate, "hash-object", "-w", filepath.Join(f.local, "file.txt"))
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), blob)
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
 		t.Fatalf("recover with unpeelable anchor = %#v", state)
 	}
@@ -927,7 +928,7 @@ func TestRecoverRejectsSymbolicGateAnchorWithoutOverwritingIt(t *testing.T) {
 
 	inspected := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, inspected)
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
 		t.Fatalf("recover with symbolic anchor = %#v", state)
 	}
@@ -949,7 +950,7 @@ func TestRecoverKeepLocalAnchorsIndependentlyMovedGateHead(t *testing.T) {
 	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
 	movedGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
 
-	recovered := f.service.Recover(f.ctx, true)
+	recovered := f.service.Recover(f.ctx, true, nil)
 	if !recovered.Recovered || recovered.Changed {
 		t.Fatalf("keep-local recovery = %#v", recovered)
 	}
@@ -989,7 +990,7 @@ func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 		t.Fatalf("post-push next action = %#v", state.NextAction)
 	}
 
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if !recovered.Recovered || !recovered.Changed {
 		t.Fatalf("post-push recover = %#v", recovered)
 	}
@@ -1010,7 +1011,7 @@ func TestRecoverRefusesWhenNothingIsStranded(t *testing.T) {
 	t.Parallel()
 
 	f := newSyncFixture(t)
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_recover_not_applicable" {
 		t.Fatalf("recover on healthy state = %#v", state)
 	}
@@ -1158,7 +1159,7 @@ func TestRecoverUsesTerminalAnchorWhenGateBranchLags(t *testing.T) {
 	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
 		t.Fatalf("anchored stale-gate state = %#v", state)
 	}
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if !recovered.Recovered || !recovered.Changed {
 		t.Fatalf("anchored stale-gate recovery = %#v", recovered)
 	}
@@ -1202,7 +1203,7 @@ func TestInspectDoesNotOfferKeepLocalForUnverifiedMissingHead(t *testing.T) {
 
 	state := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, state)
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if kept.Recovered || kept.Safety != "blocked_recover_unverified_head" {
 		t.Fatalf("keep-local with unverified missing head = %#v", kept)
 	}
@@ -1221,7 +1222,7 @@ func TestRecoverKeepLocalReturnsCustodyWhenRecordedHeadIsMissing(t *testing.T) {
 	}
 	localHead := mustRun(t, f.local, "rev-parse", "HEAD")
 
-	refused := f.service.Recover(f.ctx, false)
+	refused := f.service.Recover(f.ctx, false, nil)
 	if refused.Recovered || refused.Safety != "blocked_recover_preserved_head_missing" {
 		t.Fatalf("plain recover with missing head = %#v", refused)
 	}
@@ -1229,7 +1230,7 @@ func TestRecoverKeepLocalReturnsCustodyWhenRecordedHeadIsMissing(t *testing.T) {
 		t.Fatal("plain recover stamped custody for a missing preserved head")
 	}
 
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered || kept.Changed {
 		t.Fatalf("keep-local recover with missing head = %#v", kept)
 	}
@@ -1271,7 +1272,7 @@ func TestRecoverKeepLocalReleasesAllStrandedTerminalRuns(t *testing.T) {
 	if state.Pipeline.RunID != newest.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
 		t.Fatalf("stacked missing-head state = %#v", state)
 	}
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered {
 		t.Fatalf("stacked keep-local recover = %#v", kept)
 	}
@@ -1304,7 +1305,7 @@ func TestRecoverKeepLocalReleasesMixedEvidenceStack(t *testing.T) {
 	if state.Pipeline.RunID != newest.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
 		t.Fatalf("mixed stack state = %#v", state)
 	}
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered {
 		t.Fatalf("mixed stack recovery = %#v", kept)
 	}
@@ -1339,7 +1340,7 @@ func TestRecoverKeepLocalReleasesStackWhenOlderHeadIsMissing(t *testing.T) {
 	if state.Pipeline.RunID != newest.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
 		t.Fatalf("older missing-head stack state = %#v", state)
 	}
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered {
 		t.Fatalf("older missing-head stack recovery = %#v", kept)
 	}
@@ -1375,7 +1376,7 @@ func TestRecoverKeepLocalPreservesHeadRestoredAfterPreflight(t *testing.T) {
 		}
 	}
 
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if !state.Recovered {
 		t.Fatalf("recovery with restored head = %#v", state)
 	}
@@ -1417,7 +1418,7 @@ func TestRecoverKeepLocalIgnoresSupersededUnpublishedRuns(t *testing.T) {
 	if state.Pipeline.RunID != missing.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
 		t.Fatalf("missing-head state after superseded run = %#v", state)
 	}
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered {
 		t.Fatalf("missing-head recovery after superseded run = %#v", kept)
 	}
@@ -1477,7 +1478,7 @@ func TestRecoverKeepLocalPreflightsEveryStrandedRun(t *testing.T) {
 				t.Fatalf("selected run = %s, want %s", state.Pipeline.RunID, newest.ID)
 			}
 			assertManualReconciliationOffer(t, state)
-			kept := f.service.Recover(f.ctx, true)
+			kept := f.service.Recover(f.ctx, true, nil)
 			if kept.Recovered || kept.Safety != "blocked_recover_manual_reconciliation" {
 				t.Fatalf("keep-local with unsafe older run = %#v", kept)
 			}
@@ -1525,7 +1526,7 @@ func TestRecoverMissingHeadRevalidatesGateBeforeStamping(t *testing.T) {
 			mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
 			f.service.beforeGateReset = func() { tt.mutateGate(f) }
 
-			state := f.service.Recover(f.ctx, true)
+			state := f.service.Recover(f.ctx, true, nil)
 			if state.Recovered || state.Safety != tt.wantSafety {
 				t.Fatalf("recovery after gate mutation = %#v", state)
 			}
@@ -1552,7 +1553,7 @@ func TestRecoverKeepLocalRefusesDanglingIndependentGateHead(t *testing.T) {
 
 	inspected := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, inspected)
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if state.Recovered || state.Safety != "blocked_recover_manual_reconciliation" {
 		t.Fatalf("recovery with dangling independent gate head = %#v", state)
 	}
@@ -1575,7 +1576,7 @@ func TestInspectDoesNotAdvertiseRecoveryWhenIndependentGateAnchorConflicts(t *te
 
 	state := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, state)
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if kept.Recovered || kept.Safety != "blocked_recover_manual_reconciliation" {
 		t.Fatalf("keep-local with conflicting independent gate anchor = %#v", kept)
 	}
@@ -1596,7 +1597,7 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T
 	state := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, state)
 
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if kept.Recovered || kept.Safety != "blocked_recover_manual_reconciliation" {
 		t.Fatalf("keep-local with conflicting anchor = %#v", kept)
 	}
@@ -1633,7 +1634,7 @@ func TestMissingHeadRecoveryRequiresAccessibleGate(t *testing.T) {
 
 	state := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, state)
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if kept.Recovered || kept.Safety != "blocked_recover_gate_unavailable" {
 		t.Fatalf("keep-local with unavailable gate = %#v", kept)
 	}
@@ -1648,7 +1649,7 @@ func TestRecoverDoesNotOverwriteConflictingCheckoutAnchor(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
 		t.Fatalf("recover with conflicting checkout anchor = %#v", state)
 	}
@@ -1829,7 +1830,7 @@ func TestActiveUnmovedRunBlocksAsPipelineOwnedWithoutRecovery(t *testing.T) {
 	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
 		t.Fatalf("active unmoved next action = %#v", state.NextAction)
 	}
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if recovered.Recovered || recovered.Safety != "blocked_recover_run_active" {
 		t.Fatalf("recover on active unmoved run = %#v", recovered)
 	}
@@ -1848,7 +1849,7 @@ func TestActiveUnmovedRunBlocksAsPipelineOwnedWithoutRecovery(t *testing.T) {
 func assertReleasedNoOpRecover(t *testing.T, f *recoverFixture, keepLocal bool, wantHead string) {
 	t.Helper()
 	gateHead, gateErr := gitpkg.Run(f.ctx, f.gate, "rev-parse", "refs/heads/feature/recover")
-	state := f.service.Recover(f.ctx, keepLocal)
+	state := f.service.Recover(f.ctx, keepLocal, nil)
 	if !state.Recovered || state.Changed || state.State != StateUserOwned {
 		t.Fatalf("released recover = %#v", state)
 	}
@@ -1986,7 +1987,7 @@ func TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns(t *testing.T) {
 		if state.Pipeline.RunID != fresh.ID || state.Safety != "blocked_pipeline_owned" {
 			t.Fatalf("selection with newer active run = %#v", state.Pipeline)
 		}
-		recovered := f.service.Recover(f.ctx, false)
+		recovered := f.service.Recover(f.ctx, false, nil)
 		if recovered.Recovered || recovered.Safety != "blocked_recover_run_active" {
 			t.Fatalf("recover under newer active run = %#v", recovered)
 		}
@@ -2032,7 +2033,7 @@ func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
 		if state.State != StateAmbiguousContext || state.Safety != "blocked_wrong_branch" {
 			t.Fatalf("different-branch state = %#v", state)
 		}
-		recovered := f.service.Recover(f.ctx, false)
+		recovered := f.service.Recover(f.ctx, false, nil)
 		if recovered.Recovered || recovered.Safety != "blocked_recover_not_applicable" {
 			t.Fatalf("different-branch recover = %#v", recovered)
 		}
@@ -2048,7 +2049,7 @@ func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
 		if state.State != StateAmbiguousContext {
 			t.Fatalf("detached state = %#v", state)
 		}
-		recovered := f.service.Recover(f.ctx, false)
+		recovered := f.service.Recover(f.ctx, false, nil)
 		if recovered.Recovered || recovered.Safety != "blocked_recover_not_applicable" {
 			t.Fatalf("detached recover = %#v", recovered)
 		}
@@ -2077,7 +2078,7 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 		mustRun(t, writer, "commit", "-m", "racing push")
 		mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
 	}
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if state.Recovered || state.Safety != "blocked_recover_gate_race" {
 		t.Fatalf("racing keep-local recover = %#v", state)
 	}
@@ -2098,7 +2099,7 @@ func TestRecoverKeepLocalRevalidatesLocalHeadBeforeStamping(t *testing.T) {
 		mustRun(t, f.local, "update-ref", "refs/heads/feature/recover", f.base, f.submitted)
 	}
 
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
 		t.Fatalf("recovery after local head change = %#v", state)
 	}
@@ -2128,13 +2129,13 @@ func TestRecoverRetryDoesNotOverwriteIndependentGateAnchor(t *testing.T) {
 		mustRun(t, writer, "commit", "-m", "second independent head")
 		mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
 	}
-	first := f.service.Recover(f.ctx, true)
+	first := f.service.Recover(f.ctx, true, nil)
 	if first.Recovered || first.Safety != "blocked_recover_gate_race" {
 		t.Fatalf("first recovery = %#v", first)
 	}
 	f.service.beforeGateReset = nil
 	secondGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
-	second := f.service.Recover(f.ctx, true)
+	second := f.service.Recover(f.ctx, true, nil)
 	if second.Recovered || second.Safety != "blocked_recover_preserve_failed" {
 		t.Fatalf("retry recovery = %#v", second)
 	}
@@ -2324,7 +2325,7 @@ func TestRecoverTerminalUnverifiedEqualTreeRewriteAdoptsLiveGateHead(t *testing.
 	runsBefore := len(mustRuns(t, f.db, f.repo.ID))
 	remoteBefore := mustRun(t, f.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
 		t.Fatalf("equal-tree terminal recovery = %#v", state)
 	}
@@ -2347,7 +2348,7 @@ func TestRecoverTerminalUnverifiedEqualTreeRewriteAdoptsLiveGateHead(t *testing.
 	if clean, reason := worktreeClean(f.ctx, f.local); !clean {
 		t.Fatalf("worktree not clean after recovery: %s", reason)
 	}
-	if second := f.service.Recover(f.ctx, false); !second.Recovered || second.Changed {
+	if second := f.service.Recover(f.ctx, false, nil); !second.Recovered || second.Changed {
 		t.Fatalf("repeated recovery = %#v", second)
 	}
 	if got := len(mustRuns(t, f.db, f.repo.ID)); got != runsBefore {
@@ -2389,7 +2390,7 @@ func assertUnverifiedRecoveryRefusalNoMutation(t *testing.T, f *recoverFixture) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed {
 		t.Fatalf("unsafe recovery succeeded: %#v", state)
 	}
@@ -2543,7 +2544,7 @@ func TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating(t *testing.T) {
 		t.Fatal("fixture is not a rebase divergence: one head is an ancestor of the other")
 	}
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || !state.Changed {
 		t.Fatalf("rebased recovery escalated instead of returning custody: %#v", state)
 	}
@@ -2588,7 +2589,7 @@ func TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork(t *testing.
 	mustRun(t, f.local, "commit", "-m", "unlanded local work")
 	uniqueHead := mustRun(t, f.local, "rev-parse", "HEAD")
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed {
 		t.Fatalf("unique local work was auto-recovered: %#v", state)
 	}
@@ -2621,7 +2622,7 @@ func TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines(t
 		mustRun(t, pipelineDir, "commit", "-am", "no-mistakes(review): guard the second line")
 	})
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed {
 		t.Fatalf("ambiguous rewritten-lines rebase was auto-recovered: %#v", state)
 	}
@@ -2655,7 +2656,7 @@ func TestCancelledRebasedRewriteOffersKeepLocalAndTheCommandSucceeds(t *testing.
 	state := f.service.InspectCached(f.ctx)
 	assertPinnedKeepLocalOffer(t, state, f.anchorRef())
 
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if !kept.Recovered || kept.Changed {
 		t.Fatalf("offered keep-local = %#v", kept)
 	}
@@ -2708,7 +2709,7 @@ func TestRecoverRebasedPreservedHeadRefusesConcurrentCommitWithoutLosingIt(t *te
 		concurrent = mustRun(t, f.local, "rev-parse", "HEAD")
 	}
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed {
 		t.Fatalf("recovery raced a concurrent commit: %#v", state)
 	}
@@ -2735,7 +2736,7 @@ func TestRecoverRebasedPreservedHeadRollsBackAfterConcurrentCheckout(t *testing.
 		mustRun(t, f.local, "checkout", "other-clean-branch")
 	}
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
 		t.Fatalf("recovery raced a concurrent checkout: %#v", state)
 	}
@@ -2770,7 +2771,7 @@ func TestRecoverRebasedPreservedHeadRefusesConcurrentWorktreeEditWithoutLosingIt
 		mustWrite(t, filepath.Join(f.local, "upstream.txt"), "uncommitted local draft\n")
 	}
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed {
 		t.Fatalf("recovery overwrote a concurrent worktree edit: %#v", state)
 	}
@@ -2798,7 +2799,7 @@ func TestRecoverRebasedPreservedHeadRefusesDirtyWorktree(t *testing.T) {
 	f := newRebasedRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "feature.txt"), "uncommitted edit\n")
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
 		t.Fatalf("dirty rebased recover = %#v", state)
 	}
@@ -2821,7 +2822,7 @@ func TestRecoverIncompleteAdoptionDoesNotStampStaleWorktree(t *testing.T) {
 	mustRun(t, f.local, "update-ref", f.localAnchorRef(), f.submitted, "")
 	mustRun(t, f.local, "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted)
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_incomplete_adoption" {
 		t.Fatalf("incomplete adoption was stamped: %#v", state)
 	}
@@ -2841,7 +2842,7 @@ func TestRecoverIncompleteAdoptionDoesNotStampStaleWorktree(t *testing.T) {
 		t.Fatal("incomplete adoption stamped custody")
 	}
 
-	kept := f.service.Recover(f.ctx, true)
+	kept := f.service.Recover(f.ctx, true, nil)
 	if kept.Recovered || kept.Changed || kept.Safety != "blocked_recover_incomplete_adoption" {
 		t.Fatalf("keep-local bypassed incomplete adoption: %#v", kept)
 	}
@@ -2856,7 +2857,7 @@ func TestRecoverRebasedPreservedHeadKeepLocalStillKeepsTheLocalHead(t *testing.T
 	t.Parallel()
 
 	f := newRebasedRecoverFixture(t, types.RunCancelled)
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if !state.Recovered || state.Changed {
 		t.Fatalf("keep-local rebased recover = %#v", state)
 	}
@@ -2880,7 +2881,7 @@ func TestRecoverRebasedPreservedHeadRechecksAfterAnchoringLocalHead(t *testing.T
 	f.service.beforeRecoverWorktreeMove = func() {
 		mustRun(t, f.local, "checkout", "-b", "other-clean-branch", f.submitted)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
 		t.Fatalf("recover after branch switch = %#v", state)
 	}
@@ -2914,7 +2915,7 @@ func TestRecoverSquashedEquivalentPreservedHeadAdopts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
 		t.Fatalf("squashed-equivalent recovery = %#v", state)
 	}
@@ -2954,7 +2955,7 @@ func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testin
 		t.Fatal(err)
 	}
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_diverged" {
 		t.Fatalf("dropped local work was auto-recovered: %#v", state)
 	}
@@ -2975,7 +2976,7 @@ func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testin
 // target while the gate lane still names the pre-rebase head.
 func publishedRebaseAfterCustody(t *testing.T, f *recoverFixture) string {
 	t.Helper()
-	if state := f.service.Recover(f.ctx, false); !state.Recovered {
+	if state := f.service.Recover(f.ctx, false, nil); !state.Recovered {
 		t.Fatalf("return custody: %#v", state)
 	}
 	mustRun(t, f.local, "remote", "add", "origin", f.remote)
@@ -3141,7 +3142,7 @@ func TestInspectDoesNotOfferPinnedKeepLocalWhenMovedGateHeadConflictsWithGateAnc
 	mustRun(t, f.gate, "update-ref", custody.RecoveryGateRef(f.run.ID), f.submitted)
 
 	assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
-	if kept := f.service.Recover(f.ctx, true); kept.Recovered {
+	if kept := f.service.Recover(f.ctx, true, nil); kept.Recovered {
 		t.Fatalf("keep-local recovered despite conflicting gate anchor: %#v", kept)
 	}
 }
