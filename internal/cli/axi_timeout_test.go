@@ -21,6 +21,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/spf13/cobra"
 )
 
 func TestAxiWaitFlagDefaultIsEightMinutes(t *testing.T) {
@@ -38,6 +39,35 @@ func TestAxiWaitFlagDefaultIsEightMinutes(t *testing.T) {
 	}
 	if runWait != 8*time.Minute || respondWait != 8*time.Minute || answerWait != 8*time.Minute {
 		t.Fatalf("run=%s respond=%s answer=%s, want 8m on all", runWait, respondWait, answerWait)
+	}
+}
+
+func TestAxiWaitElapsedReattachHint(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		wait time.Duration
+		want string
+	}{
+		{"default", defaultAxiWait, "Re-run `no-mistakes axi run` to reattach for another 8m0s"},
+		{"long", 6 * time.Hour, "Re-run `no-mistakes axi run --wait 6h0m0s` to reattach for another 6h0m0s"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&out)
+			err := emitAxiWaitElapsed(cmd, tt.wait, "no-mistakes axi run")
+			assertWaitElapsed(t, err, out.String(), tt.wait.String())
+			if !strings.Contains(out.String(), tt.want) {
+				t.Fatalf("missing reattach hint %q:\n%s", tt.want, out.String())
+			}
+			if tt.wait == defaultAxiWait {
+				const want = "error: wait of 8m0s elapsed while driving the run\n" +
+					"help[3]: This bounded hold ended; it is not a pipeline failure and does not mean the daemon is dead.,Run `no-mistakes axi status` to inspect progress,Re-run `no-mistakes axi run` to reattach for another 8m0s\n"
+				if out.String() != want {
+					t.Fatalf("default wait output changed:\ngot:  %q\nwant: %q", out.String(), want)
+				}
+			}
+		})
 	}
 }
 
@@ -154,6 +184,9 @@ func TestAxiRun_WaitElapsedAgainstLiveIdleDaemon(t *testing.T) {
 	out, err := executeCmd("axi", "run", "--wait", "250ms")
 	elapsed := time.Since(started)
 	assertWaitElapsed(t, err, out, "250ms")
+	if !strings.Contains(out, "Re-run `no-mistakes axi run --wait 250ms`") {
+		t.Fatalf("reattach hint lost the caller's wait:\n%s", out)
+	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("bounded wait took %s, want return near 250ms", elapsed)
 	}
@@ -173,7 +206,7 @@ func TestAxiRespond_WaitElapsedAfterSubmissionReattachesWithoutRespondingAgain(t
 	if !responded.Load() {
 		t.Fatal("response was not submitted before the wait elapsed")
 	}
-	if !strings.Contains(out, "Re-run `no-mistakes axi run`") {
+	if !strings.Contains(out, "Re-run `no-mistakes axi run --wait 3s`") {
 		t.Fatalf("post-response timeout did not provide a non-mutating reattach command:\n%s", out)
 	}
 	if strings.Contains(out, "Re-run `no-mistakes axi respond") {

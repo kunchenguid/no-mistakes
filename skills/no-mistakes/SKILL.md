@@ -167,7 +167,9 @@ Run the pipeline and decide on its findings as they come up:
    also after an `axi respond` whose wait elapsed.
    Keep the blocking `no-mistakes axi run` / `no-mistakes axi respond` call
    open, or background that same call if your harness needs to, and collect its
-   return. Do not poll progress with separate `no-mistakes axi status` calls
+   return. When backgrounding, pass a long `--wait`, for example `--wait 6h`:
+   a backgrounded task notifies its harness when it exits, so a short hold
+   causes repeated wake-ups. Do not poll progress with separate `no-mistakes axi status` calls
    or sleep loops. Use `axi status` to inspect a run after a wait expiry,
    a refusal, or during recovery, not as a progress-polling loop.
    A slow live daemon is retried after a health probe rather than treated as
