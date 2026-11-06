@@ -41,7 +41,7 @@ func TestResolve_PathAugmentationPolicy(t *testing.T) {
 			oldOutput := shellCommandOutput
 			t.Cleanup(func() { shellCommandOutput = oldOutput })
 			calls := 0
-			shellCommandOutput = func(string, ...string) ([]byte, error) {
+			shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 				calls++
 				return []byte(tc.output), tc.probeErr
 			}
@@ -60,7 +60,7 @@ func TestResolve_PathAugmentationPolicy(t *testing.T) {
 				}
 			}
 			wantCalls := 1
-			if tc.probeErr != nil || tc.output == "" {
+			if tc.probeErr != nil || tc.output == "" || tc.name == "shell opt out" {
 				wantCalls = 2
 			}
 			if calls != wantCalls {
@@ -81,9 +81,12 @@ func TestResolve_PathPolicyDoesNotLeakThroughCache(t *testing.T) {
 	oldOutput := shellCommandOutput
 	t.Cleanup(func() { shellCommandOutput = oldOutput })
 	calls := 0
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(_ string, env []string, _ ...string) ([]byte, error) {
 		calls++
-		return []byte("PATH=/exact/bin\x00"), nil
+		if env != nil {
+			return []byte("PATH=/exact/bin:/usr/bin:/bin\x00"), nil
+		}
+		return []byte("PATH=/exact/bin:/inherited/bin\x00"), nil
 	}
 	for _, control := range []string{"", "0", "1", "0"} {
 		t.Setenv("NO_MISTAKES_PATH_AUGMENT", control)
@@ -92,14 +95,26 @@ func TestResolve_PathPolicyDoesNotLeakThroughCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		path, _ := envValue(env, "PATH")
-		if (path == "/exact/bin") != (control == "0") {
+		if control == "0" && path != "/exact/bin:/usr/bin:/bin" {
+			t.Fatalf("control=%q PATH=%q", control, path)
+		}
+		if control != "0" && (!strings.HasPrefix(path, "/exact/bin:/inherited/bin:") || !strings.Contains(path, filepath.Join(os.Getenv("HOME"), ".local", "bin"))) {
 			t.Fatalf("control=%q PATH=%q", control, path)
 		}
 		// A caller may mutate its copy without changing either cached policy.
 		env[0] = "PATH=/caller/mutation"
 	}
-	if calls != 1 {
-		t.Fatalf("probe calls = %d, want 1", calls)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("NO_MISTAKES_PATH_AUGMENT", "1")
+	env, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path, _ := envValue(env, "PATH"); strings.Contains(path, os.Getenv("HOME")) {
+		t.Fatalf("cached default PATH changed with HOME: %q", path)
+	}
+	if calls != 2 {
+		t.Fatalf("probe calls = %d, want 2", calls)
 	}
 }
 
@@ -125,7 +140,7 @@ func TestApplyToProcess_PathOptOutCannotResolveAugmentedTool(t *testing.T) {
 	oldOutput := shellCommandOutput
 	t.Cleanup(func() { shellCommandOutput = oldOutput })
 	exact := t.TempDir()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return []byte("PATH=" + exact + "\x00NO_MISTAKES_PATH_AUGMENT=1\x00"), nil
 	}
 	for range 2 {
@@ -148,13 +163,72 @@ func TestApplyToProcess_PathOptOutCannotResolveAugmentedTool(t *testing.T) {
 	}
 }
 
+func TestResolve_PathOptOutProbeFailureDoesNotPoisonCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses the process environment")
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "failed", err: errors.New("fixture failure")},
+		{name: "empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetForTests()
+			t.Cleanup(resetForTests)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("SHELL", "/synthetic/bash")
+			t.Setenv("PATH", "/fallback/bin")
+			t.Setenv("NO_MISTAKES_PATH_AUGMENT", "")
+			oldOutput := shellCommandOutput
+			t.Cleanup(func() { shellCommandOutput = oldOutput })
+			failing := true
+			calls := 0
+			shellCommandOutput = func(_ string, env []string, _ ...string) ([]byte, error) {
+				calls++
+				if env == nil {
+					return []byte("PATH=/inherited/bin\x00NO_MISTAKES_PATH_AUGMENT=0\x00"), nil
+				}
+				if failing {
+					return nil, tc.err
+				}
+				return []byte("PATH=/chosen/bin\x00NO_MISTAKES_PATH_AUGMENT=0\x00"), nil
+			}
+			for range 2 {
+				env, err := Resolve()
+				if err != nil {
+					t.Fatal(err)
+				}
+				path, _ := envValue(env, "PATH")
+				if !strings.HasPrefix(path, "/fallback/bin:") || !strings.Contains(path, filepath.Join(os.Getenv("HOME"), ".local", "bin")) {
+					t.Fatalf("fallback PATH=%q", path)
+				}
+			}
+			failing = false
+			for range 2 {
+				env, err := Resolve()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if path, _ := envValue(env, "PATH"); path != "/chosen/bin" {
+					t.Fatalf("recovered PATH=%q, want /chosen/bin", path)
+				}
+			}
+			if calls != 4 {
+				t.Fatalf("probe calls=%d, want 4", calls)
+			}
+		})
+	}
+}
+
 func TestResolve_PathPolicyWindowsShortCircuit(t *testing.T) {
 	resetForTests()
 	t.Cleanup(resetForTests)
 	oldOS, oldOutput := runtimeGOOS, shellCommandOutput
 	t.Cleanup(func() { runtimeGOOS, shellCommandOutput = oldOS, oldOutput })
 	runtimeGOOS = "windows"
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		t.Fatal("Windows must never probe a shell")
 		return nil, nil
 	}

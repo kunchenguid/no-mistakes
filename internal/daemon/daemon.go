@@ -164,7 +164,6 @@ func logDaemonPathSummary() {
 	slog.Info("daemon environment ready",
 		"path_entries", entries,
 		"path", path,
-		"shell_path_augmentation", os.Getenv("NO_MISTAKES_PATH_AUGMENT") != "0",
 	)
 }
 

@@ -47,9 +47,9 @@ Control PATH augmentation after a successful login-shell probe on macOS and Linu
 | Type    | `0` to disable; any other value leaves it enabled    |
 | Default | unset, augmentation enabled                         |
 
-Export `NO_MISTAKES_PATH_AUGMENT=0` in your login shell's rc file, then restart the daemon. You can also supply it in the environment that launches the daemon, such as `NO_MISTAKES_PATH_AUGMENT=0 no-mistakes daemon run` for a foreground daemon. A nonempty launcher value takes precedence over the login shell's export. The daemon's `daemon environment ready` log records this policy as `shell_path_augmentation` alongside the effective PATH.
+Export `NO_MISTAKES_PATH_AUGMENT=0` in your login shell's rc file, then restart the daemon. You can also supply it in the environment that launches the daemon, such as `NO_MISTAKES_PATH_AUGMENT=0 no-mistakes daemon run` for a foreground daemon. A nonempty launcher value takes precedence over the login shell's export.
 
-With `0`, a successful probe keeps the shell's PATH exactly, including an empty PATH. A successful environment with no PATH does not synthesize one, so applying it leaves the inherited process PATH in place. Tools outside that PATH will not be found. The default still appends missing well-known binary directories.
+With `0`, the login-shell probe starts with `PATH=/usr/bin:/bin` so it does not inherit the managed service's well-known tool directories. It then keeps the shell's resulting PATH exactly, including an empty PATH. When the control is exported only by the shell, an initial probe discovers it before a second probe uses that base PATH. Successful probe results are cached separately for each policy. A successful environment with no PATH does not synthesize one, so applying it leaves the inherited process PATH in place. Tools outside that PATH will not be found. The default still appends missing well-known binary directories.
 
 If the probe fails or prints no environment entries, the process-environment fallback **still appends well-known directories**, even with `0`. This preserves the existing degraded-startup behavior. Windows continues to use the process environment without probing or augmenting it.
 
