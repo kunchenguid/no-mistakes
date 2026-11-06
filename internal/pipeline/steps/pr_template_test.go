@@ -19,7 +19,7 @@ import (
 const testPRTemplate = "# Overview\n\n<!-- Describe the final change. -->\n\n## Testing\n\n- [ ] Maintainer approves rollout\n"
 const filledPRTemplate = "# Overview\n\nAdd a Bar helper.\n\n## Testing\n\n- [ ] Maintainer approves rollout\n"
 
-func templateTestContext(t *testing.T) (*pipeline.StepContext, *mockAgent, string) {
+func templateTestContext(t *testing.T, branches ...string) (*pipeline.StepContext, *mockAgent, string) {
 	t.Helper()
 	dir, base, _ := setupGitRepo(t)
 	name := ".github/pull_request_template.md"
@@ -44,7 +44,7 @@ func templateTestContext(t *testing.T) (*pipeline.StepContext, *mockAgent, strin
 		data, _ := json.Marshal(prContent{Title: "feat(pipeline): fill template", Body: filledPRTemplate})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{}, branches...)
 	sctx.Config.PR.Template = name
 	sctx.Config.TrustedConfigSHA = trusted
 	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
@@ -290,8 +290,7 @@ func TestPRTemplateSuppliedTitleIgnoresAnEmptyDraftedTitle(t *testing.T) {
 
 func TestPRTemplateUpdateAppliesConfiguredTitleFormat(t *testing.T) {
 	t.Parallel()
-	sctx, ag, _ := templateTestContext(t)
-	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx, ag, _ := templateTestContext(t, "feature/PROJ-123-add-widget")
 	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
 	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {

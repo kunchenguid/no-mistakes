@@ -298,7 +298,7 @@ func TestPRStep_ExecuteRedactsAbsoluteHomePathsBeforePublishing(t *testing.T) {
 			return &agent.Result{Output: json.RawMessage(payload)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.EvidenceDir = fixtureEvidenceDir
 
@@ -383,7 +383,7 @@ func buildHomePathLeakPRContentWithLimit(t *testing.T, tc homePathLeakCase, body
 			return &agent.Result{Output: json.RawMessage(payload)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.UserIntent = tc.userIntent
 	if tc.evidenceDir != "" {
 		sctx.EvidenceDir = tc.evidenceDir
@@ -612,7 +612,7 @@ func TestPRStep_BuildPRContentRedactsRunWorktreePaths(t *testing.T) {
 			return &agent.Result{Output: json.RawMessage(`{"title":"fix: evidence paths","body":"## What Changed\n\n- evidence paths"}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	if err := os.MkdirAll(sctx.EvidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ func TestPRStep_BuildPRContentRedactsRunWorktreePaths(t *testing.T) {
 func TestPRStep_SuppliedBodyIsRedactedBeforePublishing(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	insertCompletedStep(t, sctx, types.StepReview, "", "")
 	title, body := "Keep evidence out of the worktree", "Evidence now lands under "+fixtureEvidenceDir+".\n"
 	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body

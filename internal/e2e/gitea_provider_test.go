@@ -18,9 +18,8 @@ import (
 // the real pipeline: self-hosted-host detection via tea's own config.yml
 // (Gitea carries no distinguishing hostname substring the way gitlab.com or
 // github.com do), buildHost wiring the gitea.Host, PR creation, and the CI
-// step reading PR state back through the same host. It mirrors
-// TestForkRouting's shape (a git URL rewrite standing in for the real
-// provider, a stubbed CLI shadowing the real one), using the tea stub added
+// step. It mirrors TestForkRouting's shape (a git URL rewrite standing in for
+// the real provider, a stubbed CLI shadowing the real one), using the tea stub added
 // to cmd/fakeagent alongside the existing gh stub.
 func TestGiteaProviderJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
@@ -78,6 +77,9 @@ func TestGiteaProviderJourney(t *testing.T) {
 	if run.PRURL == nil || !strings.HasPrefix(*run.PRURL, "http://"+giteaHost+"/"+repoSlug+"/pulls/") {
 		t.Fatalf("PR URL = %v, want a Gitea pull URL under %s/%s", run.PRURL, giteaHost, repoSlug)
 	}
+	if !strings.Contains(readStepLog(t, h, run.ID, "pr"), "PR head proof unavailable for provider gitea") {
+		t.Fatal("run output did not record unavailable head proof")
+	}
 
 	invocations := readTeaStubInvocations(t, teaLog)
 	if len(invocations) == 0 {
@@ -96,6 +98,9 @@ func TestGiteaProviderJourney(t *testing.T) {
 			}
 			if inv.Head != branchName {
 				t.Fatalf("pulls create --head = %q, want %q: %+v", inv.Head, branchName, inv)
+			}
+			if !strings.Contains(strings.Join(inv.Args, "\n"), "PR head proof unavailable for provider gitea") {
+				t.Fatalf("published body did not record unavailable head proof: %+v", inv)
 			}
 		}
 		if inv.Login != "" && inv.Login != loginName {
