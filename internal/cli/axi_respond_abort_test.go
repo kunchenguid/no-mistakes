@@ -134,7 +134,7 @@ func TestAxiRespond_ReasonStillRefusedOutsideTestApprovalAndAbort(t *testing.T) 
 		if !errors.As(err, &ee) || ee.code != 2 {
 			t.Fatalf("%s: error = %v, want usage exit 2\n%s", action, err, out)
 		}
-		if !strings.Contains(out, "--reason applies only to --action approve on the Test step, or to --action abort") {
+		if !strings.Contains(out, "--reason applies only to Test approval, abort, or resolved_external") {
 			t.Fatalf("%s: usage output missing the reason contract:\n%s", action, out)
 		}
 	}

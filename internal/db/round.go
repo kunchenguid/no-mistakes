@@ -21,6 +21,10 @@ const (
 	// SelectedFindingIDs, so this source is written with an explicit empty
 	// JSON array rather than a NULL.
 	RoundSelectionSourceUserDeclined = "user_declined"
+	// These sources distinguish a fix response's explicit ignore from an
+	// approve/skip/abort decline, and an externally settled finding from a fix.
+	RoundSelectionSourceUserIgnored = "user_ignored"
+	RoundSelectionSourceExternal    = "resolved_external"
 )
 
 // DeclinedSelectionJSON is the SelectedFindingIDs value written alongside

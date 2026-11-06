@@ -52,12 +52,12 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 		   JOIN step_results res ON res.id = sr.step_result_id
 		   JOIN runs r ON r.id = res.run_id
 		  WHERE r.repo_id = ? AND r.branch = ? AND r.id != ?
-		    AND sr.selection_source IN (?, ?)
+		    AND sr.selection_source IN (?, ?, ?, ?)
 		    AND sr.findings_json IS NOT NULL
 		  ORDER BY sr.created_at DESC, sr.id DESC
 		  LIMIT ?`,
 		repoID, branch, excludeRunID,
-		RoundSelectionSourceUser, RoundSelectionSourceUserDeclined,
+		RoundSelectionSourceUser, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserIgnored, RoundSelectionSourceExternal,
 		queryLimit,
 	)
 	if err != nil {

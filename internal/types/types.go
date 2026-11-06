@@ -308,6 +308,7 @@ const (
 	ActionSkip             ApprovalAction = "skip"
 	ActionAbort            ApprovalAction = "abort"
 	ActionCompleteCoverage ApprovalAction = "complete-coverage"
+	ActionResolvedExternal ApprovalAction = "resolved_external"
 	// ActionAnswer releases a review gate that parked on the reviewer's own
 	// open questions, once every one of them is answered. It is neither a
 	// verdict on the round nor a request to fix anything: the same reviewer
