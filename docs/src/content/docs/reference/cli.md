@@ -879,6 +879,78 @@ Inspect the locally collected review-case corpus before spending tokens, replay 
 
 See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, collection and retention, command flags, label policy, and reporting semantics.
 
+## no-mistakes export
+
+Export one run's stored delivery facts on demand, without a daemon or a Git checkout:
+
+```sh
+no-mistakes export --run <id> --json
+```
+
+Both flags are required. The command reads the existing `NM_HOME` database in a
+single read-only snapshot. It never creates a database, migrates its schema, runs agents,
+queries a forge, or sends telemetry. A missing run, damaged database, or schema
+missing required columns returns a nonzero exit status and no JSON document.
+SQLite may create its normal `-wal` and `-shm` sidecars while reading a WAL database.
+
+The JSON document has `schema_version: 1` and these fields:
+
+| Field | Stored facts |
+| ----- | ------------ |
+| `run` | `id`, `repo_id`, `branch`, `head_sha`, `base_sha`, `submitted_head_sha`, `pr_url`, `status`, `created_at`, `updated_at`, `parked_ms`, `awaiting_agent_since`, `ci_ready_at` |
+| `steps[]` | `id`, `name`, `order`, `status`, `exit_code`, `started_at`, `completed_at`, `duration_ms`, `response_origin`, `ci_attempt`, `carried_from`, `rounds[]` |
+| `steps[].rounds[]` | `id`, `round`, `trigger`, `created_at`, `duration_ms`, `reviewed_head_sha`, `selection_source`, `selected_finding_ids`, `response_origin`, `repair_published`, `gate` |
+| `invocations[]` | `id`, `step_name`, `round`, `purpose`, `agent`, `model`, `model_provider`, `session_mode`, `started_at`, `completed_at`, `duration_ms`, `subprocess_wait_ms`, `exit_status`, `failure_category`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `fresh_input_tokens`, `reasoning_tokens`, `delta_input_tokens`, `delta_output_tokens`, `delta_cache_read_tokens` |
+
+`repo_id` is the exact local repository record's ID. Repository URLs and filesystem
+paths are excluded. Steps belong to the enclosing run, rounds to the enclosing
+step, and invocations bind to that run through their stored `step_name` and `round`.
+Steps are ordered by stored order then ID, rounds by round number then ID, and
+invocations by start time then ID. Empty collections are `[]`.
+
+A reused step has `carried_from: {"run_id": "<source-run-id>", "step_id": "<source-step-id>"}`.
+Its completed or skipped status and timing fields describe work performed in that
+source run. Rounds and agent invocations remain scoped to the requested run, so
+export the source with `no-mistakes export --run <source-run-id> --json` and locate
+`<source-step-id>` to inspect the reused work's rounds and calls. The link uses the
+stored source step reference, including the original source retained by repeated
+retries. `carried_from` is `null` when no source reference was stored. If the
+referenced row is unavailable, its `run_id` is `null` and the known `step_id` remains.
+
+Timestamps are Unix seconds. Durations are stored milliseconds, never recomputed
+from timestamps. Missing nullable facts are JSON `null`, including unreported
+token counts for error or cancelled invocations. All invocation outcomes are
+included. The raw token counters and per-round `delta_*` counters are distinct,
+because resumed sessions can report cumulative usage.
+Empty stored model names, failure categories and unrecorded selections are `null`.
+
+Each round's `gate` object contains `first_parked_at`, `reason`, `owner`,
+`notified_at`, `escalated_at`, `responded_at`, `responder_identity`, `action`, and
+`resolution_evidence`. All are currently `null`: the database has no durable
+per-gate history for these facts. The object does not assert that the round
+parked. Round creation is not a park or response timestamp. The run's
+`awaiting_agent_since` is only its current park stamp, and `parked_ms` is an
+aggregate across waits. Neither reconstructs earlier gates.
+
+`response_origin` records `interactive`, `auto_yes`, or `unknown` as stored. It
+does not identify a person. `selection_source` is separate and can be `user`,
+`user_declined`, `auto_fix`, or `null`. `user_declined` does not prove human action
+or distinguish approve, skip and abort. `selected_finding_ids: []` records an
+explicit empty selection, while `null` means no stored selection.
+
+The `ci` step and its repair rounds describe no-mistakes monitoring, repair and
+wait work. `repair_published` records publication of a local repair round.
+`ci_attempt` is currently `null`: no authoritative hosted-job attempt ID is stored
+on a step. Local round numbers are not GitHub attempt numbers. Hosted job queue
+and execution times are unavailable and are not inferred from local durations.
+
+The export uses an explicit field list. Prompts, findings prose, config snapshots,
+session identities, intent, logs, raw terminal text, errors and private paths are
+excluded. There is no option to include those payloads. Output stays local unless
+you explicitly share it. Repeating an export of unchanged storage produces the
+same document. Consumers must tolerate additive fields and new source/origin
+values. Incompatible shape or unit changes require a new `schema_version`.
+
 ## no-mistakes stats
 
 Show historical usage stats across all repos.
