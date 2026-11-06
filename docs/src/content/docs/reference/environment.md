@@ -317,7 +317,7 @@ When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and 
 Mutation pageviews are sent alongside command events, so command status and duration remain available.
 They include only flag-derived context: `/axi/run` records booleans such as whether `--yes` or `--skip` was supplied and whether explicit intent was supplied through any [intent input transport](/no-mistakes/reference/cli/#intent-input); `/axi/respond` records the sanitized action and whether `--yes` was present. The intent boolean does not distinguish text, file, and stdin input, and intent input rejected by the CLI resolver emits no `axi-run` command event or pageview.
 
-Read-only surfaces (`axi` home, `axi status`, `axi logs`, `axi rounds`, `status`, `runs`) emit no telemetry at all, so agent status polling cannot flood remote analytics. Mutation surfaces (`axi run`, `axi respond`, `axi abort`, `axi retry`, `axi handoff`, run lifecycle, approvals, and fixes) stay full-fidelity.
+Read-only surfaces (`axi` home, `axi status`, `axi logs`, `axi rounds`, `status`, `runs`, `export`) emit no telemetry at all, so agent status polling cannot flood remote analytics. Mutation surfaces (`axi run`, `axi respond`, `axi abort`, `axi retry`, `axi handoff`, run lifecycle, approvals, and fixes) stay full-fidelity.
 Each explicit human CLI, AXI, or TUI branch-sync check/apply attempt emits one command event and no additional pageview.
 Its fields are bounded enums and booleans only: surface, mode, state, relation, target kind, pipeline phase, PR state, result, refusal reason, dirty state, and duration.
 It never sends a SHA, run ID, path, branch name, URL, remote name, or command argument.
@@ -345,6 +345,7 @@ A recorded `0` means the adapter reported zero; it is distinct from unknown.
 
 The count and timing definitions live in one authoritative place (`internal/agent/invocationmetrics.go`).
 Inspect the evidence with `no-mistakes stats --agents` (per-purpose aggregates, including a `METRICS` coverage count so a real zero is distinguishable from missing instrumentation) or `no-mistakes stats --run <id>` (one run's invocations, the per-round-vs-cumulative token split, and parked time).
+For a versioned JSON snapshot of one run's stored delivery facts, use [`no-mistakes export --run <id> --json`](/no-mistakes/reference/cli/#no-mistakes-export).
 
 ## `NO_MISTAKES_TELEMETRY`
 
