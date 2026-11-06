@@ -124,7 +124,7 @@ func TestPRStep_GitLabKeepsLegacyCreateBehavior(t *testing.T) {
 	}
 }
 
-func TestPRStep_AzureKeepsEmptyCreateIdentityBehavior(t *testing.T) {
+func TestPRStep_AzureKeepsZeroIDLegacyURL(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
@@ -137,9 +137,10 @@ func TestPRStep_AzureKeepsEmptyCreateIdentityBehavior(t *testing.T) {
 		"FAKE_CLI_PR_BODY_FILE": bodyFile,
 	})
 	assertNotice := capturePRProofNotice(t, sctx, string(scm.ProviderAzureDevOps))
+	const wantURL = "https://dev.azure.com/test/project/_git/repo"
 	out, err := (&PRStep{}).Execute(sctx)
-	if err != nil || out == nil || out.Skipped || out.PRURL != "" {
-		t.Fatalf("empty Azure identity changed legacy result: %+v %v", out, err)
+	if err != nil || out == nil || out.Skipped || out.PRURL != wantURL {
+		t.Fatalf("zero-ID Azure create changed legacy result: %+v %v", out, err)
 	}
 	body, err := os.ReadFile(bodyFile)
 	if err != nil {
@@ -147,7 +148,7 @@ func TestPRStep_AzureKeepsEmptyCreateIdentityBehavior(t *testing.T) {
 	}
 	assertNotice(string(body))
 	stored, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || stored.PRURL != nil {
-		t.Fatalf("empty Azure identity persisted a URL: %+v %v", stored, err)
+	if err != nil || stored == nil || stored.PRURL == nil || *stored.PRURL != wantURL {
+		t.Fatalf("zero-ID Azure create did not persist the legacy URL: %+v %v", stored, err)
 	}
 }
