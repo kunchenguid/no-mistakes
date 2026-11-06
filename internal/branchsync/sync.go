@@ -464,12 +464,12 @@ func (s *Service) Apply(ctx context.Context) State {
 		return recheck
 	}
 
-	checkCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
-	defer cancel()
-	pushURL := s.resolvedPushURL(checkCtx, freshRepo, freshRun)
+	pushURL := s.resolvedPushURL(ctx, freshRepo, freshRun)
 	if pushURL == "" {
 		return blockedPlan(plan, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before synchronization; no files or refs were changed")
 	}
+	checkCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer cancel()
 	live, err := s.runLsRemote(checkCtx, s.workDir(), pushURL, plan.Target.Ref)
 	if err != nil || live != plan.Pipeline.PushedHead {
 		return blockedPlan(plan, StateRemoteRewritten, "blocked_remote_changed_before_apply", "the live remote changed before synchronization; no files or refs were changed")
@@ -1584,12 +1584,12 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	if repoErr != nil || repo == nil {
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the repository record could not be re-read before rebinding; the push binding was not changed"), true
 	}
-	lsCtx, lsCancel := context.WithTimeout(ctx, s.remoteTimeout())
-	defer lsCancel()
-	pushURL := s.resolvedPushURL(lsCtx, repo, run)
+	pushURL := s.resolvedPushURL(ctx, repo, run)
 	if pushURL == "" {
 		return blockedPlan(fresh, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before rebinding; the push binding was not changed"), true
 	}
+	lsCtx, lsCancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer lsCancel()
 	again, err := s.runLsRemote(lsCtx, s.workDir(), pushURL, fresh.Target.Ref)
 	if err != nil || again != live {
 		blocked := blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_remote_changed", fmt.Sprintf("the live remote changed again before the push binding could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef))

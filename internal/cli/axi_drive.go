@@ -980,14 +980,25 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 }
 
 func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, requested string) gate.ReconciliationUpstream {
-	upstreamURL, err := git.GetRemoteURL(ctx, ".", "origin")
+	var upstreamURL string
+	var err error
+	base := strings.TrimSpace(env.repo.DefaultBranch)
+	if integration.RequestedRemote(ctx) != "" {
+		destination, resolveErr := integration.ResolveRequest(ctx, ".")
+		if resolveErr != nil {
+			return gate.ReconciliationUpstream{}
+		}
+		upstreamURL, err = destination.RuntimeURL(ctx, ".")
+		base = destination.DefaultBranch
+	} else {
+		upstreamURL, err = git.GetRemoteURL(ctx, ".", "origin")
+	}
 	if err != nil || strings.TrimSpace(upstreamURL) == "" {
 		return gate.ReconciliationUpstream{}
 	}
 	if requested = strings.TrimSpace(requested); requested != "" {
 		return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: requested}
 	}
-	base := strings.TrimSpace(env.repo.DefaultBranch)
 	if base == "" {
 		return gate.ReconciliationUpstream{}
 	}
