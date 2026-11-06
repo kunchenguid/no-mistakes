@@ -84,7 +84,7 @@ func captureHookIdentity(ctx context.Context, client *ipc.Client, p *paths.Paths
 	if identity == nil {
 		return nil, fmt.Errorf("cannot prove the pushing checkout identity: no live checkouts")
 	}
-	return identity
+	return identity, nil
 }
 
 const commitIdentityPushOptionPrefix = "no-mistakes.commit-identity="

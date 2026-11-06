@@ -252,7 +252,13 @@ func TestCommitIdentityPlainPushRequiresLiveCheckoutAgreement(t *testing.T) {
 			case "different committer":
 				cliGit(t, linked, "config", "--worktree", "committer.email", "linked@example.test")
 			case "missing identity":
-				cliGit(t, linked, "config", "--worktree", "author.email", "")
+				cliGit(t, main, "config", "--local", "--unset", "user.name")
+				cliGit(t, main, "config", "--local", "--unset", "user.email")
+				cliGit(t, main, "config", "--worktree", "user.name", want.AuthorName)
+				cliGit(t, main, "config", "--worktree", "user.email", want.AuthorEmail)
+				if _, err := git.CaptureCommitIdentity(context.Background(), linked); err == nil {
+					t.Fatal("missing-identity fixture still resolves an identity")
+				}
 			case "unreadable identity":
 				configPath := cliGit(t, linked, "rev-parse", "--git-path", "config.worktree")
 				if !filepath.IsAbs(configPath) {
