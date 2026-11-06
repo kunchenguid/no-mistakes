@@ -536,6 +536,12 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		_ = plan.agent.Close()
 		return
 	}
+	identity, err := m.db.RunCommitIdentity(plan.run.ID)
+	if err != nil {
+		_ = plan.agent.Close()
+		m.db.UpdateRunError(plan.run.ID, err.Error())
+		return
+	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	executor.SetCIObservationTransition(m.transitionCIObservation)
@@ -551,12 +557,6 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		}()
 	})
 	executor.SetForgeContext(plan.forge)
-	identity, err := m.db.RunCommitIdentity(plan.run.ID)
-	if err != nil {
-		_ = plan.agent.Close()
-		m.db.UpdateRunError(plan.run.ID, err.Error())
-		return
-	}
 	executor.SetCommitIdentity(identity)
 	done := make(chan struct{})
 	spawn := func() {
