@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,27 @@ func TestSplitFixResponse_AllowsDecliningATwinTheSelectionNeverNamed(t *testing.
 	}
 	if strings.Join(got.Ignored, ",") != "survivor" {
 		t.Fatalf("ignored = %v, want [survivor]", got.Ignored)
+	}
+}
+
+// Two applied fixes of one content protect it at least as well as one. A gate
+// response cannot reverse an applied fix, so the refusal cannot weaken because
+// the operator decided that content a second time.
+func TestSplitFixResponse_RefusesDecliningAContentFixedTwice(t *testing.T) {
+	at := func(id string, line int) string {
+		return `{"findings":[{"id":"` + id + `","severity":"warning","file":"a.go","line":` + strconv.Itoa(line) +
+			`,"description":"missing nil check","action":"ask-user"}]}`
+	}
+	rounds := []*db.StepRound{
+		userDecisionRound(t, at("first", 10), "first"),
+		userDecisionRound(t, at("second", 19), "second"),
+	}
+
+	_, err := splitFixResponse(types.StepReview, at("third", 27), rounds, nil, []string{"third"})
+
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || strings.Join(refusal.DeclinedEarlierFix, ",") != "third" {
+		t.Fatalf("a content the operator fixed twice lost its protection: %v", err)
 	}
 }
 

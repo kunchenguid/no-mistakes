@@ -68,6 +68,18 @@ func (s *settlementIdentities) matches(item types.Finding, counts map[types.Find
 	return hasFindingMatch(item, s.exact, counts, s.unique)
 }
 
+// saturate makes the content identity monotone, which a protection set needs
+// and a disposition set must not have: hasFindingMatch requires the candidate
+// side to hold exactly one instance of a content, so two recorded decisions
+// about one content stop it matching. A disposition must then be asked again,
+// but a fix selection must not stop being protected because the operator
+// decided the same content twice.
+func (s *settlementIdentities) saturate() {
+	for fingerprint := range s.unique {
+		s.unique[fingerprint] = 1
+	}
+}
+
 func (s *settlementIdentities) empty() bool { return len(s.exact) == 0 }
 
 // filterSettledReviewFindings keeps a recorded human disposition effective when
@@ -234,7 +246,8 @@ func settledReviewDispositions(rounds []*db.StepRound) (ignored, external *settl
 // step chose to fix, so no consumer can settle one. A selection taken from a
 // payload that showed its content twice speaks only for the instance it named:
 // claiming the other one too refused the operator's own decline of a finding
-// they never selected.
+// they never selected. Repeated selections of one content never weaken that
+// protection, which is what saturate holds.
 func chosenToFixSettlements(rounds []*db.StepRound) *settlementIdentities {
 	chosen := newSettlementIdentities()
 	for _, round := range rounds {
@@ -257,6 +270,7 @@ func chosenToFixSettlements(rounds []*db.StepRound) *settlementIdentities {
 		}
 		chosen.record(selected, countFindingFingerprints(shown))
 	}
+	chosen.saturate()
 	return chosen
 }
 

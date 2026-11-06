@@ -552,6 +552,46 @@ func TestFilterSettledReviewFindings_ASuppressedGateDropsTheStaleSummary(t *test
 	}
 }
 
+// The filter withholds a disposition for a finding a human round chose to fix,
+// and two such rounds about one content protect it at least as well as one.
+// Otherwise an ignore-only round's complement settles work the operator asked
+// for and every later round stops reporting it.
+func TestFilterSettledReviewFindings_AContentFixedTwiceIsNeverSettled(t *testing.T) {
+	item := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "missing nil check", Action: types.ActionAskUser}
+	at := func(id string, line int) string {
+		shown := item
+		shown.ID, shown.Line = id, line
+		encoded, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{shown}})
+		return encoded
+	}
+	first, second, declined := at("first", 10), at("second", 19), at("third", 27)
+	firstChoice, secondChoice := `["first"]`, `["second"]`
+	empty := db.DeclinedSelectionJSON
+	fixSource := db.RoundSelectionSourceUser
+	ignoreSource := db.RoundSelectionSourceUserIgnored
+	rounds := []*db.StepRound{
+		{FindingsJSON: &first, SelectionSource: &fixSource, SelectedFindingIDs: &firstChoice},
+		{FindingsJSON: &second, SelectionSource: &fixSource, SelectedFindingIDs: &secondChoice},
+		{FindingsJSON: &declined, SelectionSource: &ignoreSource, SelectedFindingIDs: &empty},
+	}
+
+	later := item
+	later.ID, later.Line = "fourth", 31
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{later}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+
+	filtered, err := filterSettledReviewFindings(raw, rounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := types.ParseFindingsJSON(filtered)
+	if err != nil || len(parsed.Items) != 1 {
+		t.Fatalf("a content the operator fixed twice was settled by a later complement: %+v %v", parsed.Items, err)
+	}
+	if got := SettledReviewFindingCount(rounds); got != 0 {
+		t.Fatalf("settled count = %d, want 0: the operator chose to fix that content", got)
+	}
+}
+
 func TestFilterSettledReviewFindings_AmbiguousFingerprintFailsClosed(t *testing.T) {
 	item := types.Finding{ID: "first", File: "first.go", Severity: types.FindingSeverityInfo, Description: "same", Action: types.ActionNoOp}
 	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
