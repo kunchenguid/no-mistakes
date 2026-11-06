@@ -20,7 +20,10 @@ import (
 
 func bindTestCallerRestrictions(t *testing.T, sctx *pipeline.StepContext) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "caller.txt")
+	path := filepath.Join(t.TempDir(), `caller\policy.txt`)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte("Never install dependencies or repeat a suite.\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

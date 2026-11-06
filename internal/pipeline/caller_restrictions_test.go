@@ -115,7 +115,7 @@ func TestExecutorCallerRestrictionsReachDirectIntentAgents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	const content = "Run product tests only in the disposable Linux guest.\n"
 	run.CallerRestrictions = &callerrestrictions.Record{
-		Source: callerrestrictions.Source, SourcePath: filepath.Join(t.TempDir(), "caller.txt"),
+		Source: callerrestrictions.Source, SourcePath: filepath.Join(t.TempDir(), `caller\policy.txt`),
 		Content: content, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(content))), CapturedAt: 1,
 	}
 	submitted := run.HeadSHA
