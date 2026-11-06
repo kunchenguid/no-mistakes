@@ -166,15 +166,17 @@ func (s *reviewRoleProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.Ste
 }
 
 // writeCapturingPiAgent writes a fake pi binary that appends its argv to
-// capturePath on every invocation and returns a minimal agent_end payload.
+// capturePath.<working-directory basename> on every invocation and returns a
+// minimal agent_end payload. Each run has its own worktree, so concurrent runs
+// never append to the same file (cmd.exe redirection can lose a competing write).
 func writeCapturingPiAgent(t *testing.T, dir, capturePath string) string {
 	t.Helper()
 	const response = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}`
 	bin := filepath.Join(dir, "pi")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(capturePath) + "\ncat >/dev/null\nprintf '%s\\n' '" + response + "'\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(capturePath+".") + "\"${PWD##*/}\"\ncat >/dev/null\nprintf '%s\\n' '" + response + "'\n"
 	if runtime.GOOS == "windows" {
 		bin += ".cmd"
-		script = "@echo off\r\necho %* >> \"" + capturePath + "\"\r\nmore > nul\r\necho " + response + "\r\n"
+		script = "@echo off\r\nfor %%I in (\"%CD%\") do echo %* >> \"" + capturePath + ".%%~nxI\"\r\nmore > nul\r\necho " + response + "\r\n"
 	}
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -233,7 +235,7 @@ func TestPushReceivedRoutesReviewRolesToIndependentProfiles(t *testing.T) {
 		t.Fatalf("run status = %q, want %q (error: %s)", run.Status, types.RunCompleted, runErr)
 	}
 
-	argv, err := os.ReadFile(capturePath)
+	argv, err := os.ReadFile(capturePath + "." + result.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +286,7 @@ review_agents:
 			t.Fatal(err)
 		}
 	}
-	raw, err := os.ReadFile(capture)
+	raw, err := os.ReadFile(capture + "." + filepath.Base(dir))
 	if err != nil {
 		t.Fatal(err)
 	}

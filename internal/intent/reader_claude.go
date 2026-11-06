@@ -16,7 +16,7 @@ import (
 // ClaudeReaderName is the agent name used in cache keys and DB rows.
 const ClaudeReaderName = "claude"
 
-// claudeReader reads Claude Code transcripts from ~/.claude/projects/.
+// claudeReader reads Claude Code transcripts from the selected account's projects/.
 type claudeReader struct{}
 
 // NewClaudeReader returns a Reader for Claude Code transcripts.
@@ -30,11 +30,20 @@ func claudeProjectDirName(cwd string) string {
 }
 
 func (r *claudeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
-	home, err := resolveHome(opts.HomeDir)
-	if err != nil {
+	if err := opts.TranscriptHomes.ValidateClaude(); err != nil {
 		return nil, err
 	}
-	root := filepath.Join(home, ".claude", "projects")
+	var configDir string
+	if opts.TranscriptHomes != nil {
+		configDir = opts.TranscriptHomes.ClaudeConfigDir
+	} else {
+		home, err := resolveHome(opts.HomeDir)
+		if err != nil {
+			return nil, err
+		}
+		configDir = filepath.Join(home, ".claude")
+	}
+	root := filepath.Join(configDir, "projects")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

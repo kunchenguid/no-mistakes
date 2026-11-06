@@ -224,13 +224,13 @@ func parsePiRecord(line []byte) ([]piParsedMessage, string, bool, bool) {
 	case "message_update":
 		return nil, raw.ID, false, true
 	case "agent_end":
-		return parsePiMessages(raw.Messages, raw.Timestamp), raw.ID, true, true
+		return parsePiMessages(raw.Messages), raw.ID, true, true
 	default:
 		return nil, raw.ID, false, true
 	}
 }
 
-func parsePiMessages(raw json.RawMessage, timestamp string) []piParsedMessage {
+func parsePiMessages(raw json.RawMessage) []piParsedMessage {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -240,7 +240,7 @@ func parsePiMessages(raw json.RawMessage, timestamp string) []piParsedMessage {
 	}
 	msgs := make([]piParsedMessage, 0, len(items))
 	for _, item := range items {
-		msg, ok := parsePiParsedMessage(item, timestamp)
+		msg, ok := parsePiParsedMessage(item, "")
 		if ok {
 			msgs = append(msgs, msg)
 		}
@@ -263,6 +263,7 @@ func parsePiParsedMessage(raw json.RawMessage, timestamp string) (piParsedMessag
 		ID         string          `json:"id"`
 		ResponseID string          `json:"responseId"`
 		Content    json.RawMessage `json:"content"`
+		Timestamp  json.RawMessage `json:"timestamp"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return piParsedMessage{}, false
@@ -287,6 +288,15 @@ func parsePiParsedMessage(raw json.RawMessage, timestamp string) (piParsedMessag
 		return piParsedMessage{}, false
 	}
 	ts, _ := parsePiTimestamp(timestamp)
+	if len(msg.Timestamp) > 0 && string(msg.Timestamp) != "null" {
+		var millis int64
+		var text string
+		if err := json.Unmarshal(msg.Timestamp, &millis); err == nil {
+			ts = time.UnixMilli(millis)
+		} else if err := json.Unmarshal(msg.Timestamp, &text); err == nil {
+			ts, _ = parsePiTimestamp(text)
+		}
+	}
 	out := Message{
 		Role:      role,
 		Text:      text,

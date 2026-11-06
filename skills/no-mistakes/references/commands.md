@@ -9,6 +9,7 @@ no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi sync --adopt-published  # adopt an exactly published rebased head into its stale gate lane
 no-mistakes axi logs --step <name> --full   # one step's recorded findings, complete summary, and full log
+no-mistakes axi handoff       # end green CI monitoring for human review (handed_off, PR stays open)
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 no-mistakes axi respond --run <id> --action approve   # answer a specific run's parked gate by id (works outside its worktree)
@@ -21,6 +22,7 @@ no-mistakes axi respond --run <id> --action approve   # answer a specific run's 
 - A non-terminal run object may include `awaiting_agent: parked <duration>` immediately after `status`; that means the run is parked at a gate. Only an implicitly resolved current-branch gate offers bare `axi respond`; an explicit `--run <id>` status is inspection-only even when its branch matches, because the branch may have a newer active run, and names `axi respond --run <id>` as its response command. Follow the response's `help`.
 - A run object with a `running` or `fixing` step may include an `active_steps` table. `active_for` is the enclosing step duration; `round_active_for` is the displayed execution or fix round duration and resets for a fix round. Older runs without round timing leave `round_active_for` empty.
 - The `help` list at the bottom of most responses tells you the next commands to run.
+- With `--branch <name>`, `axi status` drops that current-branch scope and reads the exact named branch's newest-run publication snapshot and complete run inventory, read-only.
 - Errors are printed as `error: ...` on stdout with a `help` list; act on the suggestion.
 - Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
 
@@ -45,6 +47,6 @@ Read the `action` column per row: decide `r1` (auto-fix) on your own
 judgment - `respond --action fix --findings r1` hands it to the pipeline to
 fix - but stop and escalate `r2` (ask-user) to the user before responding. A
 final state
-instead shows `outcome: <checks-passed|passed|passed-with-override|passed-with-skips|failed|cancelled>` with no
+instead shows `outcome: <checks-passed|passed|passed-with-override|passed-with-skips|handed-off|failed|cancelled>` with no
 `findings` table. Field names and exact columns can vary by step and version,
 so read the actual `findings` header rather than assuming this layout.

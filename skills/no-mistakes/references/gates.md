@@ -13,13 +13,16 @@ Run the pipeline and decide on its findings as they come up:
    because it seems slow. Both commands default to `--wait 8m` so a harness
    with a 10-minute tool cap gets a structured return instead of an unbounded
    hang. If the command returns because that wait elapsed, it is not a failed
-   run and does not mean the daemon is dead: inspect with `no-mistakes axi status`
-   and re-run `axi run` or `axi respond` to reattach. A slow live daemon is
-   retried after a health probe rather than treated as I/O failure. To check
-   progress without disturbing the run, use `no-mistakes axi status` from a
-   separate call.
-   A long-running call is working, not stalled - background it if your harness
-   needs to, but the run **never advances past a gate on its own**. Read every
+   run and does not mean the daemon is dead: re-run `no-mistakes axi run` to reattach,
+   also after an `axi respond` whose wait elapsed.
+   Keep the blocking `no-mistakes axi run` / `no-mistakes axi respond` call
+   open, or background that same call if your harness needs to, and collect its
+   return. Do not poll progress with separate `no-mistakes axi status` calls
+   or sleep loops. Use `axi status` to inspect a run after a wait expiry,
+   a refusal, or during recovery, not as a progress-polling loop.
+   A slow live daemon is retried after a health probe rather than treated as
+   I/O failure. A long-running call is working, not stalled, but the run
+   **never advances past a gate on its own**. Read every
    return; on a `gate:`, respond; loop until an `outcome:`. Never idle-wait
    for the run to move forward by itself.
    When that status output includes `awaiting_agent: parked <duration>` under the run,
@@ -130,8 +133,9 @@ Run the pipeline and decide on its findings as they come up:
      wait for the merge: tell the user the PR is ready and ask them to review
      and merge it (the PR link is in the `help` line). A generic empty forge
      check list without that declaration is not ready. no-mistakes keeps
-     monitoring the PR in the background until it is merged, closed, or its
-     configured idle timeout elapses, so a human can watch it in the TUI.
+     monitoring the PR in the background while the monitor is active; use
+     `no-mistakes axi handoff` to end green monitoring after handing
+     the open PR to human reviewers, or let the configured idle timeout elapse.
      Under the opt-in `ci.release_after_checks_pass` the run instead finishes at
      the verdict: `run.status` is `checks_passed`, the run released its worktree,
      and nothing is left watching the PR.
@@ -200,6 +204,8 @@ A `test-agent-unvalidated-work` finding means a timed-out Test agent left
 commits or changes no Test turn validated. Approval is rejected, so `--yes`
 stops at that gate without responding. Relay what the finding names and do
 not skip Test, which would publish that work. Ask the operator to choose:
-`--action fix` spends another agent budget to validate the work, and
-`no-mistakes axi abort` stops the run.
+`--action fix` spends another agent budget to validate the work, or
+`no-mistakes axi abort` stops and cancels a discarded run; its behavior is unchanged.
+
+At a green open-PR CI monitor, `no-mistakes axi handoff` ends monitoring when the PR is handed to human reviewers. It requires authoritative `checks-passed` readiness and records terminal `handed_off`, without merging or closing the PR. Before green, resolve the checks or gates with `axi run` instead.
 

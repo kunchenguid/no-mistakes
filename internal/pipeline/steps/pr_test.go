@@ -1300,7 +1300,7 @@ func TestAssembleDraftPRBody_ReservesRoomForIssuesUnderALimit(t *testing.T) {
 	limit := 400
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
 
-	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
@@ -1317,7 +1317,7 @@ func TestAssembleDraftPRBody_OmitsIssuesThatCannotFit(t *testing.T) {
 	limit := 10
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
 
-	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
 
 	if strings.Contains(got, "## Issues") {
 		t.Fatalf("a section that cannot fit must be omitted, got:\n%s", got)
@@ -1740,7 +1740,7 @@ func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) 
 	sctx.ClosingIssueRefs = []string{"42"}
 	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("x", maxPullRequestBodyBytes)
 
-	got := assembleDraftPRBody(sctx, body, "low risk", "", "", 0, scm.ProviderGitHub)
+	got := assembleDraftPRBody(sctx, body, "low risk", "", "", "", 0, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
@@ -2007,12 +2007,13 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
 	}
 
-	content, err := fallbackPRContent(
+	content, err := (&PRStep{}).fallbackPRContent(
 		sctx,
 		"A\tinternal/pipeline/steps/pr.go",
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
+		"",
 		0,
 		scm.ProviderGitHub,
 	)
@@ -2265,11 +2266,12 @@ func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
 
 	env, _ := fakeGH(t, "")
 
-	var capturedPrompt string
+	var capturedPrompt, capturedSchema string
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
+			capturedSchema = string(opts.JSONSchema)
 			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
 			return &agent.Result{Output: payload}, nil
 		},
@@ -2284,6 +2286,15 @@ func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
 
 	if !strings.Contains(capturedPrompt, "## What Changed") {
 		t.Errorf("expected prompt to instruct agent to write ## What Changed, got:\n%s", capturedPrompt)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(capturedSchema), &schema); err != nil {
+		t.Fatalf("unparseable PR output schema: %v", err)
+	}
+	if _, ok := schema.Properties["intent_brief"]; ok {
+		t.Errorf("default raw mode changed the PR output schema: %s", capturedSchema)
 	}
 }
 
@@ -2871,8 +2882,8 @@ func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		`{"head_sha":"` + foreignSHA + `","steps":[{"step":"review","status":"completed"}]}` +
 		pipelineAttestationCommentClosingToken
 
-	pipelineMD, riskLine, testingMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content, err := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0, scm.ProviderGitHub)
+	pipelineMD, riskLine, testingMD, evidenceMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
+	content, err := (&PRStep{}).fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, evidenceMD, 0, scm.ProviderGitHub)
 	if err != nil {
 		t.Fatal(err)
 	}

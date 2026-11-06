@@ -847,6 +847,35 @@ func TestTestStep_RepairPromptLeavesOutTheBudgetCutFindings(t *testing.T) {
 	}
 }
 
+func TestTestStep_RepairAndEvidencePromptsForbidDumpingTheEnvironment(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var prompts []string
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompts = append(prompts, opts.Prompt)
+		if len(prompts) == 1 {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","category":"test-command","description":"configured test command failed with exit code 1"}]}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 || !strings.Contains(prompts[0], "Fix the failing tests") || !strings.Contains(prompts[1], "Derive the scenarios") {
+		t.Fatalf("prompts = %q, want a repair turn then an evidence turn", prompts)
+	}
+	const rule = "Inspect specific environment variables by name if you need them; do not print the whole environment"
+	for i, name := range []string{"repair", "evidence"} {
+		if !strings.Contains(prompts[i], rule) {
+			t.Errorf("%s prompt lacks the by-name environment rule %q:\n%s", name, rule, prompts[i])
+		}
+	}
+}
+
 func TestTestStep_EvidenceAgentCannotClaimAReservedBudgetCutID(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -979,6 +1008,79 @@ func TestTestStep_FixMode(t *testing.T) {
 	}
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(test): fix test failures" {
 		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+// The repair and evidence turns share the scope rules. The repair turn must
+// leave an intent-conflicting repair alone so the evidence turn can ask the user.
+func TestTestStep_RepairScopeContract(t *testing.T) {
+	t.Parallel()
+	for _, fixing := range []bool{false, true} {
+		name := "initial"
+		if fixing {
+			name = "repair"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"repair requires a policy decision","findings":[{"id":"repair-scope","severity":"warning","action":"ask-user","description":"The proposed repair would change reply-default policy beyond the structured-question change."}],"tested":["drove structured-question scenario"],"testing_summary":"scenario failed; policy repair withheld","artifacts":[],"scenarios":[{"name":"reply to a structured question","result":"fail","live":true,"evidence":"reply rejected","reason":""}],"verdict":"no-go"}`)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Fixing = fixing
+			sctx.UserIntent = "Structure the question. Do not edit prompts or change reply-default policy."
+			sctx.IntentSource = db.RunIntentSourceAgent
+			if fixing {
+				sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","action":"auto-fix","description":"structured-question scenario failed"}],"summary":"scenario failed"}`
+			}
+			outcome, err := (&TestStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCalls := 1
+			if fixing {
+				wantCalls = 2
+			}
+			if len(ag.calls) != wantCalls {
+				t.Fatalf("agent calls = %d, want %d", len(ag.calls), wantCalls)
+			}
+			for i, call := range ag.calls {
+				for _, want := range []string{
+					"Tests or product code, including shared libraries and prompts, may be fixed",
+					"Do not tune product logic or prompts to a single scenario's literal wording or scripted ordering",
+					"contradict explicit intent, edit a file the intent puts off limits, or change product policy beyond the change under validation",
+					"do not apply or commit that repair",
+					"Later recorded human decisions supersede conflicting original intent",
+					sctx.UserIntent,
+				} {
+					if !strings.Contains(call.Prompt, want) {
+						t.Errorf("call %d missing repair-scope instruction %q", i, want)
+					}
+				}
+			}
+			evidencePrompt := ag.calls[len(ag.calls)-1].Prompt
+			for _, want := range []string{
+				"report a warning finding with action \"ask-user\" instead of making the repair",
+				"Name the proposed repair and the intent restriction or product-policy change that needs a human decision",
+			} {
+				if !strings.Contains(evidencePrompt, want) {
+					t.Errorf("evidence prompt missing %q", want)
+				}
+			}
+			if !outcome.NeedsApproval {
+				t.Fatal("expected the unresolved repair to park for a decision")
+			}
+			var findings Findings
+			if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+				t.Fatal(err)
+			}
+			if len(findings.Items) == 0 || findings.Items[0].ID != "repair-scope" || findings.Items[0].Action != types.ActionAskUser {
+				t.Fatalf("scope finding lost its ask-user action: %+v", findings.Items)
+			}
+		})
 	}
 }
 

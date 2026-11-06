@@ -62,6 +62,23 @@ func (o Overlay) Apply(base []string) []string {
 	return result
 }
 
+// String prints the overlay's variable names only. A Set value can be a
+// credential (a forge profile's gh_user token), so formatting an overlay, or a
+// struct holding one, must never reveal values.
+func (o Overlay) String() string {
+	keys := make([]string, 0, len(o.Set))
+	for key := range o.Set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return "runenv.Overlay{Set: [" + strings.Join(keys, " ") + "], Unset: [" + strings.Join(o.Unset, " ") + "]}"
+}
+
+// GoString keeps %#v as redacted as %v.
+func (o Overlay) GoString() string {
+	return o.String()
+}
+
 // Empty reports whether the overlay changes no variables.
 func (o Overlay) Empty() bool {
 	return len(o.Set) == 0 && len(o.Unset) == 0

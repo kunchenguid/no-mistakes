@@ -106,14 +106,16 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 	pp := &piParser{onChunk: opts.OnChunk}
 	if err := pp.parse(ctx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		err = errors.Join(err, piStdinError(<-stdinErrCh))
-		retErr := fmt.Errorf("pi parse events: %w", err)
-		emitAgentExited(opts, "pi", pid, retErr)
-		return pp.failedResult(), retErr
+		if !started.closedByWaitDelay(err) || !pp.agentEnded {
+			stderrWG.Wait()
+			err = errors.Join(err, piStdinError(<-stdinErrCh))
+			retErr := fmt.Errorf("pi parse events (result received: %t): %w", pp.agentEnded, err)
+			emitAgentExited(opts, "pi", pid, retErr)
+			return pp.failedResult(), retErr
+		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(pp.agentEnded)
 	stderrWG.Wait()
 	stdinErr := piStdinError(<-stdinErrCh)
 	stderr := strings.TrimSpace(string(stderrBuf))
@@ -329,7 +331,10 @@ type piParser struct {
 	usage          TokenUsage
 	seenUsage      map[string]struct{}
 	assistantError string
-	outputTools    map[string]string
+	// agentEnded is set once pi's agent_end event arrives: the run finished
+	// and its result is complete even if the process exit is not observed.
+	agentEnded  bool
+	outputTools map[string]string
 }
 
 func (p *piParser) parse(ctx context.Context, r io.Reader) error {
@@ -380,6 +385,7 @@ func (p *piParser) handleEvent(event map[string]any) {
 		p.rememberAssistant(event["message"])
 		p.recordAssistantUsage(event["message"])
 	case "agent_end":
+		p.agentEnded = true
 		p.rememberAgentEnd(event["messages"])
 	case "tool_execution_end":
 		p.rememberOutputTool(event)

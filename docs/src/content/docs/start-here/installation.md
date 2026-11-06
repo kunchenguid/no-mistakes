@@ -23,6 +23,8 @@ irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.
 
 Installs the binary and restarts the background daemon automatically with `no-mistakes.exe daemon restart`, preferring a managed Task Scheduler task and falling back to a detached daemon if needed. If the restart fails, the install command fails.
 
+Run `no-mistakes` from a terminal. On Windows 11 24H2, Windows Server 2025, and later, `no-mistakes.exe` only uses a console it can share with whatever started it, which is what keeps the [background daemon](/no-mistakes/concepts/daemon/) from opening a window. It also means that double-clicking `no-mistakes.exe`, or starting it with `Start-Process` without `-NoNewWindow`, runs it without a window, so you see none of its output.
+
 Official release binaries installed this way include the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
 ## Go install
@@ -113,6 +115,7 @@ Version discovery uses the GitHub release-asset CDN rather than the rate-limited
 Because `update` installs the latest official release binary, it installs a binary with the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
 If pending or running pipeline runs exist, the update refuses to restart the daemon and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail; `-y`/`--yes` does **not** bypass this guard.
+Pass `--when-idle` to let those runs finish on the current version instead: the update installs the new binary, the daemon restarts on it once no run is executing, and pushes that arrive meanwhile run after the restart. [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the details.
 If the running daemon was started from a different binary, the update still prompts before replacing it; `-y`/`--yes` answers that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacing the binary.
 If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.

@@ -111,12 +111,18 @@ func validateAxiIntentSize(data []byte) ([]byte, error) {
 }
 
 func readAxiIntentFile(path string) ([]byte, error) {
+	return readAxiRegularFile(path, "intent", readAxiIntent)
+}
+
+// readAxiRegularFile reads a caller-named input file with read, which owns the
+// size limit. kind names the input in refusals.
+func readAxiRegularFile(path, kind string, read func(io.Reader) ([]byte, error)) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("intent path must name a regular file")
+		return nil, fmt.Errorf("%s path must name a regular file", kind)
 	}
 	// The nonblocking open on Unix also covers a path replaced by a FIFO
 	// after Stat. Check the opened descriptor before attempting any read.
@@ -130,7 +136,7 @@ func readAxiIntentFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("intent path must name a regular file")
+		return nil, fmt.Errorf("%s path must name a regular file", kind)
 	}
-	return readAxiIntent(f)
+	return read(f)
 }

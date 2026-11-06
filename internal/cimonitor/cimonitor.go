@@ -20,7 +20,8 @@ import "strings"
 const (
 	// ChecksPassedMsg is logged when every CI check has passed but the PR is
 	// not yet merged or closed, so the monitor keeps watching subject to its
-	// configured timeout. This is the default behaviour.
+	// configured timeout unless an operator explicitly hands it off. This is
+	// the default behaviour.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
 	// ChecksPassedCompleteMsg is the green verdict under the opt-in
 	// ci.release_after_checks_pass: every CI check has passed, so the step
@@ -32,7 +33,8 @@ const (
 	// declares `no_ci: true` and the forge reports zero checks. The message
 	// names the positive declaration so agents and operators can inspect the
 	// evidence rather than treating every empty forge response as green. An
-	// empty check list WITHOUT that declaration must never produce this line.
+	// empty check list WITHOUT that declaration must never produce this line;
+	// the resulting monitor can still be explicitly handed off.
 	NoChecksPassedMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"
 	// NoChecksPassedCompleteMsg is the release form of NoChecksPassedMsg: the
 	// declaration is the positive evidence the empty check list is green, and

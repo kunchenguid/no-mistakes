@@ -3,20 +3,31 @@
 package forgecontext
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"gopkg.in/yaml.v3"
 )
 
+// ghTokenTimeout bounds the one gh call a gh_user profile makes at run setup,
+// so a credential store that never answers fails the run instead of hanging it.
+const ghTokenTimeout = 30 * time.Second
+
 // Context is the resolved forge provider and subprocess environment for one
-// run. It contains configuration locations, never credentials.
+// run. It holds configuration locations and, for a gh_user profile, that
+// login's token as an Environment value: it lives only in memory for the run,
+// is re-read on recovery, and runenv.Overlay never prints values.
 type Context struct {
 	Provider    scm.Provider
 	ProfileHost string
@@ -34,7 +45,7 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 	}
 	upstreamHost := scm.ExtractHost(upstreamURL)
 	forkHost := scm.ExtractHost(forkURL)
-	profile, profileHost, ok, err := selectProfile(profiles, upstreamHost, forkHost)
+	profile, profileHost, ok, err := selectProfile(profiles, remoteFor(upstreamURL), remoteFor(forkURL))
 	if err != nil {
 		return nil, err
 	}
@@ -68,14 +79,21 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 	}
 	targetHost := scm.ResolveHost(ctx, targetRemote)
 	profileProvider := scm.ProviderGitLab
-	if profile.GHConfigDir != "" {
+	if profile.IsGitHub() {
 		profileProvider = scm.ProviderGitHub
 	}
 	if detected := scm.DetectProviderStaticContext(ctx, targetRemote); detected != scm.ProviderUnknown && detected != profileProvider {
 		return nil, fmt.Errorf("forge profile %q selects provider %s but the upstream remote is %s", profileHost, profileProvider, detected)
 	}
-	if profile.GHConfigDir != "" {
-		if err := validateGitHubProfile(profile.GHConfigDir, targetHost, profile.ExpectedLogin); err != nil {
+	if profile.IsGitHub() {
+		var env runenv.Overlay
+		if profile.GHUser != "" {
+			env, err = githubUserEnvironment(ctx, targetHost, profile.GHUser)
+		} else {
+			err = validateGitHubProfile(profile.GHConfigDir, targetHost, profile.ExpectedLogin)
+			env = githubEnvironment(profile.GHConfigDir)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("forge profile %q: %w", profileHost, err)
 		}
 		return &Context{
@@ -83,7 +101,7 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 			ProfileHost: profileHost,
 			Host:        targetHost,
 			ConfigDir:   profile.GHConfigDir,
-			Environment: githubEnvironment(profile.GHConfigDir),
+			Environment: env,
 		}, nil
 	}
 	if err := validateGitLabProfile(profile.GLabConfigDir, targetHost, profile.ExpectedLogin); err != nil {
@@ -225,15 +243,42 @@ func gitlabConfigHasHost(cfg gitlabConfig, targetHost string) bool {
 	return false
 }
 
-func selectProfile(profiles config.ForgeProfiles, upstreamHost, forkHost string) (config.ForgeProfile, string, bool, error) {
-	upstreamProfile, upstreamName, upstreamOK := profileForHost(profiles, upstreamHost)
-	forkProfile, forkName, forkOK := profileForHost(profiles, forkHost)
+// remote is the part of a repository remote that selects a forge profile: its
+// raw host token and its repository owner, both lowercased.
+type remote struct {
+	host  string
+	owner string
+}
+
+func remoteFor(remoteURL string) remote {
+	host := scm.ExtractHost(remoteURL)
+	if host == "" {
+		return remote{}
+	}
+	owner, _, _ := strings.Cut(scm.RepoPath(remoteURL), "/")
+	return remote{host: host, owner: strings.ToLower(strings.TrimSpace(owner))}
+}
+
+// selectProfile picks the profile for a repository's parent and fork remotes.
+// An owner-scoped key ("host/owner") is more specific than its plain host key,
+// so it wins when the other side matched only a host key: that is how one
+// account on a shared host is chosen for the repositories its owner holds.
+// Two matches at the same specificity must still select the same account.
+func selectProfile(profiles config.ForgeProfiles, upstream, fork remote) (config.ForgeProfile, string, bool, error) {
+	upstreamProfile, upstreamName, upstreamScoped, upstreamOK := profileForRemote(profiles, upstream)
+	forkProfile, forkName, forkScoped, forkOK := profileForRemote(profiles, fork)
 	switch {
 	case upstreamOK && forkOK:
-		if !sameProfile(upstreamProfile, forkProfile) {
-			return config.ForgeProfile{}, "", false, fmt.Errorf("forge profiles for parent host %q and fork host %q are ambiguous", upstreamHost, forkHost)
+		if sameProfile(upstreamProfile, forkProfile) {
+			return upstreamProfile, upstreamName, true, nil
 		}
-		return upstreamProfile, upstreamName, true, nil
+		if upstreamScoped && !forkScoped {
+			return upstreamProfile, upstreamName, true, nil
+		}
+		if forkScoped && !upstreamScoped {
+			return forkProfile, forkName, true, nil
+		}
+		return config.ForgeProfile{}, "", false, fmt.Errorf("forge profiles %q for the parent and %q for the fork are ambiguous", upstreamName, forkName)
 	case upstreamOK:
 		return upstreamProfile, upstreamName, true, nil
 	case forkOK:
@@ -251,7 +296,8 @@ func selectProfile(profiles config.ForgeProfiles, upstreamHost, forkHost string)
 func sameProfile(a, b config.ForgeProfile) bool {
 	return effectiveProfilePath(a.GHConfigDir) == effectiveProfilePath(b.GHConfigDir) &&
 		effectiveProfilePath(a.GLabConfigDir) == effectiveProfilePath(b.GLabConfigDir) &&
-		normalizeExpectedLogin(a.ExpectedLogin) == normalizeExpectedLogin(b.ExpectedLogin)
+		normalizeExpectedLogin(a.ExpectedLogin) == normalizeExpectedLogin(b.ExpectedLogin) &&
+		normalizeExpectedLogin(a.GHUser) == normalizeExpectedLogin(b.GHUser)
 }
 
 func normalizeExpectedLogin(login string) string {
@@ -267,11 +313,17 @@ func effectiveProfilePath(path string) string {
 	return cleaned
 }
 
+// profilesActivateProvider reports whether a plain host profile makes routing
+// mandatory for provider. An owner-scoped key speaks only for its owner, so it
+// never forces a profile onto repositories other owners hold.
 func profilesActivateProvider(profiles config.ForgeProfiles, provider scm.Provider) bool {
-	for _, profile := range profiles {
+	for key, profile := range profiles {
+		if _, owner := config.SplitForgeProfileKey(key); owner != "" {
+			continue
+		}
 		switch provider {
 		case scm.ProviderGitHub:
-			if profile.GHConfigDir != "" {
+			if profile.IsGitHub() {
 				return true
 			}
 		case scm.ProviderGitLab:
@@ -283,9 +335,15 @@ func profilesActivateProvider(profiles config.ForgeProfiles, provider scm.Provid
 	return false
 }
 
+// githubEnvironment pins GH_CONFIG_DIR when dir is set and removes every
+// ambient variable that would outrank the selected account.
 func githubEnvironment(dir string) runenv.Overlay {
+	set := map[string]string{}
+	if dir != "" {
+		set["GH_CONFIG_DIR"] = dir
+	}
 	return runenv.Overlay{
-		Set: map[string]string{"GH_CONFIG_DIR": dir},
+		Set: set,
 		Unset: []string{
 			"GH_TOKEN",
 			"GITHUB_TOKEN",
@@ -318,23 +376,97 @@ func gitlabEnvironment(dir string) runenv.Overlay {
 	}
 }
 
-func profileForHost(profiles config.ForgeProfiles, host string) (config.ForgeProfile, string, bool) {
-	host = strings.ToLower(strings.TrimSpace(host))
+// profileForRemote looks up the owner-scoped key first and falls back to the
+// plain host key, so existing host-keyed configurations keep matching.
+func profileForRemote(profiles config.ForgeProfiles, r remote) (profile config.ForgeProfile, name string, scoped, ok bool) {
+	if r.host == "" {
+		return config.ForgeProfile{}, "", false, false
+	}
+	if r.owner != "" {
+		if profile, name, ok := profileForKey(profiles, r.host+"/"+r.owner); ok {
+			return profile, name, true, true
+		}
+	}
+	profile, name, ok = profileForKey(profiles, r.host)
+	return profile, name, false, ok
+}
+
+func profileForKey(profiles config.ForgeProfiles, key string) (config.ForgeProfile, string, bool) {
+	key = strings.ToLower(strings.TrimSpace(key))
 	for candidate, profile := range profiles {
-		if strings.EqualFold(strings.TrimSpace(candidate), host) {
+		if strings.EqualFold(strings.TrimSpace(candidate), key) {
 			return profile, strings.ToLower(strings.TrimSpace(candidate)), true
 		}
 	}
 	return config.ForgeProfile{}, "", false
 }
 
-func validateGitHubProfile(dir, targetHost, expectedLogin string) error {
+// githubUserEnvironment reads the stored token of one login signed in to the
+// ambient gh configuration and returns the
+// run environment that authenticates every gh and gh-credential-helper call as
+// that login. The token is read once, from gh's stdout only; it never reaches
+// an argument, a log line, a file, or an error. A login gh cannot produce a
+// token for refuses the run instead of falling back to the active account.
+func githubUserEnvironment(ctx context.Context, targetHost, login string) (runenv.Overlay, error) {
+	env := githubEnvironment("")
+	ctx, cancel := context.WithTimeout(ctx, ghTokenTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", targetHost, "--user", login)
+	cmd.Env = env.Apply(nil)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.OutputShellCommand(cmd)
+	if err != nil {
+		detail := firstLine(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return runenv.Overlay{}, fmt.Errorf("gh_user %q has no token for GitHub host %q (%s); sign it in with gh auth login, it is never replaced by the active account", login, targetHost, detail)
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" || strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return runenv.Overlay{}, fmt.Errorf("gh_user %q: gh auth token returned no usable token for GitHub host %q", login, targetHost)
+	}
+	env.Set[githubTokenVariable(targetHost)] = token
+	return env, nil
+}
+
+// githubTokenVariable names the variable gh reads a token from for host:
+// GH_TOKEN for github.com and GHE.com tenancies, GH_ENTERPRISE_TOKEN for
+// GitHub Enterprise Server hosts.
+func githubTokenVariable(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "github.com" || strings.HasSuffix(host, ".ghe.com") {
+		return "GH_TOKEN"
+	}
+	return "GH_ENTERPRISE_TOKEN"
+}
+
+// firstLine bounds a subprocess diagnostic to one short line.
+func firstLine(text string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	line = strings.TrimSpace(line)
+	if runes := []rune(line); len(runes) > 200 {
+		line = string(runes[:200]) + "..."
+	}
+	return line
+}
+
+func requireDirectory(dir, provider string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
-		return fmt.Errorf("GitHub config directory: %w", err)
+		return fmt.Errorf("%s config directory: %w", provider, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("GitHub config directory %q is not a directory", dir)
+		return fmt.Errorf("%s config directory %q is not a directory", provider, dir)
+	}
+	return nil
+}
+
+func validateGitHubProfile(dir, targetHost, expectedLogin string) error {
+	if err := requireDirectory(dir, "GitHub"); err != nil {
+		return err
 	}
 	hosts, err := loadGitHubHosts(dir)
 	if err != nil {
@@ -375,12 +507,8 @@ func expectLogin(expected, active, provider, targetHost string) error {
 }
 
 func validateGitLabProfile(dir, targetHost, expectedLogin string) error {
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("GitLab config directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("GitLab config directory %q is not a directory", dir)
+	if err := requireDirectory(dir, "GitLab"); err != nil {
+		return err
 	}
 	cfg, err := loadGitLabConfig(dir)
 	if err != nil {

@@ -29,7 +29,7 @@ Before any post-pipeline local commit or fresh run, read the structured `branch_
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked and names `git checkout --detach <pushed-sha>`, which moves no branch ref.
 If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When `next_action.code` is `recover_custody`, run its exact `next_action.command` rather than reconstructing one. That is `no-mistakes axi sync --recover` to take a still-available preserved pipeline head, or `no-mistakes axi sync --recover --keep-local` in two keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits, or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain `--recover` or `rerun` for a reported keep-local action. `no-mistakes rerun` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
+When `next_action.code` is `recover_custody`, run its exact `next_action.command` rather than reconstructing one. That is `no-mistakes axi sync --recover` to take a still-available preserved pipeline head, or `no-mistakes axi sync --recover --keep-local` in three keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits; when that verified head is already pinned at `refs/no-mistakes/recover/<run>` in the gate, containment does not prove it carries your local work, and the command keeps your branch while those pipeline commits stay at that ref and are not on the branch; or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain `--recover` or `rerun` for a reported keep-local action. An unverified terminal head is not offered that recovery. `no-mistakes rerun` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
 Ordinary recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
 The ordinary containment proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
 When a run failed in a step after Test without touching the code (a Document or Lint fetch error) and its recorded head was never verified, recovery still returns custody at that head once your clean checkout sits exactly on it and the gate proves the head is the reviewed result plus the pipeline's own later commits on top of the live gate branch; recovery never moves a behind worktree onto an unverified head, so check that exact head out first.
@@ -60,9 +60,10 @@ waits for a human to bring it up to date; only when the repository opts
 into `ci.rebase_behind` does the monitor give it the same rebase, once its
 checks are green and the base has held still for one poll. A PR that is merely behind a base without that rule needs nothing, since
 the platform merges it. The one exception is when that monitor is
-no longer running - the PR was closed, the run was aborted or superseded, it
-idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
-with `no-mistakes rerun`, subject to the clean-head check above. An accepted
+no longer running - the PR was closed, the run was aborted, superseded, or
+explicitly handed off, it idle-timed-out, or its auto-fix attempts were
+exhausted - in which case recover with `no-mistakes rerun`, subject to the
+clean-head check above. An accepted
 rerun cancels the stale monitor and re-runs the full pipeline including a
 deterministic rebase step. Do **not** reach for
 `no-mistakes axi run` to refresh a still-active PR: with the default
@@ -70,7 +71,7 @@ monitor, after `checks-passed` it
 reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.
 
-On a successful outcome (`checks-passed` or `passed`), close the loop with the
+On a successful outcome (`checks-passed`, `passed`, or `handed-off`), close the loop with the
 user: summarize what happened during the pipeline in a concise, easily readable
 format - what was validated and what was found. If the output includes a
 `fixes` table, the pipeline fixed findings your original change missed:

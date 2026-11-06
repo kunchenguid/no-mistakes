@@ -86,7 +86,7 @@ If you have multiple installs with different `NM_HOME` roots, each gets its own 
 
 ## `no-mistakes update` refuses or aborts
 
-Symptom: `update` refuses because active pipeline runs are in progress, prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
+Symptom: `update` refuses because active pipeline runs are in progress (`--when-idle` lets them finish instead, unless the running daemon is too old to wait), prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
 `update`, `daemon stop`, and `daemon restart` all refuse by default while pipeline runs are active and list the affected runs; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the guard's exact rules, including why `-y`/`--yes` does not bypass it.
 
@@ -305,7 +305,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
-By default, the run keeps monitoring the pull request after CI readiness is established, and ends when the PR is merged or closed. Ending it at readiness instead requires [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass). If the run has not finished, consult the [CI readiness rules](/no-mistakes/reference/pipeline-steps/#ci), including unresolved mergeability and checks missing from the PR rollup.
+By default, the run keeps monitoring the pull request after CI readiness is established, and ends when the PR is merged or closed, or when you explicitly hand it to human reviewers with [`no-mistakes axi handoff`](/no-mistakes/reference/cli/#no-mistakes-axi-handoff); handoff ends monitoring without cancelling, merging, or closing the PR. Ending it at readiness instead requires [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass). If the run has not finished, consult the [CI readiness rules](/no-mistakes/reference/pipeline-steps/#ci), including unresolved mergeability and checks missing from the PR rollup.
 
 How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
 Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
@@ -313,7 +313,7 @@ Older config files may still contain an explicit `ci_timeout: "4h"` value; updat
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
 You can approve, fix, skip, or abort from the TUI or `no-mistakes axi respond`.
 
-A park that happens **before** the timeout, with a finding that CI checks could not be read from the provider, means the check read itself is failing (after 6 consecutive failed polls, the step stops waiting instead of spinning to `ci_timeout`). The finding is provider-neutral and the step log shows the underlying provider error; for GitHub, a `gh` older than 2.50 rejects the `gh pr checks --json` call and needs upgrading. The same park on GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gitea, or a provider plugin points at that provider's CLI, credentials, or plugin instead. For GitLab's "waiting for the delivered commit's own checks" message, see [CI source-commit binding](/no-mistakes/reference/pipeline-steps/#ci).
+A park that happens **before** the timeout, with a finding that CI checks could not be read from the provider, means the check read itself is failing (after 6 consecutive failed polls, the step stops waiting instead of spinning to `ci_timeout`). The finding is provider-neutral and the step log shows the underlying provider error; for GitHub, the finding adds a `gh >= 2.50` hint only when `gh` itself rejected the `pr checks --json` flag (a `gh` older than 2.50 does), and any other error is reported without a version diagnosis. The same park on GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gitea, or a provider plugin points at that provider's CLI, credentials, or plugin instead. For GitLab's "waiting for the delivered commit's own checks" message, see [CI source-commit binding](/no-mistakes/reference/pipeline-steps/#ci).
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
 ## Step looks quiet or wedged

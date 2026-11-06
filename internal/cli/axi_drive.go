@@ -27,6 +27,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
@@ -122,6 +123,8 @@ func outcomeFor(status string) string {
 		return "failed"
 	case types.RunCancelled:
 		return "cancelled"
+	case types.RunHandedOff:
+		return "handed-off"
 	case types.RunCIMonitorInterrupted:
 		return "ci-monitor-interrupted"
 	default:
@@ -129,7 +132,7 @@ func outcomeFor(status string) string {
 	}
 }
 
-// outcomeForRun qualifies completed runs whose external checks were overridden
+// outcomeForRun qualifies successful terminal runs whose external checks were overridden
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
@@ -157,6 +160,7 @@ func newAxiRunCmd() *cobra.Command {
 	var model, effort string
 	var wait time.Duration
 	var closesIssues []string
+	var prTitle, prBodyFile string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -207,10 +211,27 @@ func newAxiRunCmd() *cobra.Command {
 			"the PR body fails the step instead of publishing a reference that would\n" +
 			"close nothing. Reattaching may add references until the PR body has been\n" +
 			"composed. It cannot be combined with --skip pr.\n\n" +
+			"--pr-title TEXT and --pr-body-file PATH (- reads stdin) supply the PR\n" +
+			"title and description, used verbatim when this run creates the PR: the\n" +
+			"usual appendix (Intent, evidence in the pr.appendix mode, Issues) and the\n" +
+			"attestation follow the description. Either works alone; the other is\n" +
+			"drafted. pr.title_format applies to a supplied title. Under pr.template\n" +
+			"the description must keep the template's top-level # headings. A supplied\n" +
+			"description is owned author text that later runs keep byte for byte. On\n" +
+			"an existing PR neither is applied. Empty, oversized, multi-line titles,\n" +
+			"control or bidi characters, and no-mistakes markers are refused before any\n" +
+			"push. They are inherited by rerun and retry, and cannot be combined with\n" +
+			"--skip pr.\n\n" +
 			"--model and/or --effort opt into an immutable Pi profile for a new run.\n" +
 			"An omitted field comes from agent_config.pi; both must resolve. Requires\n" +
 			"Pi-only agents; raw native selection flags conflict. The pin outranks\n" +
-			"review-role profiles and survives config edits, retries and recovery.\n" +
+			"configured review-role profiles and survives config edits, retries and recovery.\n" +
+			"--reviewer selects an independent immutable reviewer harness. Its model and\n" +
+			"effort come from --reviewer-model/--reviewer-effort or agent_config defaults.\n" +
+			"Supported reviewer pins: claude, codex, copilot, grok, opencode, pi. Both\n" +
+			"model and effort must resolve; harnesses without both mechanisms are refused.\n" +
+			"It overrides reviewer routing, including a Pi run pin, without changing the\n" +
+			"primary or fixer. Reruns inherit it unless explicitly replaced.\n" +
 			"Omit flags to reattach; a different selection cannot change an active run.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
@@ -221,6 +242,12 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Read --pr-body-file before --intent: both may name stdin, and the
+			// conflict must be refused before either consumes it.
+			prText, err := resolvePRTextFlags(cmd, prTitle, prBodyFile, cmd.Flags().Changed("intent") && intent == "-")
+			if err != nil {
+				return emitError(cmd, 2, err.Error())
+			}
 			resolvedIntent, err := resolveAxiRunIntent(cmd, intent, intentFile)
 			if err != nil {
 				return emitError(cmd, 2, err.Error())
@@ -233,6 +260,8 @@ func newAxiRunCmd() *cobra.Command {
 				"has_launch_nonce":  launchNonce != "",
 				"no_publish_intent": noPublishIntent,
 				"has_closes":        len(closesIssues) > 0,
+				"has_pr_title":      prText.Title != "",
+				"has_pr_body":       prText.Body != "",
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
@@ -243,7 +272,7 @@ func newAxiRunCmd() *cobra.Command {
 				if err != nil {
 					return emitError(cmd, 2, err.Error())
 				}
-				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, resolvedIntent, baseBranch, noPublishIntent, launchNonce, validationGeneration, wait, profile)
+				return runAxiRunWithPRText(cmd, autoYes, skipSteps, resolvedIntent, baseBranch, noPublishIntent, launchNonce, validationGeneration, wait, prText, profile)
 			})
 		},
 	}
@@ -257,8 +286,10 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue this PR closes when merged; repeat for multiple issues (42, owner/repo#42, or a nested GitLab project path)")
 	cmd.Flags().String("verification-plan", "", "capture a nonempty UTF-8 verification plan as separate run evidence (new runs only)")
+	bindPRTextFlags(cmd, &prTitle, &prBodyFile)
 	bindAxiWaitFlag(cmd, &wait)
 	bindPiProfileFlags(cmd, &model, &effort)
+	bindReviewerFlags(cmd)
 	return cmd
 }
 
@@ -266,8 +297,22 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 	return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, false, "", "", defaultAxiWait)
 }
 
-func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, profiles ...*agentcfg.PiProfile) error {
+func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, profiles ...agentcfg.RunSelection) error {
+	return runAxiRunWithPRText(cmd, autoYes, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, wait, db.RunPRText{}, profiles...)
+}
+
+// runAxiRunWithPRText is runAxiRunWithLaunchProof with the caller-supplied PR
+// text already read and validated by resolvePRTextFlags.
+func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, prText db.RunPRText, profiles ...agentcfg.RunSelection) error {
 	profile := agentcfg.OptionalPiProfile(profiles)
+	reviewer := agentcfg.OptionalReviewerProfile(profiles)
+	if reviewer == nil {
+		var err error
+		reviewer, err = reviewerFromFlags(cmd)
+		if err != nil {
+			return emitError(cmd, 2, err.Error())
+		}
+	}
 	if err := profile.ValidateRequest(); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
@@ -290,6 +335,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 	}
 	if len(closesIssues) > 0 && slices.Contains(skipSteps, types.StepPR) {
 		return emitError(cmd, 2, "--closes cannot be combined with --skip pr: skipping the PR step publishes no closing reference", "Drop pr from --skip, or drop --closes.")
+	}
+	if hasRunPRText(prText) && slices.Contains(skipSteps, types.StepPR) {
+		return emitError(cmd, 2, "--pr-title and --pr-body-file cannot be combined with --skip pr: skipping the PR step creates no PR to use them", "Drop pr from --skip, or drop --pr-title and --pr-body-file.")
 	}
 	ctx := cmd.Context()
 	driveCtx, cancel, err := boundAxiWait(ctx, wait)
@@ -316,6 +364,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 	// Same reasoning: an older daemon would drop closing_issue_refs silently
 	// and open a PR that never closes the requested issues.
 	if err := requireDaemonHonorsClosingIssueRefs(env.client, closesIssues); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
+	if err := requireDaemonHonorsRunPRText(env.client, prText); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
 
@@ -345,7 +396,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, profile)
+		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profile, reviewer)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -365,6 +416,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 		}
 		if active != nil {
+			if !active.ReviewerProfile.Matches(reviewer) {
+				return emitError(cmd, 2, "active run has a different reviewer; omit --reviewer flags to reattach")
+			}
 			if !active.PiProfile.Matches(profile) {
 				return emitError(cmd, 2, "active run has a different Pi profile; omit --model/--effort to reattach")
 			}
@@ -376,6 +430,10 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 				return emitError(cmd, 2, err.Error(),
 					"Omit --no-publish-intent to reattach, or abort the active run before starting a new one")
 			}
+			if err := conflictingActiveRunPRText(active, prText); err != nil {
+				return emitError(cmd, 2, err.Error(),
+					"Omit --pr-title and --pr-body-file to reattach, or abort the active run before starting a new one")
+			}
 			runID = active.ID
 		}
 	}
@@ -383,6 +441,11 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		return emitError(cmd, 2, "--verification-plan is accepted only when starting a new run; omit it to reattach")
 	}
 	if runID == "" {
+		resolvedReviewer, resolveErr := resolveReviewer(env.client, env.repo.ID, reviewer)
+		if resolveErr != nil {
+			return emitError(cmd, 2, resolveErr.Error())
+		}
+		reviewer = resolvedReviewer
 		if err := configErrorForFreshAxiRun(env, runID); err != nil {
 			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 		}
@@ -438,12 +501,12 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		}
 		var err error
 		if launchNonce != "" {
-			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, profile)
+			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, prText, profile, reviewer)
 			if err == nil {
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, profile)
+			runID, err = triggerRunWithPRText(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, prText, profile, reviewer)
 		}
 		if err == nil && planID != "" && runID != planID {
 			err = fmt.Errorf("launched run does not own the captured verification plan")
@@ -754,11 +817,23 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, profiles ...agentcfg.RunSelection) (string, error) {
+	return triggerRunWithPRText(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, db.RunPRText{}, profiles...)
+}
+
+// triggerRunWithPRText is triggerRun carrying caller-supplied PR text on the
+// push and on the rerun fallback.
+func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (string, error) {
+	if err := env.client.RequireTranscriptHomes(); err != nil {
+		return "", err
+	}
+	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
+	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -825,6 +900,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	}
 
 	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
+		if !run.ReviewerProfile.Matches(agentcfg.OptionalReviewerProfile(profiles)) {
+			return "", fmt.Errorf("triggered run has a conflicting reviewer")
+		}
 		if !run.PiProfile.Matches(profile) {
 			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
 		}
@@ -841,9 +919,13 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	// clean-head evidence because it may have changed while waiting above.
 	var rr ipc.RerunResult
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
+	params.TranscriptHomes = homes
 	params.OmitIntent = omitIntent
+	params.FreshLaunch = true
 	params.PiProfile = profile
+	params.ReviewerProfile = agentcfg.OptionalReviewerProfile(profiles)
 	params.ClosingIssueRefs = closesIssues
+	params.PRTitle, params.PRBody = prText.Title, prText.Body
 	params.VerificationPlanID = planID
 	params.CallerHeadSHA, err = rerunCallerHead(ctx)
 	if err != nil {
@@ -858,16 +940,21 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	return rr.RunID, nil
 }
 
-func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
+		ReviewerProfile:  agentcfg.OptionalReviewerProfile(profiles),
 		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent,
+		PRTextDigest: db.PRTextDigest(prText.Title, prText.Body),
 	}, &result); err != nil {
 		return nil, err
 	}
 	if result.Receipt != nil && !result.Receipt.PiProfile.Matches(agentcfg.OptionalPiProfile(profiles)) {
 		return nil, fmt.Errorf("launch receipt has a conflicting Pi profile")
+	}
+	if result.Receipt != nil && !result.Receipt.ReviewerProfile.Matches(agentcfg.OptionalReviewerProfile(profiles)) {
+		return nil, fmt.Errorf("launch receipt has a conflicting reviewer")
 	}
 	return result.Receipt, nil
 }
@@ -875,11 +962,17 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // triggerProofRun captures the immutable submitted commit and waits only for
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
-func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+	if err := env.client.RequireTranscriptHomes(); err != nil {
+		return nil, err
+	}
+	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
+	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),
@@ -901,29 +994,31 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		}
 		return nil, fmt.Errorf("push %q to gate: %w", branch, pushErr)
 	}
-	if receipt, err := waitForLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, baseBranch, omitIntent, triggerWaitTimeout, profile); err != nil {
+	if receipt, err := waitForLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, baseBranch, omitIntent, prText, triggerWaitTimeout, profiles...); err != nil {
 		return nil, err
 	} else if receipt != nil {
 		return receipt, nil
 	}
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-		RepoID: env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
+		TranscriptHomes: homes,
+		RepoID:          env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
-		ClosingIssueRefs: closesIssues,
+		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
+		ReviewerProfile: agentcfg.OptionalReviewerProfile(profiles),
 	}, &result); err != nil {
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}
 	return &result.Receipt, nil
 }
 
-func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, omitIntent bool, timeout time.Duration, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, omitIntent bool, prText db.RunPRText, timeout time.Duration, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	poll := time.NewTicker(150 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, profiles...)
+		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profiles...)
 		if err != nil {
 			return nil, err
 		}
@@ -1039,7 +1134,7 @@ func conflictingActiveRunOmitIntent(run *ipc.RunInfo, requested bool) error {
 // emitLaunchReceipt writes the proof before driveRun subscribes, so callers
 // retain the daemon-authored binding even if later driving blocks or fails.
 func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
-	emitDoc(cmd, toon.Field{Key: "launch_receipt", Value: toon.NewObject(
+	fields := []toon.Field{
 		toon.Field{Key: "run_id", Value: receipt.RunID},
 		toon.Field{Key: "disposition", Value: receipt.Disposition},
 		toon.Field{Key: "launch_nonce", Value: receipt.LaunchNonce},
@@ -1048,7 +1143,15 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 		toon.Field{Key: "head_sha", Value: receipt.HeadSHA},
 		toon.Field{Key: "submitted_head_sha", Value: receipt.SubmittedHeadSHA},
 		toon.Field{Key: "intent_digest", Value: receipt.IntentDigest},
-	)})
+	}
+	if receipt.ReviewerProfile != nil {
+		fields = append(fields, toon.Field{Key: "reviewer_profile", Value: toon.NewObject(
+			toon.Field{Key: "agent", Value: string(receipt.ReviewerProfile.Agent)},
+			toon.Field{Key: "model", Value: receipt.ReviewerProfile.Model},
+			toon.Field{Key: "effort", Value: string(receipt.ReviewerProfile.Effort)},
+		)})
+	}
+	emitDoc(cmd, toon.Field{Key: "launch_receipt", Value: toon.NewObject(fields...)})
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition
@@ -1066,9 +1169,10 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // does a gate holding an open review question or an unreadable question history
 // (pipeline.HasUnansweredReviewQuestion / HasUnreadableReviewQuestionHistory).
 //
-// The CI step keeps monitoring an open PR until a human merges or closes it (a
-// live status the TUI shows), so it never reaches a terminal state on its own
-// by default. An agent driving the run must not block on that human action, so
+// The CI step keeps monitoring an open PR until a human merges or closes it, or
+// explicitly hands it off (a live status the TUI shows), so it never reaches a
+// terminal state on its own by default. An agent driving the run must not block
+// on that human action, so
 // once CI checks pass driveRun returns with ciReady=true: the change is
 // validated and the PR is ready for a human to merge. The daemon keeps
 // monitoring in the background. Under the opt-in ci.release_after_checks_pass
@@ -1111,6 +1215,10 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 		}
 		if gate, ok := rv.awaitingStep(); ok {
 			if !autoApprove {
+				return run, false, nil
+			}
+			if pipeline.HasReviewFixRoundLimit(gate.FindingsJSON) {
+				fmt.Fprintf(progress, "%s: total fix-round budget exhausted; --yes leaves the remaining findings awaiting an explicit response\n", gate.Name)
 				return run, false, nil
 			}
 			if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
@@ -1356,8 +1464,8 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
 // 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
 // established by green checks or the trusted no_ci declaration and the PR is
-// ready for a human to merge), or the terminal outcome (exit 0 when passed,
-// exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
+// ready for a human to merge), or the terminal outcome (exit 0 when passed or
+// handed off, exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
 // the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed". lead
 // fields, when given, open the document ahead of the run object, so a command
@@ -1447,10 +1555,13 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
 	}
 
-	if rv.Status == string(types.RunCompleted) {
+	if rv.Status == string(types.RunCompleted) || rv.Status == string(types.RunHandedOff) {
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		var help []string
+		if rv.Status == string(types.RunHandedOff) {
+			help = append(help, "Green CI monitoring ended explicitly for human review; the PR remains open and was not merged or cancelled.")
+		}
 		if rv.CIOverrideReason != "" {
 			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
 		}

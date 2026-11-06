@@ -5,6 +5,7 @@ package shellenv
 import (
 	"errors"
 	"os/exec"
+	"time"
 )
 
 // ConfigureShellCommand is a no-op on platforms that lack process groups
@@ -26,8 +27,8 @@ func StartShellCommand(cmd *exec.Cmd) error {
 // guarantee is best-effort and platform-gated.
 func TerminateShellCommandGroup(cmd *exec.Cmd) {}
 
-func ShellCommandGroupActive(cmd *exec.Cmd) (bool, error) {
-	return false, errors.New("process-group completion cannot be verified on this platform")
+func ShellCommandGroupActive(cmd *exec.Cmd, _ time.Duration) (bool, string, error) {
+	return false, "", errors.New("process-group completion cannot be verified on this platform")
 }
 
 // detachFromTerminal is a no-op where there is no POSIX session or controlling

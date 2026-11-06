@@ -23,6 +23,7 @@ func TestAxiMutationCommandsEmitPageviews(t *testing.T) {
 		{"respond", []string{"axi", "respond", "--action", "approve"}, "/axi/respond", "axi-respond"},
 		{"abort", []string{"axi", "abort"}, "/axi/abort", "axi-abort"},
 		{"retry", []string{"axi", "retry", "--run", "run-1"}, "/axi/retry", "axi-retry"},
+		{"handoff", []string{"axi", "handoff"}, "/axi/handoff", "axi-handoff"},
 	}
 
 	for _, tc := range cases {
@@ -141,6 +142,32 @@ func TestAxiRunPageviewCarriesFlags(t *testing.T) {
 	}
 	if got := event.fields["has_skip"]; got != true {
 		t.Fatalf("has_skip = %v, want true", got)
+	}
+}
+
+// Supplied PR text is user content: telemetry records only that it was given.
+func TestAxiRunPageviewRecordsPRTextAsBooleansOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("NM_HOME", t.TempDir())
+	chdir(t, tmpDir)
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+	const title = "secret supplied title"
+
+	_, _ = executeCmd("axi", "run", "--intent", "ship it", "--pr-title", title)
+
+	event := recorder.find("pageview", "path", "/axi/run")
+	if event == nil {
+		t.Fatal("expected /axi/run pageview")
+	}
+	if event.fields["has_pr_title"] != true || event.fields["has_pr_body"] != false {
+		t.Fatalf("PR text fields = %v / %v", event.fields["has_pr_title"], event.fields["has_pr_body"])
+	}
+	for key, value := range event.fields {
+		if text, ok := value.(string); ok && strings.Contains(text, title) {
+			t.Fatalf("telemetry field %s carried the supplied title", key)
+		}
 	}
 }
 

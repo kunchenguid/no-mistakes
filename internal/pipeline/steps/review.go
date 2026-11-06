@@ -194,10 +194,8 @@ Previous review findings to address:
 	}
 	reviewTargetSHA := sctx.Run.HeadSHA
 
-	// The changed-file set is read once and viewed two ways on purpose: the
-	// ignore-filtered subset decides whether there is anything to review, while
-	// trusted path instructions are selected against the complete set (see
-	// matchPathInstructions).
+	// Required instruction-covered paths join the review scope before the empty
+	// scope shortcut, so pushed ignores cannot waive a trusted review obligation.
 	var args []string
 	if sctx.Fixing {
 		args = []string{"diff", "--name-only", "-z", "--no-renames", baseSHA}
@@ -210,7 +208,7 @@ Previous review findings to address:
 	}
 	changed := changedPathList(changedFiles)
 
-	reviewable := reviewablePaths(changed, sctx.Config.IgnorePatterns)
+	reviewable, pathInstructions := reviewPathsAndInstructions(changed, sctx.Config, sctx.Log)
 	var retained *Findings
 	if sctx.CoverageContinuation != nil {
 		prior, err := retainedCoverageForReview(sctx, baseSHA, reviewTargetSHA, reviewable)
@@ -263,21 +261,6 @@ Previous review findings to address:
 		return nil, err
 	}
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + settledQuestionsPromptSection(sctx) + supersededReviewHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + planSection + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
-
-	// Path-scoped review guidance, taken from the operator's global config and
-	// from the trusted default-branch config copy (regardless of
-	// allow_repo_commands), so a pushed branch cannot steer the reviewer that
-	// gates it. Selection runs against the complete changed-file set, never the
-	// ignore-filtered one, so a pushed ignore_patterns entry cannot suppress a
-	// rule. Only blocks whose glob matches a changed path are appended, so a
-	// run with none configured - or none relevant to this diff - gets the
-	// prompt above unchanged.
-	pathInstructions := ""
-	for _, source := range sctx.Config.Review.PathInstructionSources() {
-		matches := matchPathInstructions(changed, source.Entries)
-		logPathInstructions(sctx.Log, source.Label, matches)
-		pathInstructions += reviewPathInstructionsSection(source.Heading, matches)
-	}
 
 	// The authorization/privacy obligation below specializes the existing
 	// concrete-state trace only when changed behavior crosses a potentially
@@ -618,7 +601,7 @@ func coveragePathLine(p string) string {
 // file the reviewer did not examine still must not be listed.
 func reviewCoverageSection(paths []string) string {
 	var b strings.Builder
-	b.WriteString("\nChanged files this review is held to (computed by the pipeline from the branch diff, minus ignored paths):\n")
+	b.WriteString("\nChanged files this review is held to (computed by the pipeline from the branch diff, minus ignored paths, plus instruction-covered paths unless the trusted default branch also ignores them):\n")
 	for _, p := range paths {
 		fmt.Fprintf(&b, "- %s\n", coveragePathLine(p))
 	}

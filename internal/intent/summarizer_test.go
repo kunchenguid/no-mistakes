@@ -41,7 +41,7 @@ func TestAgentSummarizer_Happy(t *testing.T) {
 			{Role: RoleUser, Text: "please add a foo helper"},
 			{Role: RoleAssistant, Text: "added foo.go"},
 		},
-	})
+	}, SummaryContext{})
 	if err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestAgentSummarizer_PromptRequiresPlainTextSummary(t *testing.T) {
 	s := NewAgentSummarizer(fa, "")
 	_, err := s.Summarize(context.Background(), &Session{
 		Messages: []Message{{Role: RoleUser, Text: "please add a foo helper"}},
-	})
+	}, SummaryContext{})
 	if err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestAgentSummarizer_PropagatesCWD(t *testing.T) {
 	s := NewAgentSummarizer(fa, "/work/dir")
 	if _, err := s.Summarize(context.Background(), &Session{
 		Messages: []Message{{Role: RoleUser, Text: "do something"}},
-	}); err != nil {
+	}, SummaryContext{}); err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
 	if fa.lastCWD != "/work/dir" {
@@ -98,7 +98,7 @@ func TestAgentSummarizer_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	s := NewAgentSummarizer(fa, "/work/dir")
 	if _, err := s.Summarize(context.Background(), &Session{
 		Messages: []Message{{Role: RoleUser, Text: "do something"}},
-	}); err != nil {
+	}, SummaryContext{}); err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
 	for _, want := range []string{
@@ -118,7 +118,7 @@ func TestAgentSummarizer_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 
 func TestAgentSummarizer_EmptyTranscript(t *testing.T) {
 	s := NewAgentSummarizer(&fakeAgent{output: `{"summary": "x"}`}, "")
-	_, err := s.Summarize(context.Background(), &Session{})
+	_, err := s.Summarize(context.Background(), &Session{}, SummaryContext{})
 	if err == nil {
 		t.Error("expected error for empty transcript")
 	}

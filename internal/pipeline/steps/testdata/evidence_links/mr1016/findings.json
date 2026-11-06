@@ -1,0 +1,20 @@
+{
+  "findings": [],
+  "summary": "",
+  "testing_summary": "Disposable stack preparation and focused tests passed. Three live browser scenarios verified persistent AJAX changes, concurrent feedback, rejection recovery, and retry; screenshots and response transcripts were captured, then the stack and transient fixtures were removed.",
+  "verdict": "go",
+  "scenarios": [
+    {"name": "On the disposable local product, exclude and restore HU: feedback appears without navigation, and both states survive full reloads.", "result": "pass", "live": true, "evidence": "roundtrip.json; hu-excluded.png"},
+    {"name": "Save HU and CZ concurrently on a synthetic photo: each checkbox locks while saving and retains independent market feedback.", "result": "pass", "live": true, "evidence": "concurrent.json; both-pending.png; hu-done-cz-pending.png"},
+    {"name": "Submit an invalid security token locally: HTTP 403 restores the checkbox, preserves its error when another market saves, and permits a successful retry without navigation.", "result": "pass", "live": true, "evidence": "rejected.json; rejected.png"}
+  ],
+  "artifacts": [
+    {"kind": "screenshot", "label": "HU exclusion feedback", "path": "{{EVIDENCE_DIR}}/hu-excluded.png"},
+    {"kind": "screenshot", "label": "Both markets saving", "path": "{{EVIDENCE_DIR}}/both-pending.png"},
+    {"kind": "screenshot", "label": "HU completed while CZ remains pending", "path": "{{EVIDENCE_DIR}}/hu-done-cz-pending.png"},
+    {"kind": "screenshot", "label": "Rejected request feedback", "path": "{{EVIDENCE_DIR}}/rejected.png"},
+    {"kind": "log", "label": "Exclusion and restoration persistence", "path": "{{EVIDENCE_DIR}}/roundtrip.json"},
+    {"kind": "log", "label": "Concurrent real AJAX responses and feedback", "path": "{{EVIDENCE_DIR}}/concurrent.json"},
+    {"kind": "log", "label": "HTTP 403 recovery and successful retry", "path": "{{EVIDENCE_DIR}}/rejected.json"}
+  ]
+}

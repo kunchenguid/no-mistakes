@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"golang.org/x/sys/windows"
 )
 
@@ -124,6 +125,7 @@ func terminateDaemonPID(pid int) error {
 
 func terminateProcessTree(pid int) error {
 	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	winproc.Harden(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("taskkill %d: %w: %s", pid, err, strings.TrimSpace(string(output)))
 	}

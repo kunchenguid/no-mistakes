@@ -93,11 +93,13 @@ func (p *PiProfile) Scan(src any) error {
 }
 
 // OptionalPiProfile keeps existing internal launch callers source compatible.
-func OptionalPiProfile(profiles []*PiProfile) *PiProfile {
-	if len(profiles) == 0 {
-		return nil
+func OptionalPiProfile(profiles []RunSelection) *PiProfile {
+	for _, profile := range profiles {
+		if p, ok := profile.(*PiProfile); ok && p != nil {
+			return p
+		}
 	}
-	return profiles[0]
+	return nil
 }
 
 // PinnedBaseArgs removes live native selectors and binds the provider explicitly.

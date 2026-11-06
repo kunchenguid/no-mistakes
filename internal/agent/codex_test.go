@@ -581,6 +581,7 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 
 	var usage TokenUsage
 	var lastMessage string
+	var resultReceived bool
 
 	err := parseCodexEvents(
 		context.Background(),
@@ -588,6 +589,7 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 		nil,
 		&usage,
 		&lastMessage,
+		&resultReceived,
 		nil,
 		nil,
 		nil,
@@ -619,6 +621,7 @@ func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
 	var chunks []string
 	var usage TokenUsage
 	var lastMessage string
+	var resultReceived bool
 
 	err := parseCodexEvents(
 		context.Background(),
@@ -626,6 +629,7 @@ func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		&lastMessage,
+		&resultReceived,
 		nil,
 		nil,
 		nil,
@@ -654,6 +658,7 @@ func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
 	var chunks []string
 	var usage TokenUsage
 	var lastMessage string
+	var resultReceived bool
 
 	err := parseCodexEvents(
 		context.Background(),
@@ -661,6 +666,7 @@ func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		&lastMessage,
+		&resultReceived,
 		nil,
 		nil,
 		nil,
@@ -684,7 +690,8 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 
 	var usage TokenUsage
 	var lastMessage string
-	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, nil)
+	var resultReceived bool
+	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &resultReceived, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

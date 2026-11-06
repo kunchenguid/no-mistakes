@@ -76,7 +76,7 @@ Rewriting an existing PR's title or body (the attestation rebind before a push, 
 
 ### Multiple GitHub or GitLab identities
 
-If one daemon serves repositories that require non-overlapping accounts, give each account an isolated CLI config directory and use account-specific host aliases in repository remotes, for example `git@github-personal:you/project.git`. Then map those raw host tokens with global [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles). The reference owns the configuration, validation, compatibility, and fail-closed routing contract.
+If one daemon serves repositories that require non-overlapping accounts, give each account an isolated CLI config directory and use account-specific host aliases in repository remotes, for example `git@github-personal:you/project.git`. Then map those raw host tokens with global [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles). When the accounts are already signed in to one gh configuration, a GitHub profile keyed by `host/owner` with `gh_user` selects the login per repository owner instead, with no extra config directory or alias. The reference owns the configuration, validation, compatibility, and fail-closed routing contract.
 
 **What you get:**
 
@@ -214,8 +214,9 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) for
   author-preserving publication and its provider limits.
 - CI status polling - Azure branch policy evaluations (build validation and
-  status checks) are read via `az repos pr policy list` until the PR is
-  completed, abandoned, or the configured `ci_timeout` idle window elapses
+  status checks) are read via `az repos pr policy list` while the CI monitor is
+  active; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci)
+  for its lifecycle and handoff controls
 - Merge-conflict polling and auto-fix from the PR's `mergeStatus`
 
 **What you don't get (yet):**
@@ -284,8 +285,7 @@ origin auth status
 - PR creation and update (`origin pr create` / `origin pr edit`). The Origin CLI
   defaults new changes to draft; no-mistakes always passes `--status` explicitly
   (`open` unless `providers.origin.draft_pull_requests` is true).
-- CI check polling through `origin pr checks` until the PR is merged or closed,
-  or the configured `ci_timeout` idle window elapses.
+- CI check polling through `origin pr checks` while the monitor is active; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for its lifecycle.
 - Mergeability polling from `origin pr view --json mergeability`, and
   merge-conflict auto-fix when Origin reports `hasMergeConflicts`, conflicted
   paths, or a conflict verdict under the nested `mergeability.mergeability`.
@@ -319,6 +319,8 @@ The fork owner extracted from the fork URL keeps the plain `owner/name` form bec
 Self-hosted GitLab is detected out of the box even when the hostname carries no `gitlab` marker (for example `git.example.com`).
 When the hostname is not obviously GitLab, `no-mistakes` consults glab's configured hosts (`config.yml`, honoring `GLAB_CONFIG_DIR` then `XDG_CONFIG_HOME/glab-cli`, then `~/.config/glab-cli`) and treats the upstream as GitLab if its host appears there as a configured host or `api_host`.
 Running `glab auth login --hostname your-gitlab.example.com` is enough to make detection succeed; if glab is not configured for the host, detection fails closed and the upstream is treated as unsupported.
+
+If GitLab serves SSH and web/API traffic on different hosts, configure glab's global `api_host` for the Git remote's host. See the [MR URL validation contract](/no-mistakes/reference/pipeline-steps/#pr) for how existing-MR discovery and review-comment reads authorize the alternate web host.
 
 The GitLab backend is pinned against `glab v1.5x`. Self-hosted detection and the merge-request and CI steps rely on its current flag and API surface, so keep `glab` reasonably up to date.
 

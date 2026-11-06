@@ -19,6 +19,10 @@ var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 // active run.
 var ErrDaemonShutdown = errors.New("daemon shutting down")
 
+// ErrHandoff stops an already-green CI monitor without cancelling the work.
+// Only the daemon's validated explicit handoff request supplies this cause.
+var ErrHandoff = errors.New("green PR handed off for human review")
+
 // ErrParkedAtShutdown is returned when a daemon shutdown reached a run that was
 // fully recorded as waiting at an approval gate. The run keeps that record so
 // the next start resumes it, as it would after a crash.
@@ -94,6 +98,9 @@ type StepContext struct {
 	// explicit `--intent` is the author's own goal statement, while an
 	// inferred summary comes from a local agent transcript.
 	UserIntent string
+	// PublicIntentBrief is the PR-step's bounded rendering of UserIntent when
+	// trusted pr.intent.format is brief. It is never used as review criteria.
+	PublicIntentBrief string
 	// IntentSource records the provenance of UserIntent so steps can weigh
 	// its authority. db.RunIntentSourceAgent ("agent") means the driving
 	// agent supplied it explicitly via `axi run --intent`; db.RunIntentSourceRerun
@@ -135,6 +142,19 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// SetCIReadiness is the daemon-owned transition boundary for CI monitor
+	// readiness. When set, the CI step uses it instead of writing readiness
+	// directly, so a daemon can serialize readiness changes with lifecycle
+	// decisions such as handoff. Embeddings leave it nil and use the local DB
+	// write path.
+	SetCIReadiness func(ready, declaredNoCI bool) error
+	// HandoffPending reports an explicit request waiting on this monitor.
+	HandoffPending func() bool
+	// SetPRState is the daemon-owned transition boundary for CI monitor PR
+	// lifecycle observations. Embeddings leave it nil and use the local DB
+	// write path.
+	SetPRState func(state string) error
+	CIWake     <-chan struct{}
 	// MarkRunning tells the executor that a step re-executing as a fix round
 	// has finished its repair and is executing normally again, so the step's
 	// status returns from fixing to running before Execute returns. The CI

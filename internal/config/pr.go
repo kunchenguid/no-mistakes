@@ -38,6 +38,17 @@ const (
 	maxPRTitleBytes              = 4096
 )
 
+// MaxPRTitleBytes is the longest PR title pr.title_format may render, and the
+// bound on a caller-supplied title.
+const MaxPRTitleBytes = maxPRTitleBytes
+
+// ContainsUnsafeTitleRune reports whether a PR title holds a control, bidi,
+// line-separator, or invisible format character: the policy rendered
+// pr.title_format titles are held to.
+func ContainsUnsafeTitleRune(title string) bool {
+	return containsUnsafeFixMessageRune(title)
+}
+
 type prTitleData struct {
 	Branch string
 	Title  string

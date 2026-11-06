@@ -54,8 +54,10 @@ unstick your run. Inspect with `no-mistakes daemon status` and
 2. Start new validation with
    `no-mistakes axi run --intent '<what the user set out to accomplish>'`.
    Calls can take several minutes and default to `--wait 8m`.
-   Background the call if your harness requires it. A wait expiring is not
-   a failed run or proof the daemon died. Inspect status and reattach.
+   Keep the blocking call open, or background that same call if your harness
+   requires it, and collect its return. Do not poll progress with separate
+   status calls or sleep loops. A wait expiring is not a failed run or proof
+   the daemon died. Reattach with `no-mistakes axi run`.
 3. Read every return. A `gate:` waits for your response and never advances
    on its own. Read [gate procedures](references/gates.md) before responding,
    including finding selection, review questions, exceptions, and outcomes.

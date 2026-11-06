@@ -132,6 +132,13 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	newRun.Status = types.RunRunning
 	newRun.Error = nil
 
+	homes := t.TempDir()
+	claudeHome, codexHome := filepath.Join(homes, "claude account"), filepath.Join(homes, "codex account")
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
+	t.Setenv("CODEX_HOME", codexHome)
+	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+	})
 	srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
 		var params ipc.RerunParams
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -139,6 +146,9 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		}
 		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
+		}
+		if params.TranscriptHomes == nil || params.TranscriptHomes.ClaudeConfigDir != claudeHome || params.TranscriptHomes.CodexHome != codexHome {
+			return nil, fmt.Errorf("rerun lost the selected transcript homes: %#v", params.TranscriptHomes)
 		}
 		return &ipc.RerunResult{RunID: newRun.ID}, nil
 	})
@@ -209,6 +219,46 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	}
 	if nextCmd == nil {
 		t.Fatal("expected subscribe command after rerun")
+	}
+}
+
+// A legacy rerun handler would ignore the homes and discover another account.
+// Neither failed nor cancelled runs may reach it without capability support.
+func TestModel_RerunRefusesOlderDaemonTranscriptDiscovery(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunFailed, types.RunCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			sock := testSocketPath(t)
+			srv := startTestIPCServer(t, sock)
+			requests := make(chan struct{}, 1)
+			srv.Handle(ipc.MethodRerun, func(context.Context, json.RawMessage) (interface{}, error) {
+				requests <- struct{}{}
+				return &ipc.RerunResult{RunID: "wrong-account-discovery"}, nil
+			})
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "selected claude"))
+			t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "selected codex"))
+			client, err := ipc.Dial(sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			run := testRun()
+			run.Status = status
+			m := NewModel(sock, client, run)
+			cmd := m.rerunCmd(42)
+			if cmd == nil {
+				t.Fatal("expected rerun command")
+			}
+			msg := cmd()
+			failure, ok := msg.(rerunErrMsg)
+			if !ok || failure.requestID != 42 || !strings.Contains(failure.err.Error(), "no-mistakes daemon restart") {
+				t.Fatalf("expected restart guidance for the rerun request, got %#v", msg)
+			}
+			select {
+			case <-requests:
+				t.Fatal("older daemon received a request that could read another account")
+			default:
+			}
+		})
 	}
 }
 
