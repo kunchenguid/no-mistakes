@@ -449,9 +449,9 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		return emitError(cmd, 2, "--caller-restrictions is accepted only when starting a new run; omit it to reattach")
 	}
 	if runID == "" {
-		restrictions, err := captureCallerRestrictions(cmd)
-		if err != nil {
-			return emitError(cmd, 2, err.Error())
+		restrictions, captureErr := captureCallerRestrictions(cmd)
+		if captureErr != nil {
+			return emitError(cmd, 2, captureErr.Error())
 		}
 		if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
 			return emitError(cmd, 2, err.Error())

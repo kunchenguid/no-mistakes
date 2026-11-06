@@ -169,6 +169,9 @@ func TestCallerRestrictionsPrivateDaemonStartupRecovery(t *testing.T) {
 	if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(record.SourcePath, []byte("install everything"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -203,8 +206,9 @@ func TestCallerRestrictionsRetryInheritsTheFailedRunsRecord(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("provider-outage fixture uses a POSIX script")
 	}
+	review := &correctingReviewStep{}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepRebase}, &correctingReviewStep{}}
+		return []pipeline.Step{&mockPassStep{name: types.StepRebase}, review}
 	})
 	repo, head := setupTestGitRepo(t, p, d, "restrictions-retry")
 	flag := filepath.Join(t.TempDir(), "outage")
@@ -234,7 +238,7 @@ func TestCallerRestrictionsRetryInheritsTheFailedRunsRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := waitForRunTerminalState(t, d, retried.RunID)
-	if final.CallerRestrictions == nil || *final.CallerRestrictions != *record {
+	if final.Status != types.RunCompleted || final.CallerRestrictions == nil || *final.CallerRestrictions != *record {
 		t.Fatalf("retry changed restrictions: %+v", final)
 	}
 }
