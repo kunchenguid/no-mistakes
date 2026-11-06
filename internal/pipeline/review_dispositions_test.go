@@ -27,6 +27,25 @@ func dispositionCoverageOutcome(t *testing.T, sctx *StepContext, items []types.F
 	return &StepOutcome{NeedsApproval: len(items) != 0 || len(reviewed) != 2, Findings: encoded, AutoFixable: len(items) != 0, ReviewedPaths: reviewed, ReviewablePaths: []string{"first.go", "second.go"}, ReviewApprovedHeadSHA: sctx.Run.HeadSHA}
 }
 
+// abortParkedGate aborts a gate the executor has just re-parked. A step status
+// read from the database can land before the executor registers the park, and a
+// status the step already had before the previous response cannot tell the new
+// park from the answered one, so the abort retries until a gate is there.
+func abortParkedGate(t *testing.T, exec *Executor, step types.StepName) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := exec.Respond(step, types.ActionAbort, nil)
+		if err == nil {
+			return
+		}
+		if !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+			t.Fatalf("abort the parked gate: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestExecutor_SettledFindingDoesNotBlockCoverageContinuation(t *testing.T) {
 	for _, mode := range []string{"ignore", "resolved_external"} {
 		t.Run(mode, func(t *testing.T) {
@@ -162,13 +181,19 @@ func TestExecutor_ExternalDispositionRequiresReasonAndKeepsOtherFindingsBlocking
 	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"settled"}, nil, nil, nil, "verified outside review worktree"); err != nil {
 		t.Fatal(err)
 	}
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionCompleteCoverage, nil, nil, nil, nil, "", ResponseOptions{Coverage: coverageBinding(t, database, run.ID)}); err == nil || !strings.Contains(err.Error(), "outstanding") {
-		t.Fatalf("unsettled error/warning did not block coverage: %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := exec.RespondWithOverrides(types.StepReview, types.ActionCompleteCoverage, nil, nil, nil, nil, "", ResponseOptions{Coverage: coverageBinding(t, database, run.ID)})
+		if err != nil && strings.Contains(err.Error(), "no step awaiting approval") && !time.Now().After(deadline) {
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), "outstanding") {
+			t.Fatalf("unsettled error/warning did not block coverage: %v", err)
+		}
+		break
 	}
-	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
-		t.Fatal(err)
-	}
+	abortParkedGate(t, exec, types.StepReview)
 }
 
 func TestFilterSettledReviewFindings_AnExplicitIgnoreIsStickyButAnApprovalIsNot(t *testing.T) {
@@ -598,10 +623,8 @@ func TestExecutor_DispositionsSettleTwinFindingsOneInstanceAtATime(t *testing.T)
 			if strings.Join(dispositions.Ignored, ",") != strings.Join(tc.ignored, ",") {
 				t.Fatalf("ignored = %v, want %v", dispositions.Ignored, tc.ignored)
 			}
-			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-			if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
-				t.Fatal(err)
-			}
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+			abortParkedGate(t, exec, types.StepReview)
 		})
 	}
 }
@@ -711,9 +734,7 @@ func TestExecutor_RecoveredExternalRoundContinuesTheReview(t *testing.T) {
 	}
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
-		t.Fatal(err)
-	}
+	abortParkedGate(t, exec, types.StepReview)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

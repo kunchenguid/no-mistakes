@@ -364,6 +364,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		e.mu.Unlock()
 		return RespondDispositions{}, fmt.Errorf("coverage binding applies only to complete-coverage")
 	}
+	// A settlement selects nothing to fix and dispatches no fixer, so the
+	// response carries no selection and the findings it named are reported only
+	// in the echo. Leaving them on the response made the live path report an
+	// approval with a selection count and the recovered path report none, for
+	// the same decision.
+	var settledFindingIDs []string
 	if action == types.ActionResolvedExternal {
 		if step != types.StepReview || strings.TrimSpace(approvalReason) == "" || len(uniqueNonEmpty(findingIDs)) == 0 || len(ignoreFindingIDs) != 0 || len(addedFindings) != 0 || len(instructions.userNotes()) != 0 || len(instructions.driverNotes()) != 0 {
 			e.mu.Unlock()
@@ -443,7 +449,8 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, fmt.Errorf("record external review disposition: %w", err)
 		}
-		findingIDs = idsInPayloadOrder(ids, gate)
+		settledFindingIDs = idsInPayloadOrder(ids, gate)
+		findingIDs = nil
 	}
 	if action == types.ActionApprove && e.waitingApprovalRefusal != "" {
 		refusal := e.waitingApprovalRefusal
@@ -476,7 +483,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	}
 	dispositions := RespondDispositions{}
 	if action == types.ActionResolvedExternal {
-		dispositions.ResolvedExternal = findingIDs
+		dispositions.ResolvedExternal = settledFindingIDs
 	}
 	if action == types.ActionFix {
 		// Validate against the parked gate while the mutex still holds it: the
