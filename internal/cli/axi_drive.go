@@ -374,6 +374,16 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	if err := requireDaemonHonorsRunPRText(env.client, prText); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
+	// The first receipt lookup can already claim a competing run. Capture and
+	// bind restrictions before that lookup, as well as before the push.
+	restrictions, captureErr := captureCallerRestrictions(cmd)
+	if captureErr != nil {
+		return emitError(cmd, 2, captureErr.Error())
+	}
+	if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
+	ctx = callerrestrictions.WithLaunchRecord(ctx, restrictions)
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {
@@ -401,7 +411,7 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profile, reviewer)
+		receipt, err := claimLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profile, reviewer)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -449,14 +459,6 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		return emitError(cmd, 2, "--caller-restrictions is accepted only when starting a new run; omit it to reattach")
 	}
 	if runID == "" {
-		restrictions, captureErr := captureCallerRestrictions(cmd)
-		if captureErr != nil {
-			return emitError(cmd, 2, captureErr.Error())
-		}
-		if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
-			return emitError(cmd, 2, err.Error())
-		}
-		ctx = callerrestrictions.WithLaunchRecord(ctx, restrictions)
 		resolvedReviewer, resolveErr := resolveReviewer(env.client, env.repo.ID, reviewer)
 		if resolveErr != nil {
 			return emitError(cmd, 2, resolveErr.Error())
@@ -965,13 +967,14 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	return rr.RunID, nil
 }
 
-func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
 		ReviewerProfile:  agentcfg.OptionalReviewerProfile(profiles),
 		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent,
-		PRTextDigest: db.PRTextDigest(prText.Title, prText.Body),
+		PRTextDigest:             db.PRTextDigest(prText.Title, prText.Body),
+		CallerRestrictionsDigest: callerrestrictions.LaunchRecord(ctx).Digest(),
 	}, &result); err != nil {
 		return nil, err
 	}
@@ -1049,7 +1052,7 @@ func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branc
 	poll := time.NewTicker(150 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profiles...)
+		receipt, err := claimLaunchReceipt(ctx, client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profiles...)
 		if err != nil {
 			return nil, err
 		}

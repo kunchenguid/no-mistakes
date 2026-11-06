@@ -66,6 +66,32 @@ func TestCallerRestrictionsReceiptClaimCarriesRequestedIdentity(t *testing.T) {
 	}
 }
 
+func TestCallerRestrictionsInitialReceiptClaimCapturesBeforeLookup(t *testing.T) {
+	record := cliRestrictions(t)
+	claims := make(chan ipc.ClaimLaunchReceiptParams, 1)
+	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+		srv.Handle(ipc.MethodProbeCallerRestrictions, func(context.Context, json.RawMessage) (interface{}, error) {
+			return map[string]bool{"ok": true}, nil
+		})
+		srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			var params ipc.ClaimLaunchReceiptParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return nil, err
+			}
+			claims <- params
+			return nil, fmt.Errorf("stop at initial receipt lookup")
+		})
+	})
+	writeGlobalConfig(t, "")
+	out, err := executeCmd("axi", "run", "--caller-restrictions", record.SourcePath, "--intent", "fixture goal", "--launch-nonce", "shared-nonce", "--validation-generation", "generation")
+	if err == nil || !strings.Contains(out, "stop at initial receipt lookup") {
+		t.Fatalf("did not reach first receipt lookup: %s %v", out, err)
+	}
+	if got := (<-claims).CallerRestrictionsDigest; got == "" {
+		t.Fatal("first receipt lookup ran before caller restrictions were captured")
+	}
+}
+
 func TestCallerRestrictionsFlagsAndPushTransport(t *testing.T) {
 	r := cliRestrictions(t)
 	for _, cmd := range []*cobra.Command{newAxiRunCmd(), newRerunCmd()} {

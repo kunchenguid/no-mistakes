@@ -44,12 +44,19 @@ func Capture(path string) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return nil, fmt.Errorf("read caller restrictions: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("caller restrictions must be a regular file")
+	}
 	f, err := os.Open(abs)
 	if err != nil {
 		return nil, fmt.Errorf("read caller restrictions: %w", err)
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	info, err = f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("caller restrictions must be a regular file")
 	}

@@ -214,6 +214,9 @@ type ClaimLaunchReceiptParams struct {
 	// PRTextDigest is db.PRTextDigest of the supplied PR title and
 	// description, "" for none. A replay must match the run's stored text.
 	PRTextDigest string `json:"pr_text_digest,omitempty"`
+	// CallerRestrictionsDigest binds the requested captured record without
+	// disclosing its private content or provenance path.
+	CallerRestrictionsDigest string `json:"caller_restrictions_digest,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.

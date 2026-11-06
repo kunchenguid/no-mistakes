@@ -1159,7 +1159,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				receipt = replayed
 				return existing.ID, nil
 			}
-			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithPRText(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, profiles...)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithCallerRestrictions(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, callerrestrictions.LaunchRecord(ctx).Digest(), profiles...)
 			if err != nil {
 				return "", err
 			}
@@ -1210,7 +1210,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				return "", err
 			}
 		} else {
-			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithPRText(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, profiles...)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithCallerRestrictions(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, callerrestrictions.LaunchRecord(ctx).Digest(), profiles...)
 			if err != nil {
 				return "", err
 			}

@@ -509,6 +509,14 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 // observer cannot consume `created`, even when the row is inserted while this
 // call runs. With no row yet it returns nil, like any unclaimable receipt.
 func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
+	return d.ClaimLaunchReceiptWithCallerRestrictions(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, omitIntent, prTextDigest, "", profiles...)
+}
+
+// ClaimLaunchReceiptWithCallerRestrictions checks a requested captured-record
+// identity before consuming the first-observer receipt. The record is immutable
+// and the UPDATE is pinned to the row ID, just as for the supplied PR text.
+// An empty digest preserves the behavior of callers without restrictions.
+func (d *DB) ClaimLaunchReceiptWithCallerRestrictions(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest, restrictionsDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -529,6 +537,9 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 	existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
 	if err != nil || existing == nil {
 		return nil, false, err
+	}
+	if restrictionsDigest != "" && existing.CallerRestrictions.Digest() != restrictionsDigest {
+		return nil, false, fmt.Errorf("conflicting launch_nonce: caller restrictions differ from run record")
 	}
 	if existing.PRTextDigest() != prTextDigest {
 		return existing, false, nil
