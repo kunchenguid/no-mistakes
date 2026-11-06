@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 )
 
 // Repo represents a registered repository.
@@ -19,6 +21,8 @@ type Repo struct {
 	// URLsVerified is run-scoped, in-memory evidence that the URL fields were
 	// just validated against the working clone. It is never persisted.
 	URLsVerified bool `json:"-"`
+	// Integration is a run-owned view, never persisted on the registration.
+	Integration *integration.Destination `json:"-"`
 }
 
 // PushURL returns the remote URL that should receive branch updates.

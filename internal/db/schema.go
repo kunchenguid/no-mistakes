@@ -469,4 +469,5 @@ COMMIT;`,
 	// Caller transcript roots are immutable launch context. Historical runs
 	// retain NULL and the pre-existing default discovery paths.
 	`ALTER TABLE runs ADD COLUMN transcript_homes TEXT`,
+	`ALTER TABLE runs ADD COLUMN integration_destination TEXT`,
 }

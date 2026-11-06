@@ -55,6 +55,9 @@ func handleFakeCLI(mode string) {
 	if logFile != "" {
 		f, _ := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if f != nil {
+			if os.Getenv("FAKE_CLI_LOG_REPO") == "1" {
+				fmt.Fprintln(f, "GITLAB_REPO="+os.Getenv("GITLAB_REPO"))
+			}
 			fmt.Fprintln(f, strings.Join(args, " "))
 			f.Close()
 		}

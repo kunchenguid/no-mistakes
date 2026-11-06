@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/closingissues"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
@@ -100,6 +101,8 @@ type Run struct {
 	// It is set by the operator (axi run --base-branch) and takes precedence
 	// over pr.base_branch in repo config for this run only.
 	PRBaseBranch *string
+	// Integration pins an explicitly selected remote, URL and default branch.
+	Integration *integration.Destination
 	// OmitIntent records the caller-side, tighten-only decision to keep the
 	// generated Intent section out of the PR body for this run. It is the
 	// OR of the per-run flag and the operator's global intent.publish_intent
@@ -154,7 +157,11 @@ func (d *DB) runColumns() string {
 	if d.hasColumn("runs", "transcript_homes") {
 		transcriptHomes = "transcript_homes"
 	}
-	return fmt.Sprintf(runColumns, intentCheck, evidenceDir, transcriptHomes)
+	destination := "NULL"
+	if d.hasColumn("runs", "integration_destination") {
+		destination = "integration_destination"
+	}
+	return fmt.Sprintf(runColumns, intentCheck, evidenceDir, transcriptHomes) + ", " + destination
 }
 
 func scanRun(row interface {
@@ -174,6 +181,7 @@ func scanRun(row interface {
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
 		&r.ReviewerProfile,
+		&r.Integration,
 	)
 	if err != nil {
 		return err
@@ -263,6 +271,12 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 // InsertRunWithTranscriptHomes records discovery roots in the creation write,
 // before a run can be observed or resumed by the daemon.
 func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (*Run, error) {
+	return d.InsertRunWithDestination(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, prText, homes, nil, profiles...)
+}
+
+// InsertRunWithDestination persists routing in the creation write, before the
+// run is visible to recovery or receipt observers.
+func (d *DB) InsertRunWithDestination(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, destination *integration.Destination, profiles ...agentcfg.RunSelection) (*Run, error) {
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -286,6 +300,7 @@ func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA strin
 		PiProfile:          pin,
 		ReviewerProfile:    reviewer,
 		TranscriptHomes:    homes,
+		Integration:        destination,
 		Status:             types.RunPending,
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
@@ -317,8 +332,8 @@ func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA strin
 		r.PRBody = &prText.Body
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile, integration_destination) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile, r.Integration,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -492,6 +507,12 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 // observer cannot consume `created`, even when the row is inserted while this
 // call runs. With no row yet it returns nil, like any unclaimable receipt.
 func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
+	return d.ClaimLaunchReceiptWithDestination(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, omitIntent, prTextDigest, "", profiles...)
+}
+
+// ClaimLaunchReceiptWithDestination compares the immutable routing pin on the
+// same row whose ID is used in the claim, before consuming created disposition.
+func (d *DB) ClaimLaunchReceiptWithDestination(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest, baseRemote string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -514,6 +535,9 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 		return nil, false, err
 	}
 	if existing.PRTextDigest() != prTextDigest {
+		return existing, false, nil
+	}
+	if !integration.MatchesRemote(integration.RemoteName(existing.Integration), baseRemote) {
 		return existing, false, nil
 	}
 	r := &Run{}
@@ -611,6 +635,25 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 		return nil, fmt.Errorf("get active run: %w", err)
 	}
 	return r, nil
+}
+
+// GetIntegrationRuns reads only pinned runs for private-ref cleanup, without
+// materializing unrelated legacy runs and their intent text.
+func (d *DB) GetIntegrationRuns() ([]*Run, error) {
+	rows, err := d.sql.Query(`SELECT ` + d.runColumns() + ` FROM runs WHERE integration_destination IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("get integration runs: %w", err)
+	}
+	defer rows.Close()
+	var runs []*Run
+	for rows.Next() {
+		r := &Run{}
+		if err := scanRun(rows, r); err != nil {
+			return nil, fmt.Errorf("scan integration run: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
 }
 
 // GetActiveRuns returns all pending or running runs across all repos, newest first.

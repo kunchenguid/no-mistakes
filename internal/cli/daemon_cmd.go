@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -157,6 +158,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				return err
 			}
 			omitIntent, err := parseOmitIntentPushOptions(pushOptions)
+			baseRemote, remoteErr := parseBaseRemotePushOptions(pushOptions)
+			if remoteErr != nil {
+				return remoteErr
+			}
 			if err != nil {
 				return err
 			}
@@ -218,6 +223,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
+				BaseRemote:             baseRemote,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
 				ReviewerProfile:        reviewer,
@@ -342,6 +348,26 @@ func parseOpaquePushOptions(options []string, prefix, label string) (string, err
 
 // prBaseBranchPushOptionPrefix carries a per-run PR base branch through a git push.
 const prBaseBranchPushOptionPrefix = "no-mistakes.pr-base-branch="
+
+const baseRemotePushOptionPrefix = "no-mistakes.base-remote="
+
+func parseBaseRemotePushOptions(options []string) (string, error) {
+	remote := ""
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, baseRemotePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if err := integration.ValidateRemote(value); err != nil {
+			return "", err
+		}
+		if remote != "" && remote != value {
+			return "", fmt.Errorf("conflicting base remote push options")
+		}
+		remote = value
+	}
+	return remote, nil
+}
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.

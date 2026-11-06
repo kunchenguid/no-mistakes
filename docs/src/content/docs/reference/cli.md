@@ -25,7 +25,7 @@ The only valid `--skip` step names are `intent`, `rebase`, `review`, `test`, `do
 
 Initialize or refresh the gate for the current repository.
 
-`init` requires an `origin` remote to identify the upstream repository: later pipeline steps push validated branches to the configured target and open pull requests against that upstream. If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
+`init` requires an `origin` remote to identify the default upstream repository. For per-run integration routing, see [`--base-remote`](#other-run-options). If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
 
 ```sh
 no-mistakes init
@@ -36,7 +36,7 @@ no-mistakes init --skip-user-skill
 
 | Flag                | Type     | Default | Description                                                                                      |
 | ------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`        | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--fork-url`        | `string` | (none)  | GitHub fork remote URL for branch pushes; see [integration routing](#other-run-options) for the PR destination |
 | `--worktree-root`   | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 | `--skip-user-skill` | `bool`   | `false` | Do not install or refresh the `/no-mistakes` agent skill at user level                           |
 
@@ -158,6 +158,7 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--base-remote` | `string` | `origin` | Named integration remote for this run, independent of a configured fork push target |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
 | `--pr-title` | `string` | (none) | PR title used verbatim when this run creates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
@@ -215,6 +216,30 @@ Review and Test, including their fix turns, receive the same digest-checked snap
 Only attached runs receive plan-aware guidance. Review and Test assess the proposed scenarios and independent expected results against actual evidence; the attachment does not direct Review to execute verification. Test receives the execution guidance: when no existing check drives a scenario, perform repeatable product verification with a retained artifact, or name the missing capability and how to provide it and mark the scenario untested. Both steps must follow repository testing rules before changing permanent tests; an attached plan alone is not a reason to add tests. A missing-test finding must identify the observable failure, why existing checks and product evidence do not cover it, and the independent expected result. Runs without a plan retain their existing Review and Test guidance.
 
 ### Other run options
+
+`--base-remote custom` explicitly selects the configured remote whose branches
+feed integration and whose project receives the PR or MR. Without the flag,
+the integration remote remains `origin`. Branch tracking never selects another
+remote implicitly. For example:
+
+```sh
+no-mistakes axi run --intent "Fix the customer release" --base-remote custom --base-branch release/customer
+```
+
+An explicit selection pins the remote name, URL and default branch on the run.
+Base lookup, fresh fetches, change scoping and forge routing use that destination,
+including after daemon recovery. Fetches use private refs and leave `origin`'s
+configuration and tracking refs unchanged. See the [repository configuration
+trust boundary](/no-mistakes/reference/repo-config/) for trusted settings. A configured GitHub fork still
+receives the head branch, while the PR targets the selected integration project.
+Other providers retain their existing restrictions on fork routing.
+
+Missing, invalid, unreachable or moved selections refuse rather than falling
+back to `origin`. Reattaching cannot change the remote. Omit `--base-remote` to
+keep the selection when reattaching to an active run. A later run on a branch
+with a PR on another integration remote is refused unless that PR is recorded
+as merged or closed. `rerun` and `retry` preserve the destination. An older
+daemon that cannot honor the selector is refused before submission.
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
@@ -509,7 +534,7 @@ Genuine divergence still reports `safety: blocked_diverged` and changes nothing 
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
 A terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) is verified by recovery itself only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
-Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
+Synchronization verifies the run's push target and exact feature ref. The [Push step](/no-mistakes/reference/pipeline-steps/#push) owns target routing.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
 
