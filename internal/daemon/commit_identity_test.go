@@ -119,6 +119,31 @@ func TestCommitIdentityTwoRunsSurvivePrivateDaemonRestart(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("no correction commit")
 		}
+		// A fix round deliberately parks for its review, even when the mock
+		// step reports no remaining findings. Complete that ordinary gate.
+		deadline = time.Now().Add(10 * time.Second)
+		for {
+			results, err := d.GetStepsByRun(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) == 1 && results[0].Status == types.StepStatusFixReview {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("correction did not reach fix review: %+v", results)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		client, err = ipc.Dial(p.Socket())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: id, Step: types.StepReview, Action: types.ActionApprove}, &ipc.RespondResult{})
+		client.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 		run := waitForRunTerminalState(t, d, id)
 		if run.Status != types.RunCompleted {
 			t.Fatalf("correction run failed: %+v", run)
