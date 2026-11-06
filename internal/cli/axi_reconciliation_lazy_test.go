@@ -99,7 +99,10 @@ func TestTriggerRunWithoutMirrorDoesNotQueryUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.Contains(line, " ls-remote ") || strings.Contains(line, " fetch ") || strings.Contains(line, " remote get-url origin") {
+		// Submission still checks its private gate; only upstream discovery
+		// and fetching must remain lazy when that gate has no branch mirror.
+		upstreamQuery := strings.Contains(line, " ls-remote ") && !strings.Contains(line, " ls-remote "+gate.RemoteName+" ")
+		if upstreamQuery || strings.Contains(line, " fetch ") || strings.Contains(line, " remote get-url origin") {
 			t.Fatalf("fresh submission queried upstream: %s", line)
 		}
 	}
