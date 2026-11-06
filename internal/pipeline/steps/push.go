@@ -129,6 +129,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // revalidation); pass this run's current steps (sctx.DB.GetStepsByRun) for
 // the ordinary Push step.
 func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, attestationSteps []*db.StepResult) error {
+	// Refuse before remote reads, attestation writes, or mirror reconciliation.
+	// Both ordinary pushes and direct CI-repair publication pass this boundary.
+	if err := assertExternalPublisherPolicy(sctx, headBeingPushed); err != nil {
+		return err
+	}
 	ctx := sctx.Ctx
 	if sctx.Run.Integration != nil {
 		if _, err := sctx.Run.Integration.RuntimeURL(ctx, sctx.Repo.WorkingPath); err != nil {
