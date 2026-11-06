@@ -176,6 +176,7 @@ no-mistakes uses the supplied text instead of transcript inference; see [Intent 
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Ordinary reattachment to an in-flight run keeps that run's intent and refuses explicit intent input, even if the text is unchanged. Omit `--intent`/`--intent-file` to reattach, or abort the active run before starting a new one with the intended constraints. [Strict launch receipts](#strict-launch-receipts) require the original intent bytes on every retry, using any of the input transports below.
+If a run appears only after submission, `axi run` refuses to drive it unless its stored intent matches the supplied intent under the [whitespace rules below](#intent-input).
 
 ### Intent input
 
