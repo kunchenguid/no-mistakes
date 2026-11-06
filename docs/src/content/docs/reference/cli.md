@@ -358,7 +358,7 @@ Every successful fix response echoes what it recorded in a `recorded:` object: `
 It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--instructions-file`, `--add-finding`, `--add-finding-file`, and `--reason`.
 The CLI supplies the observed head, step result, and latest round binding automatically.
 
-`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It also refuses a reviewer question, a pipeline-owned finding such as `review-questions-unreadable`, any finding an earlier round of the same Review chose to fix, and any finding the gate shows twice as an identical record at the same line. It starts another static Review turn without a fix or approval. Later rereviews can reissue the same finding under a different ID or line, and the recorded decision still suppresses it, as long as its content identifies one finding on each round; a decision that could never be matched is refused rather than recorded. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
+`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It also refuses a reviewer question, a pipeline-owned finding such as `review-questions-unreadable`, any finding an earlier round of the same Review chose to fix, and any finding the gate shows twice as an identical record at the same line. It starts another static Review turn without a fix or approval. Later rounds of the same Review can reissue the same finding under a different ID or line, and the recorded decision still suppresses it, as long as its content identifies one finding on each round; a decision that could never be matched is refused rather than recorded. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
@@ -629,13 +629,15 @@ Each round has these fields:
   An automatic selection does not mean the user declined the remaining findings.
   `user_declined` does not distinguish approve, skip, and abort; this export does not infer a verdict or whether a fix succeeded.
   `user_ignored` is a Review fix response that declined every finding its gate showed, recorded only there because only Review carries a decline forward, and `resolved_external` is a settlement outside the review worktree; neither is a verdict on the step.
+  Both values were added within `schema_version` 1, and the ignore-only Review round that now records `user_ignored` recorded `user_declined` in earlier versions.
+  A consumer that collects the operator's declines must match `user_declined` and `user_ignored` together.
 - `response_origin`: the recorded caller classification (`interactive`, `auto_yes`, or `unknown`).
 - `user_findings`: the merged finding array dispatched after user edits or additions, or `null` when absent.
   On a `resolved_external` round it is not a fix dispatch: it holds the settled findings, each carrying the operator's reason in `user_instructions`.
 - `fix_summary`: the recorded fix result, or `null` when absent.
 - `duration_ms` and `created_at`: recorded duration in milliseconds and creation time in Unix seconds.
 
-Consumers should tolerate additive fields and new source/origin values; incompatible changes require a new `schema_version`.
+Consumers should tolerate additive fields and new source/origin values, including a value a later version records where an earlier version recorded a different one; incompatible changes require a new `schema_version`.
 The export excludes internal configuration snapshots and does not publish anything remotely, but finding descriptions and instructions can still contain private repository information.
 
 ## no-mistakes axi handoff
