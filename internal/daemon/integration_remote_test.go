@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -32,6 +31,7 @@ func TestIntegrationRemoteFreshRunUsesSelectedRelease(t *testing.T) {
 	gitCmd(t, repo.WorkingPath, "push", "custom", "HEAD:main", "HEAD:release/customer")
 	gitCmd(t, repo.WorkingPath, "checkout", "-b", "topic", head)
 	gitCmd(t, repo.WorkingPath, "push", "gate", "topic")
+	gitCmd(t, gateDir, "update-ref", "refs/remotes/origin/main", head)
 	originConfig := gitOutput(t, gateDir, "config", "--get-regexp", "remote.origin.")
 	originRefs := gitOutput(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/")
 
@@ -66,5 +66,4 @@ func TestIntegrationRemoteFreshRunUsesSelectedRelease(t *testing.T) {
 	if _, err := database.GetRun(run.ID); err != nil {
 		t.Fatal(err)
 	}
-	_ = context.Background()
 }
