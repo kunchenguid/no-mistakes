@@ -73,13 +73,14 @@ func cacheKeyFor(s *Session) string {
 
 // A session can produce several changes without gaining another message. Keep
 // summaries distinct by change and transcript, and invalidate transcript-only caches.
-func summaryCacheKeyFor(s *Session, change SummaryContext) string {
+func summaryCacheKeyFor(s *Session, change SummaryContext, restrictionsDigest string) string {
 	data, _ := json.Marshal(struct {
-		Change     ChangeContext
-		Transcript string
-	}{change.Change, buildSummaryTranscript(s, change)})
+		Change                   ChangeContext
+		Transcript               string
+		CallerRestrictionsDigest string
+	}{change.Change, buildSummaryTranscript(s, change), restrictionsDigest})
 	h := sha256.New()
-	h.Write([]byte("change-summary-v2|" + cacheKeyFor(s)))
+	h.Write([]byte("change-summary-v3|" + cacheKeyFor(s)))
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }

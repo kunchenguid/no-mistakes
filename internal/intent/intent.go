@@ -48,7 +48,8 @@ type ExtractParams struct {
 	// Disambiguator.
 	Readers []Reader
 	// Cache is consulted before summarization. Pass NewMemCache() if no DB.
-	Cache Cache
+	Cache                    Cache
+	CallerRestrictionsDigest string
 	// Summarizer turns the chosen session's text into a short summary.
 	Summarizer Summarizer
 	// Disambiguator optionally chooses among multiple plausible sessions when
@@ -151,7 +152,7 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 	}
 
 	change := SummaryContext{Change: p.Change, WindowStart: opts.WindowStart, WindowEnd: opts.WindowEnd}
-	key := summaryCacheKeyFor(match.Session, change)
+	key := summaryCacheKeyFor(match.Session, change, p.CallerRestrictionsDigest)
 	if cached, ok := p.Cache.Get(key); ok && cached != "" {
 		return &Result{
 			Summary:   cached,

@@ -150,7 +150,7 @@ func TestExecutorCallerRestrictionsReachDirectIntentAgents(t *testing.T) {
 		if i > 0 {
 			head = "advanced-head"
 		}
-		for _, want := range []string{content, callerrestrictions.Source, run.ID, run.RepoID, run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`} {
+		for _, want := range []string{content, callerrestrictions.Source, run.CallerRestrictions.SourcePath, run.CallerRestrictions.SHA256, run.ID, run.RepoID, run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`} {
 			if !strings.Contains(call.Prompt, want) {
 				t.Errorf("invocation %d lost %q: %s", i, want, call.Prompt)
 			}
@@ -160,6 +160,16 @@ func TestExecutorCallerRestrictionsReachDirectIntentAgents(t *testing.T) {
 		}
 		if call.CWD != workDir {
 			t.Errorf("invocation %d changed working directory: %q", i, call.CWD)
+		}
+		if !strings.Contains(call.Prompt, "restrictions and their provenance are private") {
+			t.Errorf("invocation %d lost privacy instructions", i)
+		}
+		if i == 0 {
+			if call.Purpose != "intent-summary" || !strings.Contains(call.Prompt, "return no publishable content") || strings.Contains(call.Prompt, "normal step gate") {
+				t.Fatal("published summary did not receive publication instructions")
+			}
+		} else if !strings.Contains(call.Prompt, "normal step gate") || strings.Contains(call.Prompt, "return no publishable content") {
+			t.Errorf("non-publishing invocation %d lost its normal gate channel", i)
 		}
 	}
 }

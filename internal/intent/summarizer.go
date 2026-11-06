@@ -103,6 +103,7 @@ Transcript begins below the line. It is in a JSON packet with the change and dis
 %s`, agent.MemoryFilesRule, packet)
 
 	result, err := s.agent.Run(ctx, agent.RunOpts{
+		Purpose:    "intent-summary",
 		Prompt:     prompt,
 		CWD:        s.cwd,
 		JSONSchema: summarySchema,

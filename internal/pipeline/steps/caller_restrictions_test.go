@@ -101,6 +101,8 @@ func TestCallerRestrictionsPRDraftPrivacy(t *testing.T) {
 			}}
 			sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
 			bindTestCallerRestrictions(t, sctx)
+			submitted := base
+			sctx.Run.SubmittedHeadSHA = &submitted
 			s := &PRStep{}
 			var output string
 			var err error
@@ -128,15 +130,18 @@ func TestCallerRestrictionsPRDraftPrivacy(t *testing.T) {
 				t.Fatalf("draft agent calls = %d", len(ag.calls))
 			}
 			prompt := ag.calls[0].Prompt
-			for _, want := range []string{sctx.Run.CallerRestrictions.Content, "restrictions and their provenance are private", "Never quote, paraphrase or reproduce", "return no publishable content", "only tighten trusted configuration"} {
+			for _, want := range []string{sctx.Run.CallerRestrictions.Content, sctx.Run.CallerRestrictions.SourcePath, sctx.Run.CallerRestrictions.SHA256, callerrestrictions.Source, sctx.Run.ID, sctx.Run.RepoID, sctx.Run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`, fmt.Sprintf(`"CapturedAt":%d`, sctx.Run.CallerRestrictions.CapturedAt), "restrictions and their provenance are private", "Never quote, paraphrase or reproduce", "return no publishable content", "only tighten trusted configuration"} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("draft input missing %q", want)
 				}
 			}
 			for _, private := range []string{sctx.Run.CallerRestrictions.SourcePath, sctx.Run.CallerRestrictions.SHA256, sctx.Run.ID, sctx.Run.RepoID, `"RunID"`, `"SourcePath"`, `"SHA256"`, "normal step gate"} {
-				if strings.Contains(prompt, private) || strings.Contains(output, private) {
-					t.Errorf("draft input or output includes private metadata or gate reporting %q", private)
+				if strings.Contains(output, private) {
+					t.Errorf("draft output includes private metadata or gate reporting %q", private)
 				}
+			}
+			if strings.Contains(prompt, "normal step gate") || strings.Count(prompt, "BEGIN CAPTURED CALLER RESTRICTIONS") != 1 {
+				t.Fatal("publication turn has gate reporting or lost its single captured record")
 			}
 			if strings.Contains(output, strings.TrimSpace(sctx.Run.CallerRestrictions.Content)) || strings.Contains(output, callerrestrictions.Source) {
 				t.Fatal("synthetic draft assembly published private restrictions")

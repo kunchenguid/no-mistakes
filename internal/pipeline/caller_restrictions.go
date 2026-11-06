@@ -34,7 +34,7 @@ func (a *callerRestrictionsAgent) Run(ctx context.Context, opts agent.RunOpts) (
 		if r.SubmittedHeadSHA != nil {
 			submitted = *r.SubmittedHeadSHA
 		}
-		opts.Prompt += r.CallerRestrictions.Prompt(r.ID, r.RepoID, r.Branch, submitted, r.HeadSHA, opts.Purpose == "pr-draft")
+		opts.Prompt += r.CallerRestrictions.Prompt(r.ID, r.RepoID, r.Branch, submitted, r.HeadSHA, opts.Purpose == "pr-draft" || opts.Purpose == "intent-summary")
 	}
 	return a.inner.Run(ctx, opts)
 }
