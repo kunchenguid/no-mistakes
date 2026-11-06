@@ -148,8 +148,16 @@ func testExternalPublisherRecovery(t *testing.T, repair bool) {
 	gitCmd(t, upstream, "init", "--bare")
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
 	gitCmd(t, dir, "push", "origin", "main")
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, submitted, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, base, submitted, config.Commands{})
+	repo, err := sctx.DB.InsertRepo(dir, upstream, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := sctx.DB.InsertRun(repo.ID, "feature", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Repo, sctx.Run = repo, run
 	app := paths.WithRoot(t.TempDir())
 	if err := app.EnsureDirs(); err != nil {
 		t.Fatal(err)
