@@ -66,6 +66,73 @@ func daemonCallerRestrictions(t *testing.T, content string) *callerrestrictions.
 	return r
 }
 
+func TestCallerRestrictionsReceiptRejectsCompetingCallerBeforeClaim(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, head := setupTestGitRepo(t, p, d, "restrictions-receipt")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	const nonce, generation, intent = "shared-nonce", "generation", "fixture goal"
+	var pushed ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: head, New: head,
+		Intent: intent, LaunchNonce: nonce, ValidationGeneration: generation,
+	}, &pushed); err != nil {
+		t.Fatal(err)
+	}
+	record := daemonCallerRestrictions(t, "No network access.\n")
+	claim := func(digest string) (*ipc.LaunchReceipt, error) {
+		c, err := ipc.Dial(p.Socket())
+		if err != nil {
+			return nil, err
+		}
+		defer c.Close()
+		var result ipc.ClaimLaunchReceiptResult
+		err = c.Call(ipc.MethodClaimLaunchReceipt, map[string]any{
+			"repo_id": repo.ID, "branch": "main", "launch_nonce": nonce,
+			"submitted_head_sha": head, "validation_generation": generation,
+			"intent_digest": digestIntent(intent), "caller_restrictions_digest": digest,
+		}, &result)
+		return result.Receipt, err
+	}
+	if receipt, err := claim(record.Digest()); err == nil || !strings.Contains(err.Error(), "caller restrictions") || receipt != nil {
+		t.Fatalf("restricted caller accepted unrestricted run: receipt=%+v error=%v", receipt, err)
+	}
+	stored, err := d.GetRun(pushed.RunID)
+	if err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("mismatched caller consumed first receipt: run=%+v error=%v", stored, err)
+	}
+	start := make(chan struct{})
+	type result struct {
+		digest  string
+		receipt *ipc.LaunchReceipt
+		err     error
+	}
+	results := make(chan result, 2)
+	for _, digest := range []string{record.Digest(), ""} {
+		go func() {
+			<-start
+			receipt, err := claim(digest)
+			results <- result{digest, receipt, err}
+		}()
+	}
+	close(start)
+	for range 2 {
+		got := <-results
+		if got.digest != "" {
+			if got.err == nil || got.receipt != nil {
+				t.Errorf("concurrent restricted caller accepted unrestricted run: %+v", got)
+			}
+		} else if got.err != nil || got.receipt == nil || got.receipt.RunID != pushed.RunID || got.receipt.Disposition != "created" {
+			t.Errorf("matching caller lost first receipt: %+v", got)
+		}
+	}
+}
+
 func TestCallerRestrictionsRunInfoExposesOnlyRecordDigest(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

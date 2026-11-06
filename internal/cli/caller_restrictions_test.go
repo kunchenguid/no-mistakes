@@ -35,6 +35,37 @@ func cliRestrictions(t *testing.T) *callerrestrictions.Record {
 	return r
 }
 
+func TestCallerRestrictionsReceiptClaimCarriesRequestedIdentity(t *testing.T) {
+	record := cliRestrictions(t)
+	claims := make(chan map[string]any, 1)
+	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+		srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			var params map[string]any
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return nil, err
+			}
+			claims <- params
+			return &ipc.ClaimLaunchReceiptResult{Receipt: &ipc.LaunchReceipt{RunID: "competing-run"}}, nil
+		})
+	})
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx := callerrestrictions.WithLaunchRecord(context.Background(), record)
+	if _, err := waitForLaunchReceipt(ctx, client, "repo", "branch", "shared-nonce", "head", "generation", "intent", "", false, db.RunPRText{}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := (<-claims)["caller_restrictions_digest"]; got != record.Digest() {
+		t.Fatalf("receipt claim lost requested record identity: got %v, want %s", got, record.Digest())
+	}
+}
+
 func TestCallerRestrictionsFlagsAndPushTransport(t *testing.T) {
 	r := cliRestrictions(t)
 	for _, cmd := range []*cobra.Command{newAxiRunCmd(), newRerunCmd()} {
