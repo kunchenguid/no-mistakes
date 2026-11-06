@@ -839,7 +839,10 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	// so reuse that ref instead of fetching again after HEAD was rewritten and
 	// persisted: a failure here could not undo either.
 	defaultBranch := effectivePRBaseBranch(sctx)
-	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	baseSHA, err := mergeBaseWithRunBranch(ctx, sctx, defaultBranch)
+	if err != nil {
+		return nil, err
+	}
 	if baseSHA == "" {
 		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
 	}

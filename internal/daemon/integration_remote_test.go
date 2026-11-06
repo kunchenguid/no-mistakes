@@ -50,7 +50,7 @@ func TestIntegrationRemoteFreshRunUsesSelectedRelease(t *testing.T) {
 	gitCmd(t, repo.WorkingPath, "config", "url."+custom+".insteadOf", customerURL)
 	gitCmd(t, repo.WorkingPath, "commit", "--allow-empty", "-m", "customer sentinel")
 	sentinel := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
-	gitCmd(t, repo.WorkingPath, "push", "custom", "HEAD:main", "HEAD:release/customer")
+	gitCmd(t, repo.WorkingPath, "push", "custom", "HEAD:refs/heads/main", "HEAD:refs/heads/release/customer")
 	gitCmd(t, repo.WorkingPath, "checkout", "-b", "topic", head)
 	head = commitIntegrationTopic(t, repo.WorkingPath)
 	gitCmd(t, repo.WorkingPath, "push", "gate", "topic")
@@ -231,7 +231,7 @@ func TestIntegrationRemoteSurvivesPrivateDaemonRestart(t *testing.T) {
 	gitCmd(t, repo.WorkingPath, "remote", "add", "custom", custom)
 	gitCmd(t, repo.WorkingPath, "commit", "--allow-empty", "-m", "customer sentinel")
 	sentinel := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
-	gitCmd(t, repo.WorkingPath, "push", "custom", "HEAD:main", "HEAD:release/customer")
+	gitCmd(t, repo.WorkingPath, "push", "custom", "HEAD:refs/heads/main", "HEAD:refs/heads/release/customer")
 	gitCmd(t, repo.WorkingPath, "checkout", "-b", "topic", head)
 	initial := head
 	head = commitIntegrationTopic(t, repo.WorkingPath)
@@ -353,7 +353,7 @@ func TestIntegrationRemoteConcurrentRunsHaveSeparateDestinations(t *testing.T) {
 		gitCmd(t, repo.WorkingPath, "checkout", "--detach", head)
 		gitCmd(t, repo.WorkingPath, "commit", "--allow-empty", "-m", name+" sentinel")
 		sentinels[i] = gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
-		gitCmd(t, repo.WorkingPath, "push", name, "HEAD:main", "HEAD:release/customer")
+		gitCmd(t, repo.WorkingPath, "push", name, "HEAD:refs/heads/main", "HEAD:refs/heads/release/customer")
 		gitCmd(t, repo.WorkingPath, "push", "gate", head+":refs/heads/topic-"+name)
 	}
 	gitCmd(t, repo.WorkingPath, "checkout", "--detach", head)

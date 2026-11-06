@@ -60,15 +60,9 @@ func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallb
 			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
 		}
 	}
-	baseSHA := ""
-	if sctx.Run != nil && sctx.Run.Integration != nil {
-		var err error
-		baseSHA, err = git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", runIntegrationRef(sctx, defaultBranch))
-		if err != nil {
-			return "", fmt.Errorf("resolve selected integration base: %w", err)
-		}
-	} else {
-		baseSHA = mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	baseSHA, err := mergeBaseWithRunBranch(ctx, sctx, defaultBranch)
+	if err != nil {
+		return "", err
 	}
 	if baseSHA == "" {
 		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch)
@@ -77,6 +71,21 @@ func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallb
 		return "", err
 	}
 	return baseSHA, nil
+}
+
+// mergeBaseWithRunBranch uses the ref fetched for this run. A selected branch
+// lives in its private namespace, so an origin/local fallback could compare
+// HEAD with the submitted tree and falsely declare a real topic diff empty.
+// A missing selected ref refuses; only legacy origin runs retain fallbacks.
+func mergeBaseWithRunBranch(ctx context.Context, sctx *pipeline.StepContext, branch string) (string, error) {
+	if sctx.Run == nil || sctx.Run.Integration == nil {
+		return mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, branch), nil
+	}
+	base, err := git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", runIntegrationRef(sctx, branch))
+	if err != nil {
+		return "", fmt.Errorf("resolve selected integration base %q: %w", branch, err)
+	}
+	return base, nil
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
