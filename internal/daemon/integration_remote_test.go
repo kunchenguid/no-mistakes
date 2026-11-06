@@ -664,7 +664,11 @@ func TestIntegrationRemoteCleanupPreservesActiveInheritedNamespace(t *testing.T)
 	}
 	manager.cleanupIntegrationRefs(t.Context(), continuation, gateDir)
 	manager.cleanupIntegrationRefs(t.Context(), continuation, gateDir)
-	if got := gitOutput(t, gateDir, "for-each-ref", "--format=%(refname)", destination.Ref("")); got != "" {
+	got, err := git.Run(t.Context(), gateDir, "for-each-ref", "--format=%(refname)", destination.Ref(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
 		t.Fatalf("finished namespace retained refs: %s", got)
 	}
 	if got := gitOutput(t, gateDir, "rev-parse", otherPin.Ref("main")); got != head {
