@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,13 +22,18 @@ func verifyPublishedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) er
 	}
 	verifier := host.(scm.PRHeadVerifier)
 	previous := ""
-	if sctx.Run.LastPushedSHA != nil {
-		previous = strings.TrimSpace(*sctx.Run.LastPushedSHA)
+	publication, ok := sctx.Shared.PublishedPush()
+	if ok && publication.RunID == run.ID && publication.RepoID == run.RepoID && publication.Binding == (db.PushBinding{
+		HeadSHA:           *run.LastPushedSHA,
+		TargetKind:        *run.PushTargetKind,
+		TargetFingerprint: *run.PushTargetFingerprint,
+		Ref:               *run.PushRef,
+	}) {
+		previous = publication.PreviousHeadSHA
 	}
-	ctx, cancel := context.WithTimeout(sctx.Ctx, 3*time.Second)
-	defer cancel()
+	var retryUntil time.Time
 	for {
-		err := verifier.VerifyPRHead(ctx, pr, strings.TrimPrefix(*run.PushRef, "refs/heads/"), *run.LastPushedSHA)
+		err := verifier.VerifyPRHead(sctx.Ctx, pr, strings.TrimPrefix(*run.PushRef, "refs/heads/"), *run.LastPushedSHA)
 		if err == nil {
 			return nil
 		}
@@ -37,12 +41,22 @@ func verifyPublishedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) er
 		if previous == "" || strings.EqualFold(previous, *run.LastPushedSHA) || !errors.As(err, &changed) || !strings.EqualFold(changed.HeadSHA, previous) {
 			return fmt.Errorf("verify published PR: %w", err)
 		}
-		timer := time.NewTimer(250 * time.Millisecond)
+		if retryUntil.IsZero() {
+			retryUntil = time.Now().Add(3 * time.Second)
+		}
+		remaining := time.Until(retryUntil)
+		if remaining <= 0 {
+			return fmt.Errorf("verify published PR: head did not catch up within three seconds: %w", err)
+		}
+		timer := time.NewTimer(min(250*time.Millisecond, remaining))
 		select {
-		case <-ctx.Done():
+		case <-sctx.Ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("verify published PR: waiting for the pushed head: %w", ctx.Err())
+			return fmt.Errorf("verify published PR: waiting for the pushed head: %w", sctx.Ctx.Err())
 		case <-timer.C:
+		}
+		if !time.Now().Before(retryUntil) {
+			return fmt.Errorf("verify published PR: head did not catch up within three seconds: %w", err)
 		}
 	}
 }

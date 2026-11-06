@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // PR fixtures model their preceding successful Push step explicitly. Other
@@ -319,64 +321,141 @@ func (h *prLagFixtureHost) VerifyPRHead(ctx context.Context, pr *scm.PR, branch,
 	return h.verify(ctx, pr, branch, head)
 }
 
+func prLagPublishedContext(t *testing.T, scenario string) (*pipeline.StepContext, string, string) {
+	t.Helper()
+	dir, base, previous := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, previous, config.Commands{})
+	sctx.Shared = &pipeline.RunShared{}
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, dir, "remote", "set-url", "origin", upstream)
+	gitCmd(t, dir, "push", "-q", "origin", "main")
+	sctx.Env, _ = fakeGH(t, "")
+	recordReviewApproval(t, sctx, previous)
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("next delivered commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "repair.txt")
+	if scenario == "repair" {
+		gitCmd(t, dir, "commit", "-q", "--amend", "-m", "repaired delivered commit")
+	} else {
+		gitCmd(t, dir, "commit", "-q", "-m", "next delivered commit")
+	}
+	head := gitCmd(t, dir, "rev-parse", "HEAD")
+	if scenario == "new_run" {
+		if err := sctx.DB.UpdateRunStatus(sctx.Run.ID, types.RunCompleted); err != nil {
+			t.Fatal(err)
+		}
+		run, err := sctx.DB.InsertRun(sctx.Repo.ID, sctx.Run.Branch, head, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sctx.Run = run
+		sctx.Shared = &pipeline.RunShared{}
+	} else {
+		if err := sctx.DB.UpdateRunHeadSHAForRevalidation(sctx.Run.ID, head); err != nil {
+			t.Fatal(err)
+		}
+		sctx.Run.HeadSHA = head
+	}
+	recordReviewApproval(t, sctx, head)
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("%s publication: %v", scenario, err)
+	}
+	if sctx.Run.LastPushedSHA != nil {
+		t.Fatal("executor snapshot unexpectedly acquired a push binding")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != head {
+		t.Fatalf("remote head = %s, want %s", got, head)
+	}
+	return sctx, previous, head
+}
+
 func TestPRStep_WaitsForPreviousPushedHead(t *testing.T) {
-	for _, route := range []string{"create", "update", "persisted"} {
-		t.Run(route, func(t *testing.T) {
-			t.Parallel()
-			dir, base, head := setupGitRepo(t)
-			sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
-			sctx.Run.LastPushedSHA = &base
-			url := "https://github.com/test/repo/pull/42"
-			discovered := url
-			if route == "create" {
-				discovered = ""
-			}
-			if route == "persisted" {
-				discovered = ""
-				sctx.Run.PRURL = &url
-				if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, url); err != nil {
-					t.Fatal(err)
+	for _, scenario := range []string{"new_run", "repair"} {
+		for _, route := range []string{"create", "update", "persisted"} {
+			t.Run(scenario+"/"+route, func(t *testing.T) {
+				t.Parallel()
+				sctx, previous, head := prLagPublishedContext(t, scenario)
+				url := "https://github.com/test/repo/pull/42"
+				discovered := url
+				if route == "create" {
+					discovered = ""
 				}
-			}
-			sctx.Env, _ = fakeGH(t, discovered)
-			host, reason := buildHost(sctx, resolvedProvider(sctx))
-			if host == nil {
-				t.Fatal(reason)
-			}
-			calls := 0
-			step := &PRStep{host: &prLagFixtureHost{Host: host, verify: func(_ context.Context, pr *scm.PR, branch, pushed string) error {
-				calls++
-				if pr == nil || branch != "feature" || pushed != head {
-					t.Fatalf("unbound proof request: %+v %s %s", pr, branch, pushed)
+				if route == "persisted" {
+					discovered = ""
+					sctx.Run.PRURL = &url
+					if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, url); err != nil {
+						t.Fatal(err)
+					}
 				}
-				if calls == 1 {
-					return &scm.PRHeadChangedError{HeadSHA: base}
+				sctx.Env, _ = fakeGH(t, discovered)
+				host, reason := buildHost(sctx, resolvedProvider(sctx))
+				if host == nil {
+					t.Fatal(reason)
 				}
-				return nil
-			}}}
-			out, err := step.Execute(sctx)
-			if err != nil || out == nil || out.PRURL == "" || calls < 2 {
-				t.Fatalf("lagging previous head did not converge: %+v %v calls=%d", out, err, calls)
-			}
-		})
+				calls := 0
+				step := &PRStep{host: &prLagFixtureHost{Host: host, verify: func(_ context.Context, pr *scm.PR, branch, pushed string) error {
+					calls++
+					if pr == nil || branch != "feature" || pushed != head {
+						t.Fatalf("unbound proof request: %+v %s %s", pr, branch, pushed)
+					}
+					if calls == 1 {
+						return &scm.PRHeadChangedError{HeadSHA: previous}
+					}
+					return nil
+				}}}
+				out, err := step.Execute(sctx)
+				if err != nil || out == nil || out.PRURL == "" || calls < 2 {
+					t.Fatalf("lagging previous head did not converge: %+v %v calls=%d", out, err, calls)
+				}
+			})
+		}
 	}
 }
 
 func TestVerifyPublishedPR_RetriesOnlyPreviousHeadWithAHardCap(t *testing.T) {
-	for _, fault := range []string{"previous", "unrelated", "missing", "lookup", "no_previous"} {
+	for _, fault := range []string{"previous", "unrelated", "missing", "lookup", "no_previous", "restart", "empty_previous", "unchanged", "wrong_run", "wrong_repo", "wrong_head", "wrong_target", "wrong_kind", "wrong_ref"} {
 		t.Run(fault, func(t *testing.T) {
 			t.Parallel()
-			dir, base, head := setupGitRepo(t)
-			sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
-			sctx.Run.LastPushedSHA = &base
+			sctx, previous, _ := prLagPublishedContext(t, "new_run")
 			if fault == "no_previous" {
-				sctx.Run.LastPushedSHA = nil
+				sctx.Shared = &pipeline.RunShared{}
+			} else if fault == "restart" {
+				sctx.Shared = nil
+			} else {
+				publication, ok := sctx.Shared.PublishedPush()
+				if !ok {
+					t.Fatal("successful push produced no handoff")
+				}
+				switch fault {
+				case "empty_previous":
+					publication.PreviousHeadSHA = ""
+				case "unchanged":
+					publication.PreviousHeadSHA = publication.Binding.HeadSHA
+				case "wrong_run":
+					publication.RunID = "another-run"
+				case "wrong_repo":
+					publication.RepoID = "another-repo"
+				case "wrong_head":
+					publication.Binding.HeadSHA = previous
+				case "wrong_target":
+					publication.Binding.TargetFingerprint = strings.Repeat("0", 64)
+				case "wrong_kind":
+					publication.Binding.TargetKind = "fork"
+				case "wrong_ref":
+					publication.Binding.Ref = "refs/heads/other"
+				}
+				sctx.Shared.SetPublishedPush(publication)
 			}
 			calls := 0
 			host := &prLagFixtureHost{verify: func(ctx context.Context, _ *scm.PR, _, _ string) error {
 				calls++
-				if _, ok := ctx.Deadline(); !ok {
-					t.Fatal("proof read has no deadline")
+				if ctx != sctx.Ctx {
+					t.Fatal("proof read did not retain the caller's context")
 				}
 				switch fault {
 				case "unrelated":
@@ -386,7 +465,7 @@ func TestVerifyPublishedPR_RetriesOnlyPreviousHeadWithAHardCap(t *testing.T) {
 				case "lookup":
 					return errors.New("lookup failed")
 				default:
-					return &scm.PRHeadChangedError{HeadSHA: base}
+					return &scm.PRHeadChangedError{HeadSHA: previous}
 				}
 			}}
 			start := time.Now()
@@ -395,11 +474,41 @@ func TestVerifyPublishedPR_RetriesOnlyPreviousHeadWithAHardCap(t *testing.T) {
 				t.Fatal("unverified head succeeded")
 			}
 			if fault == "previous" {
-				if !errors.Is(err, context.DeadlineExceeded) || calls < 2 || time.Since(start) > 5*time.Second {
+				if !errors.Is(err, scm.ErrHeadChanged) || calls < 2 || time.Since(start) > 5*time.Second {
 					t.Fatalf("previous head did not stop at deadline: %v calls=%d elapsed=%s", err, calls, time.Since(start))
 				}
 			} else if calls != 1 {
 				t.Fatalf("retried %s: %d reads", fault, calls)
+			}
+		})
+	}
+}
+
+func TestVerifyPublishedPR_SlowProofReadsKeepTheCallersContext(t *testing.T) {
+	for _, phase := range []string{"initial", "retry"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			sctx, previous, _ := prLagPublishedContext(t, "new_run")
+			ctx, cancel := context.WithTimeout(sctx.Ctx, 10*time.Second)
+			defer cancel()
+			sctx.Ctx = ctx
+			calls := 0
+			host := &prLagFixtureHost{verify: func(readCtx context.Context, _ *scm.PR, _, _ string) error {
+				calls++
+				if phase == "retry" && calls == 1 {
+					return &scm.PRHeadChangedError{HeadSHA: previous}
+				}
+				timer := time.NewTimer(3100 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+					return nil
+				case <-readCtx.Done():
+					return readCtx.Err()
+				}
+			}}
+			if err := verifyPublishedPR(sctx, host, &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}); err != nil {
+				t.Fatalf("slow successful %s proof was canceled: %v", phase, err)
 			}
 		})
 	}
