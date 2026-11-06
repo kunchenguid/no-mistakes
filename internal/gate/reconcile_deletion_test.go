@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,7 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			writeReconcileFile(t, work, "keep.txt", "private keep\n")
 			reconcileGit(t, work, "add", "-A")
 			reconcileGit(t, work, "commit", "-m", "edit both files")
+			firstPrivate := reconcileGit(t, work, "rev-parse", "HEAD")
 			writeReconcileFile(t, work, "other.txt", "private addition\n")
 			reconcileGit(t, work, "add", "other.txt")
 			reconcileGit(t, work, "commit", "-m", "add other file")
@@ -127,6 +129,11 @@ done
 			if change != "kept" && change != "later_edit" {
 				if err == nil || plan.Reconcile {
 					t.Fatalf("lost content accepted: plan=%+v err=%v", plan, err)
+				}
+				for _, commit := range []string{firstPrivate, privateHead} {
+					if !strings.Contains(err.Error(), commit) {
+						t.Fatalf("refusal omitted at-risk commit %s: %v", commit, err)
+					}
 				}
 				return
 			}

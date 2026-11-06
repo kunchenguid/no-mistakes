@@ -164,12 +164,11 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				remaining = append(remaining, commit)
 			}
 		}
+		var deletionProofErr error
 		if len(remaining) > 0 {
-			contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, workDir, liveHead, gateHead)
-			if err != nil {
-				return plan, fmt.Errorf("compare private mirror content across upstream deletions: %w", err)
-			}
-			if contained {
+			var contained bool
+			contained, deletionProofErr = privateTreeSurvivesBaseDeletion(ctx, gateDir, workDir, liveHead, gateHead)
+			if contained && deletionProofErr == nil {
 				remaining = nil
 			}
 		}
@@ -182,12 +181,16 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				}
 				atRisk = append(atRisk, description)
 			}
-			return plan, fmt.Errorf(
+			refusal := fmt.Errorf(
 				"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s. "+
 					"Clears on any of: %s",
 				branchRef, len(remaining), liveHead, strings.Join(atRisk, "; "),
 				joinSatisfiers(satisfiers),
 			)
+			if deletionProofErr != nil {
+				return plan, fmt.Errorf("%w; upstream-deletion proof unavailable: %v", refusal, deletionProofErr)
+			}
+			return plan, refusal
 		}
 		plan.PreservedByRecovery = preserved
 	}
