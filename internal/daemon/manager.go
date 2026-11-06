@@ -236,7 +236,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if quotaRecord == nil {
 		cfg.QuotaRouting.Enabled = false
 	}
-	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
+	identity, err := m.db.RunCommitIdentity(run.ID)
+	if err != nil {
+		return nil, err
+	}
+	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, pipelineEnvironment(forgeCtx, identity), quotaRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -547,6 +551,13 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		}()
 	})
 	executor.SetForgeContext(plan.forge)
+	identity, err := m.db.RunCommitIdentity(plan.run.ID)
+	if err != nil {
+		_ = plan.agent.Close()
+		m.db.UpdateRunError(plan.run.ID, err.Error())
+		return
+	}
+	executor.SetCommitIdentity(identity)
 	done := make(chan struct{})
 	spawn := func() {
 		m.wg.Add(1)
@@ -995,6 +1006,11 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // handlePushReceived is HandlePushReceived; fromReplay marks a push an
 // earlier daemon held, which replayHeldPushes starts ahead of fresh pushes.
 func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushReceivedParams, fromReplay bool) (string, error) {
+	var identityErr error
+	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
+	if identityErr != nil {
+		return "", identityErr
+	}
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
 	if git.IsZeroSHA(params.New) {
@@ -1059,6 +1075,11 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 // HandleStartFreshRun creates or replays a proof-mode launch only after
 // checking the creation context under the repository/branch lock.
 func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartFreshRunParams) (ipc.LaunchReceipt, error) {
+	var identityErr error
+	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
+	if identityErr != nil {
+		return ipc.LaunchReceipt{}, identityErr
+	}
 	if m.restartPending() {
 		return ipc.LaunchReceipt{}, errRestartPending
 	}
@@ -1695,6 +1716,13 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // the repository/branch lock. Proof fields are empty for ordinary launches,
 // and retry is nil for every run that does not continue a failed one.
 func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
+	identity, identityErr := submissionIdentity(ctx, repo.WorkingPath)
+	if retry != nil {
+		identity, identityErr = m.db.RunCommitIdentity(retry.source.ID)
+	}
+	if identityErr != nil {
+		return "", identityErr
+	}
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
@@ -1880,6 +1908,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if err := m.db.BindRunCommitIdentity(run.ID, identity); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("bind commit identity: %s", err))
+		return "", err
 	}
 	if intentCheckJSON != "" {
 		if err := m.db.SetRunIntentCheck(run.ID, intentCheckJSON); err != nil {
@@ -2130,7 +2162,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
 	// fail-closed check. The quota-aware record is fresh-read here (a nil
 	// input) and persisted beside the gates pin below.
-	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), nil)
+	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, pipelineEnvironment(forgeCtx, identity), nil)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")
@@ -2180,6 +2212,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor.SetHandoffPending(m.handoffPending)
 	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetForgeContext(forgeCtx)
+	executor.SetCommitIdentity(identity)
 	executor.SetSkippedSteps(skipSteps)
 	if retry != nil {
 		executor.SetRetrySource(retry.source.ID)

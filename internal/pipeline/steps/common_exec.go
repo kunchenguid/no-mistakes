@@ -183,7 +183,7 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 	if sctx.ForgeContext != nil && !sctx.ForgeContext.Environment.Empty() {
 		env = sctx.ForgeContext.Environment.Apply(env)
 	}
-	return env
+	return git.ApplyCommitIdentity(sctx.Ctx, env)
 }
 
 // stepGitRun runs git with the StepContext's environment plus the standard

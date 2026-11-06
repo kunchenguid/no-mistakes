@@ -24,6 +24,10 @@ func TestCopyLocalUserIdentityUsesEffectiveCheckoutIdentity(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
 	run(t, src, "git", "config", "--file", global, "includeIf.gitdir:"+filepath.ToSlash(src)+"/.git.path", identity)
+	bound, err := CaptureCommitIdentity(ctx, src)
+	if err != nil || bound.AuthorName != "Submitter" || bound.CommitterEmail != "submitter@example.test" {
+		t.Fatalf("effective submission identity = %+v, %v", bound, err)
+	}
 	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
 		t.Fatal(err)
 	}
@@ -31,5 +35,66 @@ func TestCopyLocalUserIdentityUsesEffectiveCheckoutIdentity(t *testing.T) {
 		if got := run(t, dst, "git", "config", "--local", "--get", key); got != want {
 			t.Errorf("%s = %q, want effective checkout value %q", key, got, want)
 		}
+	}
+}
+
+func TestCommitIdentityPinsBothRolesDespiteLaterAmbientOverrides(t *testing.T) {
+	dir := initTestRepo(t)
+	t.Setenv("GIT_AUTHOR_NAME", "Submitting Author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "author@example.test")
+	t.Setenv("GIT_COMMITTER_NAME", "Submitting Committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "committer@example.test")
+	identity, err := CaptureCommitIdentity(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithCommitIdentity(context.Background(), identity)
+	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		t.Setenv(key, "Daemon")
+	}
+	for _, key := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(key, "daemon@example.test")
+	}
+	if _, err := Run(ctx, dir, "commit", "--allow-empty", "-m", "correction"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Run(ctx, dir, "show", "-s", "--format=%an <%ae> | %cn <%ce>", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>"
+	if got != want {
+		t.Fatalf("commit identity = %q, want %q", got, want)
+	}
+}
+
+func TestCommitIdentityRefusesMissingIdentity(t *testing.T) {
+	dir := initTestRepo(t)
+	for _, key := range []string{"user.name", "user.email"} {
+		run(t, dir, "git", "config", "--local", "--unset", key)
+	}
+	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"} {
+		t.Setenv(key, "")
+	}
+	head := run(t, dir, "git", "rev-parse", "HEAD")
+	if _, err := CaptureCommitIdentity(context.Background(), dir); err == nil {
+		t.Fatal("missing identity was accepted")
+	}
+	if got := run(t, dir, "git", "rev-parse", "HEAD"); got != head {
+		t.Fatal("identity refusal changed HEAD")
+	}
+}
+
+func TestCommitIdentityUsesWorktreeConfiguration(t *testing.T) {
+	dir := initTestRepo(t)
+	run(t, dir, "git", "config", "extensions.worktreeConfig", "true")
+	run(t, dir, "git", "config", "--worktree", "user.name", "Worktree Submitter")
+	run(t, dir, "git", "config", "--worktree", "user.email", "worktree@example.test")
+	identity, err := CaptureCommitIdentity(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.AuthorName != "Worktree Submitter" || identity.CommitterEmail != "worktree@example.test" {
+		t.Fatalf("lost worktree identity: %+v", identity)
 	}
 }

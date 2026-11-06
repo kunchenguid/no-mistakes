@@ -206,8 +206,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				return err
 			}
 			homes := runenv.CaptureTranscriptHomes()
+			identity, err := captureHookIdentity(cmd.Context(), client, p, gatePath)
+			if err != nil {
+				return err
+			}
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				CommitIdentity:         identity,
 				TranscriptHomes:        homes,
 				Gate:                   gatePath,
 				Ref:                    ref,

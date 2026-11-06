@@ -755,7 +755,7 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return err
 }
 
-// CopyLocalUserIdentity copies local user.name and user.email from srcDir into
+// CopyLocalUserIdentity copies effective user.name and user.email from srcDir into
 // dstDir. Missing values in srcDir are ignored.
 //
 // The write into dstDir uses per-worktree scope when
@@ -782,7 +782,7 @@ func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 		scope = []string{"--file", path}
 	}
 	for _, key := range []string{"user.name", "user.email"} {
-		value, err := Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
+		value, err := Run(ctx, srcDir, "config", "--get", "--default", "", key)
 		if err != nil {
 			return err
 		}

@@ -27,7 +27,7 @@ func nonInteractiveEnvForContext(ctx context.Context, dir string) []string {
 			base = overlay.Apply(base)
 		}
 	}
-	return NonInteractiveEnvFrom(base, dir)
+	return NonInteractiveEnvFrom(ApplyCommitIdentity(ctx, base), dir)
 }
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke

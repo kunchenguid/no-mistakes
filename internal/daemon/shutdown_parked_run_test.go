@@ -73,6 +73,13 @@ func TestShutdown_KeepsRunParkedAtApprovalGateForResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	identity, err := gitpkg.CaptureCommitIdentity(context.Background(), repo.WorkingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.BindRunCommitIdentity(run.ID, identity); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}

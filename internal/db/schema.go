@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_commit_identities (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    identity_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

@@ -179,6 +179,17 @@ func (c *Client) RequireTranscriptHomes() error {
 	return nil
 }
 
+// RequireCommitIdentity refuses older daemons before a caller submits a run.
+func (c *Client) RequireCommitIdentity() error {
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := c.Call(MethodProbeCommitIdentity, nil, &result); err != nil || !result.OK {
+		return fmt.Errorf("running daemon cannot bind the submitter's commit identity; restart it with the current binary: %v", err)
+	}
+	return nil
+}
+
 // CallWithTimeout is Call with a caller-selected read deadline.
 func (c *Client) CallWithTimeout(method string, params interface{}, result interface{}, timeout time.Duration) error {
 	return c.CallWithContext(context.Background(), method, params, result, timeout)
