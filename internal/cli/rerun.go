@@ -32,6 +32,10 @@ func newRerunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reviewer, err := reviewerFromFlags(cmd)
+			if err != nil {
+				return err
+			}
 			closes, err := normalizeClosingIssueRefs(closesIssues)
 			if err != nil {
 				return err
@@ -68,6 +72,10 @@ func newRerunCmd() *cobra.Command {
 					return fmt.Errorf("connect to daemon: %w", err)
 				}
 				defer client.Close()
+				reviewer, err = resolveReviewer(client, repo.ID, reviewer)
+				if err != nil {
+					return err
+				}
 				// A rerun inherits omission from the selected prior run, and
 				// only the daemon knows that selection, so the caller can never
 				// rule omission out: probe unconditionally, whatever the flag
@@ -97,7 +105,7 @@ func newRerunCmd() *cobra.Command {
 					return err
 				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -112,6 +120,7 @@ func newRerunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "GitHub issue this PR closes when merged; repeat for multiple issues (42 or owner/repo#42); adds to inherited references")
 	bindPRTextFlags(cmd, &prTitle, &prBodyFile)
 	bindPiProfileFlags(cmd, &model, &effort)
+	bindReviewerFlags(cmd)
 	return cmd
 }
 

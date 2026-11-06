@@ -107,7 +107,8 @@ type Run struct {
 	// by the PR step.
 	OmitIntent bool
 	// PiProfile is immutable launch selection; nil retains legacy live config.
-	PiProfile *agentcfg.PiProfile
+	PiProfile       *agentcfg.PiProfile
+	ReviewerProfile *agentcfg.ReviewerProfile
 	// QuotaRouting is the run's quota-aware agent ordering record (the
 	// quotarouting.Record JSON), written at run setup when the feature is on
 	// and appended to when a mid-run quota switch moves the run. Empty for
@@ -131,7 +132,7 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, created_at, updated_at, reviewer_profile`
 
 func (d *DB) runColumns() string {
 	intentCheck := "NULL"
@@ -165,6 +166,7 @@ func scanRun(row interface {
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir,
 		&r.CreatedAt, &r.UpdatedAt,
+		&r.ReviewerProfile,
 	)
 	if err != nil {
 		return err
@@ -208,7 +210,7 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 // caller-side omit-intent decision. The partial unique index remains the
 // duplicate defense across daemon processes; callers additionally serialize
 // selection under their branch lock.
-func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, profiles ...*agentcfg.PiProfile) (*Run, error) {
+func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, profiles ...agentcfg.RunSelection) (*Run, error) {
 	return d.InsertRunWithPRText(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, RunPRText{}, profiles...)
 }
 
@@ -247,9 +249,13 @@ func (r *Run) PRTextDigest() string {
 
 // InsertRunWithPRText is InsertRunWithIntentAndLaunchNonce that also stores
 // the caller-supplied PR text in the same row write.
-func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, profiles ...*agentcfg.PiProfile) (*Run, error) {
+func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, profiles ...agentcfg.RunSelection) (*Run, error) {
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
+		return nil, err
+	}
+	reviewer := agentcfg.OptionalReviewerProfile(profiles)
+	if err := reviewer.Validate(); err != nil {
 		return nil, err
 	}
 	ts := now()
@@ -265,6 +271,7 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 		NoMistakesVersion:  &version,
 		NoMistakesBuildSHA: &buildSHA,
 		PiProfile:          pin,
+		ReviewerProfile:    reviewer,
 		Status:             types.RunPending,
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
@@ -296,8 +303,8 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 		r.PRBody = &prText.Body
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -460,7 +467,7 @@ func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, erro
 // this caller is its first observer. The expected immutable receipt binding,
 // including an explicit PR base branch, is part of the UPDATE predicate, so a
 // conflicting observer cannot consume `created`.
-func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
+func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
 	return d.ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, omitIntent, "", profiles...)
 }
 
@@ -470,7 +477,7 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 // its PR text is written with the row and never changes, so a conflicting
 // observer cannot consume `created`, even when the row is inserted while this
 // call runs. With no row yet it returns nil, like any unclaimable receipt.
-func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
+func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -478,6 +485,14 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 	model, effort := "", ""
 	if request != nil {
 		model, effort = request.Model, string(request.Effort)
+	}
+	reviewer := agentcfg.OptionalReviewerProfile(profiles)
+	if err := reviewer.ValidateRequest(); err != nil {
+		return nil, false, err
+	}
+	rAgent, rModel, rEffort := "", "", ""
+	if reviewer != nil {
+		rAgent, rModel, rEffort = string(reviewer.Agent), reviewer.Model, string(reviewer.Effort)
 	}
 	prBaseBranch = strings.TrimSpace(prBaseBranch)
 	existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
@@ -496,9 +511,12 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 		   AND (? = 0 OR omit_intent = ?)
 		   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
 		   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
+		   AND (? = '' OR json_extract(reviewer_profile, '$.agent') = ?)
+		   AND (? = '' OR json_extract(reviewer_profile, '$.model') = ?)
+		   AND (? = '' OR json_extract(reviewer_profile, '$.effort') = ?)
 		   AND launch_receipt_claimed_at IS NULL
 		 RETURNING `+d.runColumns(),
-		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
+		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort, rAgent, rAgent, rModel, rModel, rEffort, rEffort,
 	), r)
 	if err == nil {
 		return r, true, nil
