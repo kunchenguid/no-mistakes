@@ -17,7 +17,7 @@ push:
     remedy: Recover the validated head and publish through the shipping gate.
 ```
 
-`paths` is a nonempty list of literal repository-relative paths, not globs. Files, directories, and tracked symlinks match by presence in the commit. Untracked worktree files do not match. Absolute paths and dot segments are rejected. `reason` and `remedy` must both be nonempty. Malformed declarations fail configuration loading, including after a daemon restart.
+`paths` is a nonempty list of literal repository-relative paths, not globs. Files, directories, and tracked symlinks match by presence in the commit. Untracked worktree files do not match. If the proposed commit's tree cannot be read, publication is refused. Absolute paths and dot segments are rejected. `reason` and `remedy` must both be nonempty. Malformed declarations fail configuration loading, including after a daemon restart.
 
 A match fails publication before any push, PR attestation update, or mirror reconciliation. The refusal names the matching path, commit, reason, and remedy. Both ordinary Push and direct CI-repair publication enforce it. No workflow scanning, automatic bypass, or external publisher invocation occurs.
 
