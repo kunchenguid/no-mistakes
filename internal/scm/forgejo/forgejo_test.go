@@ -293,7 +293,7 @@ func TestPRLifecycleCommandsAndIdempotentCreate(t *testing.T) {
 	host := newTestHost(recorder)
 
 	found, err := host.FindPR(context.Background(), "feature/forgejo", "main")
-	if err != nil || found == nil || found.Number != "42" || found.URL != testPRURL || found.HeadSHA != testHeadSHA {
+	if err != nil || found == nil || found.Number != "42" || found.URL != testPRURL || found.HeadSHA != testHeadSHA || found.BaseBranch != "main" {
 		t.Fatalf("FindPR() = (%+v, %v)", found, err)
 	}
 	created, err := host.CreatePR(context.Background(), "feature/forgejo", "main", scm.PRContent{Title: "Title", Body: "line one\nline two"})
@@ -318,6 +318,42 @@ func TestPRLifecycleCommandsAndIdempotentCreate(t *testing.T) {
 		if !reflect.DeepEqual(recorder.calls[i].args, want[i]) {
 			t.Errorf("call %d args = %#v, want %#v", i, recorder.calls[i].args, want[i])
 		}
+	}
+}
+
+func TestGetPRBaseBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response fakeResponse
+		want     string
+	}{
+		{name: "live retarget", response: fakeResponse{stdout: `{"pull_request":` + strings.Replace(pullJSON("open", false, testHeadSHA), `"base":"main"`, `"base":"release/layer"`, 1) + `}`}, want: "release/layer"},
+		{name: "missing base", response: fakeResponse{stdout: `{"pull_request":` + strings.Replace(pullJSON("open", false, testHeadSHA), `"base":"main"`, `"base":""`, 1) + `}`}},
+		{name: "blank base", response: fakeResponse{stdout: `{"pull_request":` + strings.Replace(pullJSON("open", false, testHeadSHA), `"base":"main"`, `"base":" "`, 1) + `}`}},
+		{name: "wrong PR", response: fakeResponse{stdout: `{"pull_request":` + strings.ReplaceAll(pullJSON("open", false, testHeadSHA), "42", "43") + `}`}},
+		{name: "invalid output", response: fakeResponse{stdout: `{`}},
+		{name: "read error", response: fakeResponse{stderr: "unavailable", code: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fakeRecorder{responses: []fakeResponse{tc.response}}
+			var reader scm.PRBaseBranchReader = newTestHost(recorder)
+			pr := testPR()
+			pr.BaseBranch = "old-layer"
+			base, err := reader.GetPRBaseBranch(context.Background(), pr)
+			if tc.want == "" {
+				if err == nil || base != "" {
+					t.Fatalf("GetPRBaseBranch() = (%q, %v), want refusal", base, err)
+				}
+				return
+			}
+			if err != nil || base != tc.want {
+				t.Fatalf("GetPRBaseBranch() = (%q, %v), want %q", base, err, tc.want)
+			}
+			want := []string{"pr", "view", "--repo", testRepo, "42", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"}
+			if len(recorder.calls) != 1 || !reflect.DeepEqual(recorder.calls[0].args, want) {
+				t.Fatalf("live-base read calls = %+v, want %v", recorder.calls, want)
+			}
+		})
 	}
 }
 
@@ -503,7 +539,7 @@ func TestMergedProofRequiresExpectedHeadAndCanonicalIdentity(t *testing.T) {
 	proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 	recorder := &fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}}
 	host := newTestHost(recorder)
-	got, err := host.GetMergedProof(context.Background(), testPR(), testHeadSHA)
+	got, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA})
 	if err != nil || !got.Merged || got.HeadSHA != testHeadSHA || got.MergeCommitSHA == "" {
 		t.Fatalf("GetMergedProof() = (%+v, %v)", got, err)
 	}
@@ -516,7 +552,7 @@ func TestMergedProofRequiresExpectedHeadAndCanonicalIdentity(t *testing.T) {
 func TestMergedProofRejectsEmptyExpectedHead(t *testing.T) {
 	proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 	host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
-	_, err := host.GetMergedProof(context.Background(), testPR(), "")
+	_, err := host.GetMergedProof(context.Background(), testPR(), nil)
 	if err == nil || !strings.Contains(err.Error(), "expected head") {
 		t.Fatalf("GetMergedProof() error = %v, want missing expected head", err)
 	}
@@ -525,7 +561,7 @@ func TestMergedProofRejectsEmptyExpectedHead(t *testing.T) {
 func TestMergedProofRejectsAlreadyMergedHeadRace(t *testing.T) {
 	proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 	host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
-	_, err := host.GetMergedProof(context.Background(), testPR(), testHeadSHA)
+	_, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA})
 	if !errors.Is(err, scm.ErrHeadChanged) {
 		t.Fatalf("GetMergedProof() error = %v, want ErrHeadChanged", err)
 	}
@@ -582,7 +618,7 @@ func TestRejectsMismatchedPRIdentityAndIncompleteSearch(t *testing.T) {
 	t.Run("merged proof output number", func(t *testing.T) {
 		proof := `{"merged":true,"number":43,"url":"` + testBaseURL + `/octo/widgets/pulls/43","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 		host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
-		_, err := host.GetMergedProof(context.Background(), testPR(), testHeadSHA)
+		_, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA})
 		if err == nil || !strings.Contains(err.Error(), "number") {
 			t.Fatalf("GetMergedProof() error = %v, want number identity error", err)
 		}
@@ -830,4 +866,16 @@ func TestMain(m *testing.M) {
 		// no shell executable is involved in these contract tests.
 	}
 	os.Exit(m.Run())
+}
+
+func TestMergedProofRejectsMissingMergingIdentity(t *testing.T) {
+	for _, identity := range []string{"null", `""`} {
+		t.Run(identity, func(t *testing.T) {
+			proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":` + identity + `}`
+			host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
+			if _, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA}); err == nil {
+				t.Fatal("merged proof without merging identity was accepted")
+			}
+		})
+	}
 }

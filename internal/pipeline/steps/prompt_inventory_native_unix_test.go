@@ -37,6 +37,8 @@ func recordNativeClaude(t *testing.T, payload string) (agent.Agent, string) {
 }
 
 func TestPRDraftNativeLargeInventory(t *testing.T) {
+	t.Parallel()
+	// Layouts share optional proof-output filenames, so keep them sequential.
 	for _, layout := range []string{"flat", "nested", "groups"} {
 		t.Run(layout, func(t *testing.T) { testPRDraftNativeLargeInventory(t, layout) })
 	}
@@ -273,8 +275,10 @@ func assertNativeDiffRecovery(t *testing.T, prompt, dir, base, head string) {
 }
 
 func TestReviewNativeUncertifiedHistoryBounded(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct{ rounds, findings int }{{1, 1}, {6, 1}, {100, 1}, {6, 100}, {100, 100}} {
 		t.Run(fmt.Sprintf("rounds-%d-findings-%d", scenario.rounds, scenario.findings), func(t *testing.T) {
+			t.Parallel()
 			count := scenario.rounds
 			dir, base, head := setupGitRepo(t)
 			required := `{"findings":[{"id":"required-1","severity":"error","file":"feature.txt","line":1,"description":"Required unresolved behavior must remain visible.","action":"auto-fix"}],"summary":"Still required","reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"Fixture exercises metadata only.","risk_scope":"source-or-external"}`
@@ -389,6 +393,7 @@ func TestReviewNativeUncertifiedHistoryBounded(t *testing.T) {
 }
 
 func TestPRDraftNativeSmallInventoryUnchanged(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	for i := range 50 {
 		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("notes-%02d.txt", i)), []byte("short note\n"), 0o600); err != nil {

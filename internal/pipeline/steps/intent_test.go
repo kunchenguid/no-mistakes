@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
 
 // fakeGitHubPAT reconstructs a GitHub-PAT-shaped test value at runtime via
@@ -31,7 +31,7 @@ var fakeGitHubPAT = "ghp_" + "abcdefghijklmnopqrstuvwx12"
 func newIntentStepContext(t *testing.T) *pipeline.StepContext {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	database, err := db.Open(dbPath)
+	database, err := stepstest.OpenNewDB(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

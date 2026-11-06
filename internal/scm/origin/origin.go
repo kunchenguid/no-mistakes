@@ -382,6 +382,21 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	return normalizeOriginPRState(view.Status), nil
 }
 
+// GetPRHeadSHA reads the commit the pull request points at, from the same view
+// the adapter already fetches. The CI step uses it to name the head a merge
+// landed on when this provider cannot prove a merge.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	view, err := h.viewPR(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(view.HeadSHA)
+	if head == "" {
+		return "", errors.New("origin pr view: pull request reports no head commit")
+	}
+	return head, nil
+}
+
 func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
 	view, err := h.viewPR(ctx, pr)
 	if err != nil {

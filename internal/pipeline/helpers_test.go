@@ -39,6 +39,11 @@ func (m *mockStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	if sctx.Log != nil {
 		sctx.Log(fmt.Sprintf("executing %s", m.name))
 	}
+	if m.name == types.StepReview && m.outcome != nil && m.err == nil && m.outcome.ReviewApprovedHeadSHA == "" {
+		outcome := *m.outcome
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+		return &outcome, nil
+	}
 	return m.outcome, m.err
 }
 
@@ -223,7 +228,15 @@ type adaptiveCallStep struct {
 
 func (a *adaptiveCallStep) Name() types.StepName { return a.name }
 func (a *adaptiveCallStep) Execute(sctx *StepContext) (*StepOutcome, error) {
-	return a.fn(sctx)
+	outcome, err := a.fn(sctx)
+	// Simulated review turns provide the same approval candidate as ReviewStep.
+	// The executor still owns whether a parked or failed turn may persist it.
+	if a.name == types.StepReview && outcome != nil && err == nil && outcome.ReviewApprovedHeadSHA == "" {
+		copy := *outcome
+		copy.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+		return &copy, nil
+	}
+	return outcome, err
 }
 
 // waitForStepEvent polls the event collector until an event with the given type and step name appears.

@@ -526,3 +526,87 @@ func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) 
 		t.Fatalf("checks[0].ExecutionID = %q, want pipeline build number", checks[0].ExecutionID)
 	}
 }
+
+// A Bitbucket status read binds no head: the statuses are read against the
+// pull request, so nothing in the provider's answer says which commit they
+// describe. A rewrite that lands inside that read used to hand back the foreign
+// head's green statuses and establish readiness for it. The poll now re-reads
+// the push target after an unbound read and refuses to use a result whose
+// branch no longer serves an owned head, while a poll with no rewrite still
+// reaches readiness.
+func TestCIStep_UnboundCheckReadIsBoundToThePushTarget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		rewrite     bool
+		wantReady   bool
+		wantWarning string
+	}{
+		{name: "no rewrite still becomes ready", rewrite: false, wantReady: true},
+		{
+			name:        "rewrite inside the read never becomes ready",
+			rewrite:     true,
+			wantWarning: "binds no head and the push target now serves",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`)
+
+			prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			// A separate bare origin, so the rewrite can land on the push target
+			// without moving the run worktree's HEAD (the worktree head counts
+			// as a head the run owns).
+			upstream := t.TempDir()
+			gitCmd(t, upstream, "init", "--bare")
+			gitCmd(t, dir, "remote", "set-url", "origin", upstream)
+			gitCmd(t, dir, "push", "origin", "feature")
+
+			if tc.rewrite {
+				api.beforeStatuses = func() {
+					api.beforeStatuses = nil
+					rewritten := gitCmd(t, dir, "commit-tree", gitCmd(t, dir, "rev-parse", "HEAD^{tree}"), "-p", headSHA, "-m", "rewritten outside the run")
+					gitCmd(t, dir, "push", "origin", rewritten+":refs/heads/feature")
+				}
+			}
+
+			sctx.Env = fakeBitbucketEnv(api.server.URL)
+			sctx.Run.PRURL = &prURL
+			sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+			sctx.Config.CITimeout = 30 * time.Second
+			var logs []string
+			sctx.Log = func(s string) { logs = append(logs, s) }
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sctx.Ctx = ctx
+
+			polls := 0
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+				polls++
+				cancel()
+				return context.Canceled
+			}}
+
+			_, err := driveCI(t, step, sctx)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("CI step = %v, want it still monitoring when the poll budget ran out\nlog:\n%s", err, strings.Join(logs, "\n"))
+			}
+			if polls != 1 {
+				t.Fatalf("polls = %d, want one bounded poll", polls)
+			}
+			run, dbErr := sctx.DB.GetRun(sctx.Run.ID)
+			if dbErr != nil {
+				t.Fatal(dbErr)
+			}
+			if gotReady := run.CIReadyAt != nil; gotReady != tc.wantReady {
+				t.Fatalf("readiness = %v, want %v\nlog:\n%s", gotReady, tc.wantReady, strings.Join(logs, "\n"))
+			}
+			if tc.wantWarning != "" && !strings.Contains(strings.Join(logs, "\n"), tc.wantWarning) {
+				t.Fatalf("the step never named the unattributable read\nlog:\n%s", strings.Join(logs, "\n"))
+			}
+		})
+	}
+}

@@ -230,6 +230,57 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	return updated, nil
 }
 
+// GetPRHeadSHA reads the commit the pull request points at, from the same
+// forgejo-axi view GetPRState uses. The CI step uses it to name the head a
+// merge landed on when a merged proof is unavailable.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	number, err := h.validateInputPR(pr)
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		PullRequest pullRequest `json:"pull_request"`
+	}
+	if err := h.runJSON(ctx, "pr view", []string{"--repo", h.repository, number}, &response); err != nil {
+		return "", err
+	}
+	if _, err := h.normalizePull(response.PullRequest); err != nil {
+		return "", err
+	}
+	if err := h.validateOutputPRNumber(number, response.PullRequest.Number); err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(response.PullRequest.HeadSHA)
+	if head == "" {
+		return "", errors.New("forgejo-axi returned no head commit for the pull request")
+	}
+	return head, nil
+}
+
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	number, err := h.validateInputPR(pr)
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		PullRequest pullRequest `json:"pull_request"`
+	}
+	if err := h.runJSON(ctx, "pr view", []string{"--repo", h.repository, number}, &response); err != nil {
+		return "", err
+	}
+	if _, err := h.normalizePull(response.PullRequest); err != nil {
+		return "", err
+	}
+	if err := h.validateOutputPRNumber(number, response.PullRequest.Number); err != nil {
+		return "", err
+	}
+	base := strings.TrimSpace(response.PullRequest.Base)
+	if base == "" {
+		return "", errors.New("forgejo-axi returned no base branch for the pull request")
+	}
+	return base, nil
+}
+
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	number, err := h.validateInputPR(pr)
 	if err != nil {
@@ -323,12 +374,15 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	return scm.MergeableOK, nil
 }
 
-func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead string) (scm.MergedProof, error) {
+func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, ownHeads []string) (scm.MergedProof, error) {
 	number, err := h.validateInputPR(pr)
 	if err != nil {
 		return scm.MergedProof{}, err
 	}
-	expectedHead = strings.TrimSpace(expectedHead)
+	expectedHead := ""
+	if len(ownHeads) > 0 {
+		expectedHead = strings.TrimSpace(ownHeads[0])
+	}
 	if expectedHead == "" {
 		return scm.MergedProof{}, errors.New("Forgejo merged proof requires an expected head SHA")
 	}
@@ -595,7 +649,7 @@ func (h *Host) normalizePull(pull pullRequest) (*scm.PR, error) {
 	if pull.State != "open" && pull.State != "closed" {
 		return nil, fmt.Errorf("forgejo-axi returned unknown PR state %q", pull.State)
 	}
-	return &scm.PR{Number: strconv.Itoa(pull.Number), URL: pull.URL, HeadSHA: pull.HeadSHA}, nil
+	return &scm.PR{Number: strconv.Itoa(pull.Number), URL: pull.URL, HeadSHA: pull.HeadSHA, BaseBranch: pull.Base}, nil
 }
 
 func (h *Host) normalizeChecks(result checksResult) ([]scm.Check, error) {

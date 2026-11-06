@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestEffectivePRBaseBranch_PerRunOverrideWinsOverRepoConfig(t *testing.T) {
@@ -502,5 +503,230 @@ func TestRebaseStep_UsesPerRunPRBaseBranch(t *testing.T) {
 	}
 	if got := gitCmd(t, dir, "merge-base", "HEAD", "origin/epic/feature"); got != epicSHA {
 		t.Fatalf("merge-base with per-run base = %s, want epic %s", got, epicSHA)
+	}
+}
+
+// The base the CI step observed on the pull request scopes the restarted
+// validation; it must never become a retarget request. runs.pr_base_branch is
+// read as explicit operator intent (PRStep retargets to it and bindExistingPR
+// refuses a closed PR because of it), so an observation written there started a
+// retarget war after the next stack merge. With only an observed base and no
+// operator override, the PR step leaves the pull request where the forge put it.
+func TestPRStep_ObservedBaseNeverRetargets(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	observed := "layer2"
+	// The pull request already targets main, the way a partial stack merge
+	// retargets it; the run observed layer2 earlier and scopes by it.
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "main")
+
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.ObservedBaseBranch = &observed
+	owned := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &owned
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if strings.Contains(ghLog, "pr create") {
+		t.Fatalf("expected the existing PR to be kept, not duplicated, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--base layer2") || strings.Contains(ghLog, "layer2") {
+		t.Fatalf("an observed base became a retarget request, got:\n%s", ghLog)
+	}
+	if got := effectivePRBaseBranch(sctx); got != observed {
+		t.Fatalf("scoping base = %q, want the observed %q", got, observed)
+	}
+
+	// Creating a pull request is target intent too: a new one lands on the
+	// configured base, never on the observation.
+	createDir, createBase, createHead := setupGitRepo(t)
+	createEnv, createLog := fakeGH(t, "")
+	createCtx := newPRTestContext(t, &mockAgent{name: "test"}, createDir, createBase, createHead, config.Commands{})
+	createCtx.Env = createEnv
+	createCtx.Run.ObservedBaseBranch = &observed
+	if _, err := (&PRStep{}).Execute(createCtx); err != nil {
+		t.Fatal(err)
+	}
+	createData, err := os.ReadFile(createLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(createData), "pr create --head feature --base main") {
+		t.Fatalf("new pull request did not target the configured base, got:\n%s", createData)
+	}
+	if strings.Contains(string(createData), "--base "+observed) {
+		t.Fatalf("new pull request targeted the observed base, got:\n%s", createData)
+	}
+}
+
+func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		observed string
+		perRun   bool
+	}{
+		{name: "regenerate/observed", mode: config.PRUpdateTextRegenerate, observed: "main"},
+		{name: "regenerate/no-observation", mode: config.PRUpdateTextRegenerate},
+		{name: "keep/observed", mode: config.PRUpdateTextKeep, observed: "main"},
+		{name: "keep/no-observation", mode: config.PRUpdateTextKeep},
+		{name: "regenerate/per-run/observed", mode: config.PRUpdateTextRegenerate, observed: "main", perRun: true},
+		{name: "regenerate/per-run/no-observation", mode: config.PRUpdateTextRegenerate, perRun: true},
+		{name: "keep/per-run/observed", mode: config.PRUpdateTextKeep, observed: "main", perRun: true},
+		{name: "keep/per-run/no-observation", mode: config.PRUpdateTextKeep, perRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, baseSHA, layerSHA := setupGitRepo(t)
+			gitCmd(t, dir, "branch", "layer1", layerSHA)
+			gitCmd(t, dir, "branch", "-f", "main", layerSHA)
+			if err := os.WriteFile(filepath.Join(dir, "layer2.txt"), []byte("layer two\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "layer2.txt")
+			gitCmd(t, dir, "commit", "-m", "add layer two")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+			owned := "https://github.com/test/repo/pull/42"
+			env, logFile := fakeGHWithBase(t, owned, "main")
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
+			}}
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Config.PR.BaseBranch = "layer1"
+			if tc.perRun {
+				run, insertErr := sctx.DB.InsertRunWithIntent(sctx.Repo.ID, sctx.Run.Branch, headSHA, baseSHA, nil, "layer1")
+				if insertErr != nil {
+					t.Fatal(insertErr)
+				}
+				sctx.Run = run
+				recordPRTestPush(t, sctx)
+			}
+			sctx.Config.PR.UpdateText = tc.mode
+			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
+			sctx.Run.PRURL = &owned
+			if tc.observed != "" {
+				sctx.Run.ObservedBaseBranch = &tc.observed
+			} else {
+				if err := applyRunPRBase(sctx, "layer1"); err != nil {
+					t.Fatal(err)
+				}
+				if sctx.Run.ObservedBaseBranch != nil {
+					t.Fatal("matching live and configured bases must leave the observation empty")
+				}
+			}
+			gitCmd(t, dir, "branch", "-D", "layer1")
+			gitCmd(t, dir, "update-ref", "refs/remotes/origin/layer1", layerSHA)
+			review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := (&PRStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.PRURL != owned {
+				t.Fatalf("published PR = %q, want %q", outcome.PRURL, owned)
+			}
+			if len(ag.calls) == 0 {
+				t.Fatal("publication did not draft content")
+			}
+			prompt := ag.calls[0].Prompt
+			if !strings.Contains(prompt, "- base commit: "+layerSHA) || !strings.Contains(prompt, "layer2.txt") || strings.Contains(prompt, "feature.txt") {
+				t.Fatalf("publication must describe only the surviving layer:\n%s", prompt)
+			}
+			data, err := os.ReadFile(logFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "stdin --body ") || strings.Contains(string(data), "pr create") || strings.Contains(string(data), "--base layer1") || strings.Contains(string(data), "--base main") {
+				t.Fatalf("expected an in-place update without retargeting:\n%s", data)
+			}
+			recorded, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.perRun {
+				if recorded.PRBaseBranch == nil || *recorded.PRBaseBranch != "layer1" || runPRBaseBranch(sctx) != "layer1" {
+					t.Fatal("publication changed the recorded per-run target")
+				}
+			} else if sctx.Run.PRBaseBranch != nil || recorded.PRBaseBranch != nil {
+				t.Fatal("publication turned a live base observation into target intent")
+			}
+			if sctx.Config.PR.BaseBranch != "layer1" {
+				t.Fatal("publication changed operator target intent")
+			}
+		})
+	}
+}
+
+func TestPRStep_ExistingTargetSurvivesObservation(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{config.PRUpdateTextRegenerate, config.PRUpdateTextKeep} {
+		t.Run(mode, func(t *testing.T) {
+			dir, baseSHA, layerSHA := setupGitRepo(t)
+			gitCmd(t, dir, "branch", "layer1", layerSHA)
+			if err := os.WriteFile(filepath.Join(dir, "layer2.txt"), []byte("layer two\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "layer2.txt")
+			gitCmd(t, dir, "commit", "-m", "add layer two")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			owned := "https://github.com/test/repo/pull/42"
+			env, logFile := fakeGHWithBase(t, owned, "main")
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
+			}}
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Config.PR.UpdateText = mode
+			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
+			sctx.Run.PRURL = &owned
+			target, observed := "layer1", "main"
+			sctx.Run.PRBaseBranch = &target
+			sctx.Run.ObservedBaseBranch = &observed
+			review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := (&PRStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.PRURL != owned || len(ag.calls) == 0 {
+				t.Fatalf("expected an updated draft for %s, got %+v and %d agent calls", owned, outcome, len(ag.calls))
+			}
+			prompt := ag.calls[0].Prompt
+			if !strings.Contains(prompt, "- base commit: "+layerSHA) || !strings.Contains(prompt, "- PR base branch: layer1") || !strings.Contains(prompt, "layer2.txt") || strings.Contains(prompt, "feature.txt") {
+				t.Fatalf("draft must compare against the existing explicit target:\n%s", prompt)
+			}
+			data, err := os.ReadFile(logFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "pr edit 42 --repo test/repo --base layer1") || strings.Contains(string(data), "--base main") || strings.Contains(string(data), "pr create") {
+				t.Fatalf("expected retargeting only to the operator's target:\n%s", data)
+			}
+			if runPRBaseBranch(sctx) != "layer1" || observedBaseBranch(sctx) != "main" {
+				t.Fatal("publication changed recorded base intent or observation")
+			}
+		})
 	}
 }

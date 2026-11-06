@@ -85,6 +85,42 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	return normalizePRState(got.State), nil
 }
 
+// GetPRHeadSHA reads the commit the pull request points at, from the same
+// pull-request read that carries its destination. The CI step uses it to name
+// the head a merge landed on when this provider cannot prove a merge.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	id, err := strconv.Atoi(strings.TrimSpace(pr.Number))
+	if err != nil || id <= 0 {
+		return "", fmt.Errorf("bitbucket pull request number %q is not usable", pr.Number)
+	}
+	got, err := h.client.GetPR(ctx, h.repo, id)
+	if err != nil {
+		return "", err
+	}
+	if got == nil || strings.TrimSpace(got.SourceCommitHash) == "" {
+		return "", errors.New("bitbucket pull request reports no source commit")
+	}
+	return strings.TrimSpace(got.SourceCommitHash), nil
+}
+
+// GetPRBaseBranch reads the pull request's live destination branch, which the
+// CI step aligns a restart at Review with so a layer the forge retargeted keeps
+// its layer-only scope.
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	id, err := strconv.Atoi(strings.TrimSpace(pr.Number))
+	if err != nil || id <= 0 {
+		return "", fmt.Errorf("bitbucket pull request number %q is not usable", pr.Number)
+	}
+	got, err := h.client.GetPR(ctx, h.repo, id)
+	if err != nil {
+		return "", err
+	}
+	if got == nil || strings.TrimSpace(got.DestinationBranch) == "" {
+		return "", errors.New("bitbucket pull request reports no destination branch")
+	}
+	return strings.TrimSpace(got.DestinationBranch), nil
+}
+
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	id, err := strconv.Atoi(pr.Number)
 	if err != nil {

@@ -1025,3 +1025,68 @@ func TestDriveRun_YesLeavesAnUnreadableQuestionHistoryAwaitingAHuman(t *testing.
 		})
 	}
 }
+
+// The CI monitor parks as ask-user when the pull request branch moved to a head
+// the run owns nowhere and the worktree holds commits nobody can attribute to
+// it: which head to validate is an operator decision. Without its own
+// carve-out the park's findings gave gateResolution nothing selectable, so it
+// fell through to ActionApprove, VerifyApprovalOverride read the rollup for the
+// foreign head, and a green one completed the run with CI reported passed for a
+// head the run never validated.
+func TestDriveRun_YesLeavesACIHeadRewriteParkAwaitingADecision(t *testing.T) {
+	socketPath := filepath.Join(makeSocketSafeTempDir(t), "ci-head-rewrite.sock")
+	srv := ipc.NewServer()
+	var responses atomic.Int32
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		responses.Add(1)
+		return nil, errors.New("unexpected automatic response to a published-head-rewrite park")
+	})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(socketPath) }()
+	t.Cleanup(func() {
+		srv.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("IPC server did not stop")
+		}
+	})
+	var client *ipc.Client
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		client, err = ipc.Dial(socketPath)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if client == nil {
+		t.Fatal("IPC server did not become ready")
+	}
+	defer client.Close()
+
+	findings := `{"findings":[` +
+		`{"id":"ci-head-rewrite-refusal","severity":"warning","category":"ci-head-rewrite","description":"the pull request branch head is now abc1234567, but the run recorded def4567890 and its worktree sits at def4567890: the run worktree holds commits that are neither on the live head nor recorded as published.","action":"ask-user"}` +
+		`],"summary":"the pull request branch moved to a head this run owns nowhere"}`
+	parked := &ipc.RunInfo{
+		ID: "run-1", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{{StepName: types.StepCI, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings}},
+	}
+	source := &scriptedRunStateSource{
+		subscriptions: []scriptedSubscription{{events: make(chan ipc.Event)}},
+		runs:          []*ipc.RunInfo{parked},
+	}
+	reconciler := newRunReconciler(source, parked.ID)
+	defer reconciler.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var progress bytes.Buffer
+	run, ciReady, err := driveRunWithReconciler(ctx, &progress, client, reconciler, parked.ID, true)
+	if err != nil || run != parked || ciReady || responses.Load() != 0 {
+		t.Fatalf("--yes resolved a published-head-rewrite park: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, responses.Load(), err)
+	}
+	if !strings.Contains(progress.String(), "owns nowhere") {
+		t.Fatalf("progress does not name the cause: %s", progress.String())
+	}
+}

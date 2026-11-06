@@ -1258,6 +1258,13 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 				fmt.Fprintf(progress, "%s: unvalidated work in the run worktree requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
 			}
+			// Unsafe adoption and repeated polls without owned-head checks both
+			// need an operator's head decision. Automatic approval or a code fix
+			// cannot establish which head the run must validate.
+			if pipeline.HasCIHeadRewriteRefusal(gate.FindingsJSON) {
+				fmt.Fprintf(progress, "%s: the pull request branch moved to a head this run owns nowhere; --yes leaves this gate awaiting an explicit decision\n", gate.Name)
+				return run, false, nil
+			}
 			gateKey := gate.Name + "\x00" + gate.Status
 			if pendingGate == gateKey {
 				// Duplicate or delayed events can race persistence after a response.

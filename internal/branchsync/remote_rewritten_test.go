@@ -2,11 +2,13 @@ package branchsync
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -505,5 +507,354 @@ func TestRecoverRewrittenRemoteRefusesWhenRunHeadChangesBeforeRebind(t *testing.
 	}
 	if ptr(run.LastPushedSHA) != f.pushed || value(run.PushGeneration) != value(f.run.PushGeneration) {
 		t.Fatalf("binding moved to %s generation %d while the run head changed", ptr(run.LastPushedSHA), value(run.PushGeneration))
+	}
+}
+
+// The rebind is the only writer of the unvalidated-bound-head marker, and the
+// recovery result itself must state that no run validated the head it just
+// bound. Every later report re-reads the marker and keeps saying so until a
+// run publishes the exact head.
+func TestRecoverRebindMarksTheBoundHeadUnvalidated(t *testing.T) {
+	t.Parallel()
+
+	f, rewritten := newRemoteRewrittenFixture(t)
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || recovered.Recovery == nil {
+		t.Fatalf("recover = %#v", recovered)
+	}
+	if recovered.BoundHeadUnvalidated != rewritten {
+		t.Fatalf("recovery result BoundHeadUnvalidated = %q, want %s", recovered.BoundHeadUnvalidated, rewritten)
+	}
+	bound, ok, err := f.db.GetUnvalidatedReboundHead(f.repo.ID, "refs/heads/feature/sync")
+	if err != nil || !ok || bound != rewritten {
+		t.Fatalf("marker = (%q, %v, %v), want %s", bound, ok, err, rewritten)
+	}
+
+	// An operator aligning the local worktree with the rebound head leaves
+	// the branch equal to a head no run validated: the report must stop
+	// calling that synchronized and point at a validation run instead.
+	mustRun(t, f.local, "fetch", f.remote, "feature/sync")
+	mustRun(t, f.local, "reset", "--hard", "FETCH_HEAD")
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateSynchronized {
+		t.Fatalf("state = %q, want synchronized", state.State)
+	}
+	if state.BoundHeadUnvalidated != rewritten {
+		t.Fatalf("report BoundHeadUnvalidated = %q, want %s", state.BoundHeadUnvalidated, rewritten)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "validate_rebound_head" ||
+		!strings.Contains(state.NextAction.Command, "no-mistakes axi run --intent") {
+		t.Fatalf("next action = %#v, want a validation run for the rebound head", state.NextAction)
+	}
+}
+
+// A publication of the exact rebound head by any run of the repository clears
+// the marker, so the reports go back to treating the branch as an ordinary
+// validated branch.
+func TestPublicationClearsTheUnvalidatedBoundHeadMarker(t *testing.T) {
+	t.Parallel()
+
+	f, rewritten := newRemoteRewrittenFixture(t)
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered {
+		t.Fatalf("recover = %#v", recovered)
+	}
+	if err := f.db.ClearUnvalidatedReboundHeadOnPublication(f.run.ID, "refs/heads/feature/sync", rewritten); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := f.db.GetUnvalidatedReboundHead(f.repo.ID, "refs/heads/feature/sync"); err != nil || ok {
+		t.Fatalf("marker after publication = (found %v, err %v), want cleared", ok, err)
+	}
+	mustRun(t, f.local, "fetch", f.remote, "feature/sync")
+	mustRun(t, f.local, "reset", "--hard", "FETCH_HEAD")
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateSynchronized || state.BoundHeadUnvalidated != "" {
+		t.Fatalf("post-publication state = %#v, want an ordinary synchronized branch", state)
+	}
+	if state.NextAction != nil {
+		t.Fatalf("post-publication next action = %#v, want none", state.NextAction)
+	}
+}
+
+// A marker naming a head other than the push binding's is stale reporting
+// state and annotates nothing: the marker must match the pushed head exactly.
+func TestStaleMarkerForADifferentHeadAnnotatesNothing(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	// The rebind is the only writer of the marker, so the stale state is made
+	// the way it really arises: recover onto the rewritten head, then put the
+	// binding back where it was.
+	if recovered := f.service.Recover(f.ctx, false); !recovered.Recovered {
+		t.Fatalf("recover = %#v", recovered)
+	}
+	if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+		HeadSHA: f.pushed, TargetKind: "upstream",
+		TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/sync",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The binding now names f.pushed again, not rewritten, so the marker
+	// (which names rewritten) says nothing about this relation, whatever the
+	// relation itself turns out to be.
+	state := f.service.Refresh(f.ctx)
+	if state.BoundHeadUnvalidated != "" {
+		t.Fatalf("state = %#v, want no annotation from a marker naming another head", state)
+	}
+}
+
+// Whether the push-bound head was validated is the only statement this marker
+// exists to make, so a read that fails must block the report rather than let
+// the branch be called plainly synchronized.
+func TestUnreadableReboundMarkerBlocksInsteadOfReportingSynchronized(t *testing.T) {
+	t.Parallel()
+
+	f := newSyncFixture(t)
+	mustRun(t, f.local, "fetch", f.remote, "feature/sync")
+	mustRun(t, f.local, "reset", "--hard", "FETCH_HEAD")
+	if state := f.service.Refresh(f.ctx); state.State != StateSynchronized || state.Safety != "already_synchronized" {
+		t.Fatalf("state = %#v, want the ordinary synchronized report before the marker becomes unreadable", state)
+	}
+
+	raw, err := sql.Open("sqlite", filepath.Join(filepath.Dir(f.local), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`DROP TABLE unvalidated_rebound_heads`); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.Safety != "blocked_rebound_marker_unreadable" || state.State != StateAmbiguousContext {
+		t.Fatalf("state = %#v, want the unreadable marker to block the report", state)
+	}
+	if state.BoundHeadUnvalidated != "" {
+		t.Fatalf("BoundHeadUnvalidated = %q, want no claim either way", state.BoundHeadUnvalidated)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "retry" {
+		t.Fatalf("next action = %#v, want a retry", state.NextAction)
+	}
+}
+
+// The marker only ever speaks to a branch that equals its push binding, so an
+// unreadable marker must leave every other relation alone. Before this, the
+// read ran at the top of classifyRelation and a failed one turned an ordinary
+// strict fast-forward into a blocked plan over state with no bearing on it.
+func TestUnreadableReboundMarkerLeavesAFastForwardPlanAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newSyncFixture(t)
+	// The local branch sits one commit behind the pipeline's published head.
+	if state := f.service.Refresh(f.ctx); state.State != StateBehind {
+		t.Fatalf("state = %#v, want the ordinary behind relation before the marker becomes unreadable", state)
+	}
+
+	raw, err := sql.Open("sqlite", filepath.Join(filepath.Dir(f.local), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`DROP TABLE unvalidated_rebound_heads`); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateBehind || state.Safety == "blocked_rebound_marker_unreadable" {
+		t.Fatalf("state = %#v, want the fast-forward plan untouched by a marker read failure", state)
+	}
+	if state.BoundHeadUnvalidated != "" {
+		t.Fatalf("BoundHeadUnvalidated = %q, want no claim either way", state.BoundHeadUnvalidated)
+	}
+}
+
+// The sync that moves the operator ONTO a head no run validated is the report
+// that most needs to say so. `axi sync --recover` rebinds the binding to the
+// rewritten live head; the local branch is then behind it, and the fast-forward
+// that follows must not report a plain "already synchronized" with no next
+// action - it leaves the branch sitting exactly on the unvalidated head.
+func TestSyncOntoAReboundUnvalidatedHeadKeepsSayingSo(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	// A rewrite that replaces the pipeline's pushed commit but still descends
+	// from the operator's local head: the binding is rewritten, and the local
+	// branch is behind the new head, so the ordinary fast-forward applies.
+	writer := cloneRemoteBranch(t, f.remote)
+	mustRun(t, writer, "checkout", "-B", "rewrite-descendant", f.old)
+	mustWrite(t, filepath.Join(writer, "rewritten.txt"), "rewritten outside the pipeline\n")
+	mustRun(t, writer, "add", "rewritten.txt")
+	mustRun(t, writer, "commit", "-m", "rewritten outside the pipeline")
+	rewritten := mustRun(t, writer, "rev-parse", "HEAD")
+	mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
+
+	if recovered := f.service.Recover(f.ctx, false); !recovered.Recovered {
+		t.Fatalf("recover = %#v", recovered)
+	}
+
+	plan := f.service.Refresh(f.ctx)
+	if plan.State != StateBehind || plan.BoundHeadUnvalidated != rewritten {
+		t.Fatalf("plan = %#v, want a behind branch that already names the unvalidated bound head %s", plan, rewritten)
+	}
+
+	state := f.service.Apply(f.ctx)
+	if state.Local.Head != rewritten {
+		t.Fatalf("local head = %s, want the fast-forward to have reached %s", state.Local.Head, rewritten)
+	}
+	if state.BoundHeadUnvalidated != rewritten {
+		t.Fatalf("BoundHeadUnvalidated = %q, want the post-sync report to keep naming %s", state.BoundHeadUnvalidated, rewritten)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "validate_rebound_head" {
+		t.Fatalf("next action = %#v, want the validation run offered on a head no run validated", state.NextAction)
+	}
+}
+
+// A synchronization that COMPLETED is never turned into a refusal by a
+// reporting-only marker: the fast-forward landed the branch exactly on the
+// rebound head, so the report is successful. It still must not call that head
+// validated - the marker read failed - so it says the validation state is
+// unknown and offers the validation run, the same next action the unvalidated
+// case gives.
+func TestApplyOntoAReboundHeadReportsAnUnknownValidationState(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	writer := cloneRemoteBranch(t, f.remote)
+	mustRun(t, writer, "checkout", "-B", "rewrite-descendant", f.old)
+	mustWrite(t, filepath.Join(writer, "rewritten.txt"), "rewritten outside the pipeline\n")
+	mustRun(t, writer, "add", "rewritten.txt")
+	mustRun(t, writer, "commit", "-m", "rewritten outside the pipeline")
+	rewritten := mustRun(t, writer, "rev-parse", "HEAD")
+	mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
+
+	if recovered := f.service.Recover(f.ctx, false); !recovered.Recovered {
+		t.Fatalf("recover = %#v", recovered)
+	}
+
+	raw, err := sql.Open("sqlite", filepath.Join(filepath.Dir(f.local), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`DROP TABLE unvalidated_rebound_heads`); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Apply(f.ctx)
+	if state.Local.Head != rewritten {
+		t.Fatalf("local head = %s, want the fast-forward to have reached %s", state.Local.Head, rewritten)
+	}
+	if state.State != StateSynchronized {
+		t.Fatalf("state = %#v, want the completed synchronization reported as successful", state)
+	}
+	if !state.BoundHeadValidationUnknown || state.Safety != SafetyValidationUnknown {
+		t.Fatalf("state = %#v, want the unknown validation state recorded instead of a plain synchronized", state)
+	}
+	// An unknown-validation report is never a refusal, so it carries no Error:
+	// runAxiSync would print that next to result=applied as a top-level error
+	// for a synchronization that succeeded.
+	if state.Error != "" {
+		t.Fatalf("state = %#v, want no error on a completed synchronization", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "validate_rebound_head" {
+		t.Fatalf("next action = %#v, want the validation run offered", state.NextAction)
+	}
+}
+
+// The same rule for the rebind itself: a compare-and-swap that COMMITTED is a
+// recovery, so a marker read that failed afterwards must not report it as an
+// ambiguous context whose owner changed.
+func TestRecoverReportsAnUnknownValidationStateRatherThanLosingTheRebind(t *testing.T) {
+	t.Parallel()
+
+	f, rewritten := newRemoteRewrittenFixture(t)
+	// The operator's branch already sits on the rewritten head, so the
+	// post-rebind inspection classifies the equal relation - the one relation
+	// whose verdict the marker decides.
+	mustRun(t, f.local, "fetch", f.remote, "feature/sync")
+	mustRun(t, f.local, "reset", "--hard", "FETCH_HEAD")
+
+	raw, err := sql.Open("sqlite", filepath.Join(filepath.Dir(f.local), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered {
+		t.Fatalf("recover = %#v, want the rebind reported as recovered", recovered)
+	}
+	if recovered.BoundHeadUnvalidated != rewritten {
+		t.Fatalf("BoundHeadUnvalidated = %q, want the rebound head %s", recovered.BoundHeadUnvalidated, rewritten)
+	}
+	if recovered.NextAction == nil || recovered.NextAction.Code != "validate_rebound_head" {
+		t.Fatalf("next action = %#v, want the validation run offered", recovered.NextAction)
+	}
+}
+
+// Every path that re-inspects AFTER its mutation lands routes through the same
+// downgrade, because the classification it wraps cannot know the mutation
+// happened and reports the unreadable marker as a refusal. Refusing work that
+// is already done sends the operator to recover a branch that is synchronized.
+func TestDowngradeUnreadableReboundMarkerReportsTheCompletedMutation(t *testing.T) {
+	t.Parallel()
+
+	blocked := State{State: StatePipelineOwned, Relation: RelationBehind, Local: LocalState{Head: "bound"}, Pipeline: PipelineState{PushedHead: "bound"}}
+	blockUnreadableReboundMarker(&blocked, "whether any run validated the push-bound head could not be read")
+	if blocked.NextAction == nil || blocked.NextAction.Code != "retry" || blocked.Error == "" {
+		t.Fatalf("pre-mutation refusal = %#v, want the retry offered with its reason", blocked)
+	}
+
+	downgradeUnreadableReboundMarker(&blocked)
+	if blocked.State != StateSynchronized || blocked.Relation != RelationEqual {
+		t.Fatalf("state = %#v, want the completed mutation reported as synchronized", blocked)
+	}
+	if !blocked.BoundHeadValidationUnknown || blocked.Safety != SafetyValidationUnknown {
+		t.Fatalf("state = %#v, want the unknown validation state instead of a plain synchronized", blocked)
+	}
+	if blocked.Error != "" {
+		t.Fatalf("state = %#v, want no error: a completed mutation is never a refusal", blocked)
+	}
+	if blocked.NextAction == nil || blocked.NextAction.Code != "validate_rebound_head" {
+		t.Fatalf("next action = %#v, want the validation run offered", blocked.NextAction)
+	}
+
+	// Anything else keeps its own verdict: the downgrade is keyed on the one
+	// safety the marker read produces.
+	ordinary := State{State: StateBehind, Relation: RelationBehind, Safety: SafetySafeFastForward}
+	downgradeUnreadableReboundMarker(&ordinary)
+	if ordinary.State != StateBehind || ordinary.Safety != SafetySafeFastForward || ordinary.BoundHeadValidationUnknown {
+		t.Fatalf("state = %#v, want an ordinary plan untouched", ordinary)
+	}
+}
+
+func TestRecoverReboundGuidanceWaitsForTheCheckedOutHead(t *testing.T) {
+	for _, behind := range []bool{false, true} {
+		name := "diverged"
+		if behind {
+			name = "behind"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, rewritten := newRemoteRewrittenFixture(t)
+			wantAction := "inspect_and_reconcile_manually"
+			if behind {
+				rewritten = mustRun(t, f.local, "commit-tree", mustRun(t, f.local, "rev-parse", "HEAD^{tree}"), "-p", f.old, "-m", "rewritten descendant")
+				mustRun(t, f.local, "push", "--force", f.remote, rewritten+":refs/heads/feature/sync")
+				wantAction = "sync"
+			}
+			recovered := f.service.Recover(f.ctx, false)
+			if !recovered.Recovered || recovered.BoundHeadUnvalidated != rewritten || recovered.Local.Head != f.old {
+				t.Fatalf("recovered = %#v; want retained checkout and unvalidated binding", recovered)
+			}
+			if recovered.NextAction == nil || recovered.NextAction.Code != wantAction {
+				t.Fatalf("action = %#v, want %s before validation", recovered.NextAction, wantAction)
+			}
+			if behind {
+				aligned := f.service.Apply(f.ctx)
+				if aligned.Local.Head != rewritten || aligned.NextAction == nil || aligned.NextAction.Code != "validate_rebound_head" {
+					t.Fatalf("aligned = %#v; want validation only after synchronization", aligned)
+				}
+			}
+		})
 	}
 }

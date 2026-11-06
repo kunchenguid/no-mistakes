@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -129,6 +130,9 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // the normal CI polling loop. Open, unknown, and provider-error states remain
 // parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
+	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil || pending {
+		return false, err
+	}
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
 	}
@@ -161,7 +165,14 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	switch state {
 	case scm.PRStateMerged:
-		if err := verifyMergedProof(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, sctx.Run.HeadSHA); err != nil {
+		mergedHead, err := verifyMergedHead(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, s.ownValidatedHeads(sctx))
+		if err != nil {
+			if errors.Is(err, scm.ErrHeadChanged) || errors.Is(err, errMergedHeadUnproven) || pluginContractBroken(err) {
+				return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+			}
+			return false, err
+		}
+		if err := s.recordHeadRewriteOverride(sctx, mergedHead); err != nil {
 			return false, err
 		}
 		if err := setCIMonitorPRState(sctx, "merged"); err != nil {
@@ -173,6 +184,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		}
 		return true, nil
 	case scm.PRStateClosed:
+		if err := s.recordHeadRewriteOverride(sctx, ""); err != nil {
+			return false, err
+		}
 		if err := setCIMonitorPRState(sctx, "closed"); err != nil {
 			return false, err
 		}
@@ -195,6 +209,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 // approval can use the ordinary CI override path. Any earlier return leaves
 // that proof absent, so the deferred guard refuses completion.
 func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason string, verifyErr error) {
+	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil || pending {
+		return "", err
+	}
 	requiredComplete := !requiresExternalReview(sctx)
 	defer func() {
 		if !requiredComplete {
@@ -229,6 +246,13 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
+	liveHead, headErr := publishedBranchHead(sctx)
+	if headErr != nil {
+		liveHead = ""
+	}
+	if reason := s.headRewriteOverrideReason(sctx, liveHead); reason != "" {
+		return reason, nil
+	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
 	// The delivered commit is named on every read, not only when review-bot
 	// identity needs the head's rollup: a host that binds its reads to the
@@ -237,8 +261,11 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	// must never be recorded from another commit's checks. Review-bot identity
 	// comes from that same head read, exactly as the polling loop names it.
 	pr.HeadSHA = sctx.Run.HeadSHA
-	checks, _, _, err := getCIChecks(ctx, host, pr)
+	checks, observedHead, _, err := s.getCIChecks(sctx, host, pr)
 	if err == nil {
+		if reason := s.headRewriteOverrideReason(sctx, observedHead); reason != "" {
+			return reason, nil
+		}
 		checks, err = requiredReviewChecks(sctx, host, pr, checks)
 	}
 	if err != nil {
@@ -276,40 +303,203 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	return fmt.Sprintf("live checks for %s not all passed: %s", prURL, strings.Join(unresolvedCheckNames(checks), ", ")), nil
 }
 
-func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedHead string) error {
-	if !host.Capabilities().MergedProof {
+// parkedGateFindings returns the findings persisted with this step's result -
+// what the gate parked on - or "" when there is no step result yet.
+func parkedGateFindings(sctx *pipeline.StepContext) (string, error) {
+	if sctx.StepResultID == "" {
+		return "", nil
+	}
+	stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
+	if err != nil {
+		return "", err
+	}
+	if stepResult == nil || stepResult.FindingsJSON == nil {
+		return "", nil
+	}
+	return *stepResult.FindingsJSON, nil
+}
+
+// headRewriteOverrideReason names the unresolved condition a completion over a
+// published-head-rewrite park carries, or "" when there is none. Approving that
+// park is allowed, but the checks it approves are the forge's for a head this
+// run validated nowhere, so the completion is recorded as passed-with-override
+// however green they are. A head the run OWNS is not that condition: the
+// rewrite resolved, so the completion is an ordinary pass and gets no record -
+// otherwise the durable text asserted the run owns nowhere a head it had just
+// been proved to own, naming the same SHA twice. liveHead may be empty when the
+// caller has not read the forge's head, which is not evidence of ownership.
+func (s *CIStep) headRewriteOverrideReason(sctx *pipeline.StepContext, liveHead string) string {
+	live := "a head the forge did not report"
+	if head := strings.TrimSpace(liveHead); head != "" {
+		if s.ciRunOwnsHead(sctx, head) {
+			return ""
+		}
+		live = shortSHA(head)
+	}
+	return fmt.Sprintf(
+		"the pull request branch moved to a head this run owns nowhere: the run validated %s and the pull request carries %s, so no check result here is a verdict on the validated head",
+		shortSHA(sctx.Run.HeadSHA), live,
+	)
+}
+
+// recordHeadRewriteOverride persists that unresolved condition when a
+// reconciliation resolves a published-head-rewrite park without a human
+// verdict, so the completion can never read as an ordinary clean pass. The
+// write is fail-closed for the reason applyApprovalOverride records: a
+// swallowed failure completes the step as that plain pass.
+func (s *CIStep) recordHeadRewriteOverride(sctx *pipeline.StepContext, liveHead string) error {
+	parked, err := parkedGateFindings(sctx)
+	if err != nil {
+		return fmt.Errorf("read the parked CI gate findings: %w", err)
+	}
+	if !pipeline.HasCIHeadRewriteRefusal(parked) {
 		return nil
+	}
+	reason := s.headRewriteOverrideReason(sctx, liveHead)
+	if reason == "" {
+		return nil
+	}
+	return sctx.DB.SetStepOverrideReason(sctx.StepResultID, reason)
+}
+
+// errMergedHeadUnproven marks a merged pull request whose head no provider
+// evidence can name. A merged completion is a verdict on a head, so a merge
+// nobody can attribute is refused rather than recorded as a clean pass: the
+// alternative is certifying a commit no Review, Test, or check ever saw.
+var errMergedHeadUnproven = errors.New("the provider cannot prove which head merged")
+
+// verifyMergedHead returns the head the provider merged, or a refusal. Hosts
+// that advertise merged proof answer from it; other hosts must supply
+// independent head evidence through observedMergedHead. Neither path can
+// complete a merge whose head is unproven or outside ownHeads.
+func verifyMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
+	if host.Capabilities().MergedProof {
+		return verifyMergedProof(ctx, host, pr, ownHeads)
+	}
+	return observedMergedHead(ctx, host, pr, ownHeads)
+}
+
+// observedMergedHead is the merged-head read for providers without merged
+// proof. The head it trusts is the one the provider itself binds to the pull
+// request, never the head this run requested: a provider that echoes the
+// requested head back proves nothing about what merged.
+func observedMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
+	primary := ""
+	for _, head := range ownHeads {
+		if trimmed := strings.TrimSpace(head); trimmed != "" {
+			primary = trimmed
+			break
+		}
+	}
+	if primary == "" {
+		return "", fmt.Errorf("%w: the run owns no head to identify the merge by", errMergedHeadUnproven)
+	}
+	// A host that can name the pull request's head answers directly. It is the
+	// same head the check read would bind to, without paying for a check read of
+	// a merged pull request; a host that cannot, or that fails after all, falls
+	// through to the check observation.
+	if reader, ok := host.(scm.PRHeadReader); ok {
+		if head, err := reader.GetPRHeadSHA(ctx, pr); err == nil {
+			if head = strings.TrimSpace(head); head != "" {
+				if !containsFold(ownHeads, head) {
+					return "", fmt.Errorf("verify merged PR proof: %w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), head)
+				}
+				return head, nil
+			}
+		}
+	}
+	probe := &scm.PR{Number: pr.Number, URL: pr.URL, HeadSHA: primary}
+	_, observed, _, err := observeCIChecks(ctx, host, probe)
+	if err != nil && !errors.Is(err, scm.ErrHeadChanged) {
+		return "", fmt.Errorf("reading the merged head failed: %w", err)
+	}
+	observed = strings.TrimSpace(observed)
+	if observed == "" {
+		return "", fmt.Errorf("%w: the %s provider reported no head for the pull request", errMergedHeadUnproven, host.Provider())
+	}
+	if !containsFold(ownHeads, observed) {
+		return "", fmt.Errorf("verify merged PR proof: %w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), observed)
+	}
+	return observed, nil
+}
+
+// verifyMergedProof returns the head the proof names as merged. It is only
+// reached for hosts that advertise merged proof; every other provider goes
+// through verifyMergedHead's observed-head read instead of passing silently.
+func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
+	if !host.Capabilities().MergedProof {
+		return "", fmt.Errorf("%w: %s", errMergedHeadUnproven, host.Provider())
 	}
 	proofHost, ok := host.(scm.MergedProofHost)
 	if !ok {
-		return fmt.Errorf("SCM provider advertises merged proof but does not implement it")
+		return "", fmt.Errorf("SCM provider advertises merged proof but does not implement it")
 	}
-	proof, err := proofHost.GetMergedProof(ctx, pr, expectedHead)
+	proof, err := proofHost.GetMergedProof(ctx, pr, ownHeads)
 	if err != nil {
-		return fmt.Errorf("verify merged PR proof: %w", err)
+		return "", fmt.Errorf("verify merged PR proof: %w", err)
 	}
 	if !proof.Merged {
-		return fmt.Errorf("verify merged PR proof: PR %s is not merged", pr.Number)
+		return "", fmt.Errorf("verify merged PR proof: PR %s is not merged", pr.Number)
 	}
 	if proof.Number != pr.Number || proof.URL != pr.URL {
-		return fmt.Errorf("verify merged PR proof: proof identifies PR %s at %q, want PR %s at %q", proof.Number, proof.URL, pr.Number, pr.URL)
+		return "", fmt.Errorf("verify merged PR proof: proof identifies PR %s at %q, want PR %s at %q", proof.Number, proof.URL, pr.Number, pr.URL)
 	}
-	if expectedHead != "" && proof.HeadSHA != expectedHead {
-		return fmt.Errorf("verify merged PR proof: %w: expected %s, got %s", scm.ErrHeadChanged, expectedHead, proof.HeadSHA)
+	// Membership is re-checked here against the same heads the host validated,
+	// so a host that validates only its primary head can never hand back a
+	// proof the run owns nowhere.
+	if len(ownHeads) > 0 && !slices.ContainsFunc(ownHeads, func(head string) bool {
+		return strings.EqualFold(strings.TrimSpace(head), proof.HeadSHA)
+	}) {
+		return "", fmt.Errorf("verify merged PR proof: %w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), proof.HeadSHA)
 	}
-	return nil
+	return proof.HeadSHA, nil
+}
+
+// guardPublishedHead refuses to let a poll read checks for a head this run
+// owns nowhere. It reports the outcome to return (an adoption restart or a
+// park), whether this poll must stop short of the checks, and any fatal error.
+//
+// A head the run does not own is adopted, but only when the PR state is KNOWN
+// to be open: the merged and closed arms end the run, so adopting under an
+// unreadable state would reset the worktree, rebind the head and restart Review
+// on a pull request that may already be merged. The fail-closed half still
+// applies there - no check is read either way, and the next poll with a
+// readable state adopts.
+//
+// A push-target read that fails says nothing about ownership, so it warns and
+// waits rather than reporting checks or failing the run; the caller counts
+// every poll that skips the checks, whatever the reason, so no such condition
+// can repeat forever.
+func (s *CIStep) guardPublishedHead(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, prOpen bool) (outcome *pipeline.StepOutcome, skipChecks bool, err error) {
+	defer func() {
+		if skipChecks && err == nil {
+			err = setCIMonitorReadiness(sctx, false, false)
+		}
+	}()
+	liveHead, err := publishedBranchHead(sctx)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not read the published branch head, so no check result is read this poll: %v", err))
+		return nil, true, nil
+	}
+	if s.ciRunOwnsHead(sctx, liveHead) {
+		return nil, false, nil
+	}
+	adopted, err := s.adoptPublishedHeadRewrite(sctx, host, pr, "the push target served head", liveHead, prOpen)
+	if err != nil {
+		return nil, false, err
+	}
+	// A nil outcome means nothing was adopted - the fetched head turned out to
+	// be one the run owns, or the fetch itself failed; the checks still belong
+	// to the head the provider reported, so this poll reads none of them. The
+	// caller counts that the same way whichever it was: a monitor that never
+	// gets the two reads to agree is as stuck as one that cannot read at all.
+	return adopted, adopted == nil, nil
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
-	refusalFindings := ""
-	if sctx.StepResultID != "" {
-		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
-		if err != nil {
-			return nil, fmt.Errorf("restore CI protected-path refusal: %w", err)
-		}
-		if stepResult != nil && stepResult.FindingsJSON != nil {
-			refusalFindings = *stepResult.FindingsJSON
-		}
+	refusalFindings, err := parkedGateFindings(sctx)
+	if err != nil {
+		return nil, fmt.Errorf("restore CI protected-path refusal: %w", err)
 	}
 	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(refusalFindings)
 	// A fix round repairs the findings the executor selected for it, unless
@@ -348,7 +538,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		s.pendingRepairPublish = false
 	}()
 	defer func() {
-		if !retryRefusal {
+		if !retryRefusal || pluginContractBroken(err) {
 			return
 		}
 		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
@@ -423,6 +613,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
 	if retryRefusal {
+		_, baseErr := resolveLivePRBase(sctx, host, pr)
+		if pluginContractBroken(baseErr) {
+			return nil, baseErr
+		}
 		if err := clearCIMonitorReadyForIssues(sctx); err != nil {
 			return nil, err
 		}
@@ -432,6 +626,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		retryRefusal = false
 		if repair.Revalidate {
+
 			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom()}, nil
 		}
 	}
@@ -535,6 +730,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	lastMonitorLog := ciMonitorStatus{}
 	consecutiveCheckErrs := 0
 	consecutiveBotCommentErrs := 0
+	// consecutiveUnreadPolls counts polls that ended without reading a check
+	// for a head this run owns - an unreadable push target, a pull request
+	// state nobody could read while the branch head is foreign, a fetched head
+	// the two reads still disagree about, an adoption whose fetch keeps
+	// failing. Each is a legitimate reason to skip ONE poll and none of them is
+	// a reason to skip forever: under `ci_timeout: unlimited` that is an
+	// invisible spin, and under a finite one it parks on the wrong condition.
+	// Only a poll that actually read checks for an owned head clears it, which
+	// is why it cannot share consecutiveCheckErrs - that counter is reset by
+	// the check read itself, before these paths run.
+	consecutiveUnreadPolls := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		if handoffPending(sctx) {
 			if err := clearCIMonitorReady(sctx); err != nil {
@@ -596,6 +802,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
+			return nil, err
+		} else if pending {
+			if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+				return nil, err
+			}
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: sctx.DeferredFindings}, nil
+		}
 		pollBaseTip := ""
 		botCommentReadFailed := false
 		behindObserved := false
@@ -632,7 +846,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 
 		// Check PR state (merged/closed -> exit)
-		prStateKnown := true
+		prOpen := false
 		state, err := host.GetPRState(ctx, pr)
 		if err != nil && pluginPollFailsStep(err) {
 			if err := clearCIMonitorReady(sctx); err != nil {
@@ -642,9 +856,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
-			prStateKnown = false
 		} else if state == scm.PRStateMerged {
-			if err := verifyMergedProof(ctx, host, pr, sctx.Run.HeadSHA); err != nil {
+			mergedHead, err := verifyMergedHead(ctx, host, pr, s.ownValidatedHeads(sctx))
+			if err != nil {
+				return nil, err
+			}
+			if err := s.recordHeadRewriteOverride(sctx, mergedHead); err != nil {
 				return nil, err
 			}
 			if err := setCIMonitorPRState(sctx, "merged"); err != nil {
@@ -654,15 +871,46 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
+			if err := s.recordHeadRewriteOverride(sctx, ""); err != nil {
+				return nil, err
+			}
 			if err := setCIMonitorPRState(sctx, "closed"); err != nil {
 				return nil, err
 			}
 			sctx.Log("PR has been closed")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateOpen {
+			prOpen = true
 			if err := setCIMonitorPRState(sctx, "open"); err != nil {
 				return nil, err
 			}
+		}
+
+		// Before any check result can establish readiness, look at the branch
+		// head the push target actually serves. This runs for every poll that
+		// reaches the checks, not just the one whose PR-state read said "open":
+		// the merged and closed arms have returned already, so the remaining
+		// cases are an open PR and a state read that failed - and a failed
+		// state read is no reason to report checks for a head nobody proved the
+		// run owns.
+		outcome, skipChecks, guardErr := s.guardPublishedHead(sctx, host, pr, prOpen)
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		if outcome != nil {
+			return outcome, nil
+		}
+		if skipChecks {
+			lastMonitorLog = ciMonitorStatus{}
+			consecutiveUnreadPolls++
+			if consecutiveUnreadPolls >= consecutiveCheckErrorLimit {
+				sctx.Log(fmt.Sprintf("no check could be read for a head this run owns on %d consecutive polls, parking for a decision", consecutiveUnreadPolls))
+				return ciTerminalRepairOutcome(ciUnownedHeadStallOutcome(), Findings{}, sctx.DeferredFindings), nil
+			}
+			if _, err := waitForPoll(); err != nil {
+				return nil, err
+			}
+			continue
 		}
 
 		// Check mergeable state if the provider supports it
@@ -699,7 +947,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
-		checks, observedHead, _, err := getCIChecks(ctx, host, pr)
+		checks, observedHead, _, err := s.getCIChecks(sctx, host, pr)
 		if observedHead != "" && observedHead != lastCheckHeadSHA {
 			timeoutFailingChecks = nil
 			lastCheckHeadSHA = observedHead
@@ -725,6 +973,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// check a CLI that answered fine. The idle timeout still bounds
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
+				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+					return nil, err
+				}
+
 				consecutiveCheckErrs = 0
 				timeoutFailingChecks = nil
 				if err := logStatus(fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err)); err != nil {
@@ -748,6 +1000,29 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		} else {
 			consecutiveCheckErrs = 0
+			if !s.ciRunOwnsHead(sctx, observedHead) {
+				lastMonitorLog = ciMonitorStatus{}
+				outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", observedHead, prOpen)
+				if adoptErr != nil {
+					return nil, adoptErr
+				}
+				if outcome != nil {
+					return outcome, nil
+				}
+				// Keep polling, on the same bound every other unread poll has.
+				consecutiveUnreadPolls++
+				if consecutiveUnreadPolls >= consecutiveCheckErrorLimit {
+					sctx.Log(fmt.Sprintf("no check could be read for a head this run owns on %d consecutive polls, parking for a decision", consecutiveUnreadPolls))
+					return ciTerminalRepairOutcome(ciUnownedHeadStallOutcome(), Findings{}, sctx.DeferredFindings), nil
+				}
+				if _, err := waitForPoll(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			// The checks just read belong to a head this run owns, which is the
+			// only thing that clears the unread-poll bound.
+			consecutiveUnreadPolls = 0
 			timeoutExternalReviews = nil
 			for _, check := range checks {
 				if check.ExternalReview != "" && check.Bucket != scm.CheckBucketPass {
@@ -810,7 +1085,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// The published head moved, so this run never delivered the
 					// commit whose checks were observed: nothing here may leave
 					// a ready-to-merge signal behind on the way out.
-					if err := clearCIMonitorReady(sctx); err != nil {
+					if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 						return nil, err
 					}
 					return rerunOutcome, nil
@@ -941,7 +1216,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
 				switch {
-				case !prStateKnown || !mergeabilityKnown:
+				case !prOpen || !mergeabilityKnown:
 					if err := clearCIMonitorReady(sctx); err != nil {
 						return nil, err
 					}
@@ -1182,6 +1457,13 @@ func clearCIMonitorReady(sctx *pipeline.StepContext) error {
 }
 
 func setCIMonitorPRState(sctx *pipeline.StepContext, state string) error {
+	if state == "merged" || state == "closed" {
+		if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
+			return err
+		} else if pending {
+			return fmt.Errorf("cannot record terminal PR state before reviewing the rewritten head")
+		}
+	}
 	if sctx.SetPRState != nil {
 		return sctx.SetPRState(state)
 	}

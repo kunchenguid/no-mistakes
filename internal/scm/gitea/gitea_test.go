@@ -1239,3 +1239,57 @@ func TestGiteaHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// GetPRBaseBranch reads the pull request's live base branch, which the CI step
+// aligns a restart at Review with so a layer the forge retargeted keeps its
+// layer-only scope.
+func TestGetPRBaseBranchReadsThePullRequestBase(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","base":"layer2"}`,
+		},
+		"tea pulls 8 --repo owner/repo --login work --output json": {
+			stdout: `{"index":8,"state":"open","base":""}`,
+		},
+	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
+
+	got, err := host.GetPRBaseBranch(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetPRBaseBranch() error = %v", err)
+	}
+	if got != "layer2" {
+		t.Fatalf("GetPRBaseBranch() = %q, want the pull request's base layer2", got)
+	}
+
+	if _, err := host.GetPRBaseBranch(context.Background(), &scm.PR{Number: "8"}); err == nil {
+		t.Fatal("GetPRBaseBranch() error = nil, want a pull request without a base refused")
+	}
+}
+
+// GetPRHeadSHA reads the commit the pull request points at, which the CI step
+// uses to name the head a merge landed on.
+func TestGetPRHeadSHAReadsThePullRequestHead(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","headSha":"abc123"}`,
+		},
+		"tea pulls 8 --repo owner/repo --login work --output json": {
+			stdout: `{"index":8,"state":"open"}`,
+		},
+	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
+
+	got, err := host.GetPRHeadSHA(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetPRHeadSHA() error = %v", err)
+	}
+	if got != "abc123" {
+		t.Fatalf("GetPRHeadSHA() = %q, want the pull request's head abc123", got)
+	}
+	if _, err := host.GetPRHeadSHA(context.Background(), &scm.PR{Number: "8"}); err == nil {
+		t.Fatal("GetPRHeadSHA() error = nil, want a pull request without a head refused")
+	}
+}

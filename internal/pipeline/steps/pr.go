@@ -129,7 +129,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	baseBranch := effectivePRBaseBranch(sctx)
+	baseBranch := targetPRBaseBranch(sctx)
 	if branch == baseBranch {
 		if err := refuseSkipWithClosingIssues(sctx, fmt.Sprintf("the branch is the PR base branch %s", branch)); err != nil {
 			return nil, err
@@ -186,10 +186,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
-	if err != nil {
-		return nil, err
-	}
 	bodyLimit := scm.HostMaxPRBodyChars(host)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
@@ -197,6 +193,33 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	existing, err = bindExistingPR(sctx, host, existing)
+	if err != nil {
+		return nil, err
+	}
+	requestedBaseBranch := runPRBaseBranch(sctx)
+	if existing != nil && !sctx.EvalReplay {
+		liveBase := strings.TrimSpace(existing.BaseBranch)
+		if liveBase != "" && liveBase != baseBranch {
+			lookupCtx, cancel := context.WithTimeout(ctx, fetchUpstreamTimeout)
+			sha, lookupErr := git.LsRemote(lookupCtx, sctx.WorkDir, resolveUpstreamURL(sctx), "refs/heads/"+baseBranch)
+			if lookupErr != nil && errors.Is(lookupCtx.Err(), context.DeadlineExceeded) {
+				lookupErr = fmt.Errorf("%w; check upstream connectivity and retry: %v", context.DeadlineExceeded, lookupErr)
+			}
+			cancel()
+			if lookupErr != nil {
+				return nil, fmt.Errorf("look up PR base branch %q: %w", baseBranch, lookupErr)
+			}
+			if sha == "" {
+				baseBranch = liveBase
+				// Apply the deleted-target fallback to both update paths without
+				// changing recorded intent or creating a config-only retarget.
+				if requestedBaseBranch != "" {
+					requestedBaseBranch = liveBase
+				}
+			}
+		}
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +303,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, err
 			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			if err := retargetExistingPRIfNeeded(sctx, host, existing, requestedBaseBranch); err != nil {
 				return nil, err
 			}
 			if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
@@ -297,7 +320,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := verifyPRHeadProofDisclosure(content.Body, s.headProofUnavailable, bodyLimit); err != nil {
 				return nil, err
 			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			if err := retargetExistingPRIfNeeded(sctx, host, existing, requestedBaseBranch); err != nil {
 				return nil, err
 			}
 			updated, err = host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
@@ -404,8 +427,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
 
-// retargetExistingPRIfNeeded moves an already-open PR onto a per-run
-// --base-branch override when the live forge base disagrees. Repo-config
+// retargetExistingPRIfNeeded moves an already-open PR onto the effective
+// per-run target when the live forge base disagrees. Execute applies the
+// deleted-target fallback before calling this helper. Repo-config
 // pr.base_branch changes still do not retarget: requested is empty in that
 // path, so title and body update in place and CI keeps following the live
 // forge base.

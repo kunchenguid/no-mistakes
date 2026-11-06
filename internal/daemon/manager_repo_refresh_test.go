@@ -144,9 +144,14 @@ func TestRunStartURLRefreshFailuresWarnSafelyAndContinueWithOldRegistration(t *t
 			t.Cleanup(manager.Shutdown)
 			runID, err := manager.startRun(context.Background(), before, "main", head, refreshTestZeroSHA, "test", nil, "refresh failure must fail open", "", false, "", nil)
 			if err != nil {
+				manager.Shutdown()
 				t.Fatalf("ordinary run did not continue: %v\nlogs: %s", err, logs.String())
 			}
-			if run := waitForRunTerminalState(t, database, runID); run.Status != types.RunCompleted {
+			run := waitForRunTerminalState(t, database, runID)
+			// A terminal DB row precedes the manager's final log writes.
+			// Join those writers before reading the captured buffer.
+			manager.Shutdown()
+			if run.Status != types.RunCompleted {
 				t.Fatalf("run status = %s, error = %v\nlogs: %s", run.Status, run.Error, logs.String())
 			}
 			pipelineRepo := <-seen
@@ -186,7 +191,7 @@ func (s *captureRefreshRepoStep) Name() types.StepName { return types.StepReview
 func (s *captureRefreshRepoStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	copy := *sctx.Repo
 	s.seen <- &copy
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 }
 
 func newRefreshRunFixture(t *testing.T) (*paths.Paths, *db.DB) {

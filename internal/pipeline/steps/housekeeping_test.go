@@ -9,9 +9,9 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -327,7 +327,7 @@ func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 	ensureHermeticOrigin(t, workDir)
 
-	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	database, err := stepstest.OpenNewDB(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -1370,219 +1371,229 @@ func TestCIStep_FixPromptDistinguishesCodeDefectFromExternalFailure(t *testing.T
 
 func TestCIStep_HangingFixAgentFailsAfterTimeout(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{
-		name: "hanging-ci-fix-agent",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			<-ctx.Done()
-			return &agent.Result{}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.AgentTimeout = 20 * time.Millisecond
-	host := &forgejoLogTestHost{}
-	pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		ag := &mockAgent{
+			name: "hanging-ci-fix-agent",
+			runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+				<-ctx.Done()
+				return &agent.Result{}, nil
+			},
+		}
+		sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.AgentTimeout = 20 * time.Millisecond
+		host := &forgejoLogTestHost{}
+		pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
 
-	_, err := (&CIStep{}).autoFixCI(sctx, host, pr, ciTargetsFor([]string{"build"}, false))
-	if err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
-		t.Fatalf("hanging CI fix error = %v, want timeout", err)
-	}
+		_, err := (&CIStep{}).autoFixCI(sctx, host, pr, ciTargetsFor([]string{"build"}, false))
+		if err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+			t.Fatalf("hanging CI fix error = %v, want timeout", err)
+		}
+	})
 }
 
 func TestCIStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	ag := &mockAgent{
-		name: "late-ci-fix-agent",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
-				return nil, err
-			}
-			<-ctx.Done()
-			return &agent.Result{}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.AgentTimeout = 20 * time.Millisecond
-	host := &forgejoLogTestHost{}
-	pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		gitCmd(t, dir, "checkout", "--detach", headSHA)
+		ag := &mockAgent{
+			name: "late-ci-fix-agent",
+			runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+				if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+					return nil, err
+				}
+				<-ctx.Done()
+				return &agent.Result{}, nil
+			},
+		}
+		sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.AgentTimeout = 20 * time.Millisecond
+		host := &forgejoLogTestHost{}
+		pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
 
-	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, ciTargetsFor([]string{"build"}, false)); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
-		t.Fatalf("late successful return error = %v, want timeout", err)
-	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
-		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
-	}
-	if got := gitCmd(t, dir, "status", "--porcelain", "--", "ci-fix.txt"); got != "?? ci-fix.txt" {
-		t.Fatalf("ci-fix.txt status = %q, want uncommitted", got)
-	}
+		if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, ciTargetsFor([]string{"build"}, false)); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+			t.Fatalf("late successful return error = %v, want timeout", err)
+		}
+		if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+			t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+		}
+		if got := gitCmd(t, dir, "status", "--porcelain", "--", "ci-fix.txt"); got != "?? ci-fix.txt" {
+			t.Fatalf("ci-fix.txt status = %q, want uncommitted", got)
+		}
+	})
 }
 
 func TestCIStep_FixAgentTimeoutRecordsCommittedRepair(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`
-	env := fakeCIGH(t, "OPEN", checksJSON)
+		checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`
+		env := fakeCIGH(t, "OPEN", checksJSON)
 
-	ag := &mockAgent{
-		name: "slow-repair",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
-				return nil, err
-			}
-			gitCmd(t, dir, "add", "repair.txt")
-			gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-	}
-
-	prURL := "https://github.com/test/repo/pull/1109"
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
-	sctx.Config.AgentTimeout = 50 * time.Millisecond
-
-	polls := 0
-	step := &CIStep{
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			polls++
-			if polls > 3 {
-				t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
-			}
-			return nil
-		},
-	}
-
-	outcome, err := driveCI(t, step, sctx)
-	if err != nil {
-		t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
-	}
-	if outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
-	}
-	committed := gitCmd(t, dir, "rev-parse", "HEAD")
-	if committed == headSHA {
-		t.Fatal("timed-out agent commit was lost")
-	}
-	if sctx.Run.HeadSHA != committed {
-		t.Fatalf("run head = %s, want recorded committed head %s", sctx.Run.HeadSHA, committed)
-	}
-	var findings Findings
-	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
-		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
-	}
-	var timeout Finding
-	for _, item := range findings.Items {
-		if item.ID == "ci-fix-agent-timeout" {
-			timeout = item
+		ag := &mockAgent{
+			name: "slow-repair",
+			runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+				if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
+					return nil, err
+				}
+				gitCmd(t, dir, "add", "repair.txt")
+				gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
 		}
-	}
-	if timeout.ID == "" {
-		t.Fatalf("findings = %#v, want a timeout diagnostic", findings.Items)
-	}
-	if !strings.Contains(timeout.Description, "recorded locally") {
-		t.Fatalf("finding %q, want the committed repair retained", timeout.Description)
-	}
-	if strings.Contains(timeout.Description, "uncommitted changes") {
-		t.Fatalf("finding %q, committed repair should not be described as dirty worktree leftovers", timeout.Description)
-	}
-	if strings.Contains(timeout.Description, "not a code failure") {
-		t.Fatalf("finding %q, must not call the cut harmless next to the failing checks it carries", timeout.Description)
-	}
+
+		prURL := "https://github.com/test/repo/pull/1109"
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Env = env
+		sctx.Run.PRURL = &prURL
+		sctx.Config.CITimeout = 30 * time.Second
+		sctx.Config.AutoFix = config.AutoFix{CI: 1}
+		sctx.Config.AgentTimeout = 50 * time.Millisecond
+
+		polls := 0
+		step := &CIStep{
+			waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+				polls++
+				if polls > 3 {
+					t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
+				}
+				return nil
+			},
+		}
+
+		outcome, err := driveCI(t, step, sctx)
+		if err != nil {
+			t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
+		}
+		if outcome == nil || !outcome.NeedsApproval {
+			t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
+		}
+		committed := gitCmd(t, dir, "rev-parse", "HEAD")
+		if committed == headSHA {
+			t.Fatal("timed-out agent commit was lost")
+		}
+		if sctx.Run.HeadSHA != committed {
+			t.Fatalf("run head = %s, want recorded committed head %s", sctx.Run.HeadSHA, committed)
+		}
+		var findings Findings
+		if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
+			t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
+		}
+		var timeout Finding
+		for _, item := range findings.Items {
+			if item.ID == "ci-fix-agent-timeout" {
+				timeout = item
+			}
+		}
+		if timeout.ID == "" {
+			t.Fatalf("findings = %#v, want a timeout diagnostic", findings.Items)
+		}
+		if !strings.Contains(timeout.Description, "recorded locally") {
+			t.Fatalf("finding %q, want the committed repair retained", timeout.Description)
+		}
+		if strings.Contains(timeout.Description, "uncommitted changes") {
+			t.Fatalf("finding %q, committed repair should not be described as dirty worktree leftovers", timeout.Description)
+		}
+		if strings.Contains(timeout.Description, "not a code failure") {
+			t.Fatalf("finding %q, must not call the cut harmless next to the failing checks it carries", timeout.Description)
+		}
+	})
 }
 
 func TestCIStep_FixAfterATimedOutRepairRevalidatesTheRecordedCommit(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`)
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`)
 
-	calls := 0
-	ag := &mockAgent{
-		name: "slow-repair",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			calls++
-			if calls > 1 {
-				return &agent.Result{Output: json.RawMessage(`{"summary":"the recorded repair already fixes it","code_change_needed":true}`)}, nil
-			}
-			if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
-				return nil, err
-			}
-			gitCmd(t, dir, "add", "repair.txt")
-			gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-	}
-	prURL := "https://github.com/test/repo/pull/1109"
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "origin", Ref: "refs/heads/feature"}); err != nil {
-		t.Fatal(err)
-	}
-	sctx.Env = env
-	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
-	sctx.Config.AgentTimeout = 50 * time.Millisecond
-	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}
+		calls := 0
+		ag := &mockAgent{
+			name: "slow-repair",
+			runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+				calls++
+				if calls > 1 {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"the recorded repair already fixes it","code_change_needed":true}`)}, nil
+				}
+				if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
+					return nil, err
+				}
+				gitCmd(t, dir, "add", "repair.txt")
+				gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+		prURL := "https://github.com/test/repo/pull/1109"
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "origin", Ref: "refs/heads/feature"}); err != nil {
+			t.Fatal(err)
+		}
+		sctx.Env = env
+		sctx.Run.PRURL = &prURL
+		sctx.Config.CITimeout = 30 * time.Second
+		sctx.Config.AutoFix = config.AutoFix{CI: 1}
+		sctx.Config.AgentTimeout = 50 * time.Millisecond
+		step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}
 
-	parked, err := driveCI(t, step, sctx)
-	if err != nil || parked == nil || !parked.NeedsApproval {
-		t.Fatalf("first round = %#v, %v; want a parked budget cut", parked, err)
-	}
-	recorded := sctx.Run.HeadSHA
-	if recorded == headSHA {
-		t.Fatal("timed-out repair was not recorded")
-	}
+		parked, err := driveCI(t, step, sctx)
+		if err != nil || parked == nil || !parked.NeedsApproval {
+			t.Fatalf("first round = %#v, %v; want a parked budget cut", parked, err)
+		}
+		recorded := sctx.Run.HeadSHA
+		if recorded == headSHA {
+			t.Fatal("timed-out repair was not recorded")
+		}
 
-	sctx.Fixing = true
-	sctx.PreviousFindings = parked.Findings
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("fix round error = %v", err)
-	}
-	if outcome == nil || outcome.RestartFrom != types.StepReview {
-		t.Fatalf("fix round outcome = %#v, want the recorded repair sent to revalidation from Review", outcome)
-	}
-	if sctx.Run.HeadSHA != recorded {
-		t.Fatalf("run head = %s, want the recorded repair %s", sctx.Run.HeadSHA, recorded)
-	}
+		sctx.Fixing = true
+		sctx.PreviousFindings = parked.Findings
+		outcome, err := step.Execute(sctx)
+		if err != nil {
+			t.Fatalf("fix round error = %v", err)
+		}
+		if outcome == nil || outcome.RestartFrom != types.StepReview {
+			t.Fatalf("fix round outcome = %#v, want the recorded repair sent to revalidation from Review", outcome)
+		}
+		if sctx.Run.HeadSHA != recorded {
+			t.Fatalf("run head = %s, want the recorded repair %s", sctx.Run.HeadSHA, recorded)
+		}
+	})
 }
 
 func TestCIStep_FixAgentCutMidRebaseRecordsNoPartialHead(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`)
-	ag := &mockAgent{
-		name: "slow-rebase",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			leaveConflictedRebase(t, dir)
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-	}
-	prURL := "https://github.com/test/repo/pull/1109"
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
-	sctx.Config.AgentTimeout = 50 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`)
+		ag := &mockAgent{
+			name: "slow-rebase",
+			runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+				leaveConflictedRebase(t, dir)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+		prURL := "https://github.com/test/repo/pull/1109"
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Env = env
+		sctx.Run.PRURL = &prURL
+		sctx.Config.CITimeout = 30 * time.Second
+		sctx.Config.AutoFix = config.AutoFix{CI: 1}
+		sctx.Config.AgentTimeout = 50 * time.Millisecond
 
-	outcome, err := driveCI(t, &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}, sctx)
-	if err != nil || outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome = %#v, %v; want a parked budget cut", outcome, err)
-	}
-	if sctx.Run.HeadSHA != headSHA {
-		t.Fatalf("run head = %s, want the partial rebase head left unrecorded", sctx.Run.HeadSHA)
-	}
-	if !strings.Contains(outcome.Findings, "unfinished rebase or merge") || strings.Contains(outcome.Findings, "recorded locally") {
-		t.Fatalf("findings = %s, want the unfinished rebase named and nothing recorded", outcome.Findings)
-	}
+		outcome, err := driveCI(t, &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}, sctx)
+		if err != nil || outcome == nil || !outcome.NeedsApproval {
+			t.Fatalf("outcome = %#v, %v; want a parked budget cut", outcome, err)
+		}
+		if sctx.Run.HeadSHA != headSHA {
+			t.Fatalf("run head = %s, want the partial rebase head left unrecorded", sctx.Run.HeadSHA)
+		}
+		if !strings.Contains(outcome.Findings, "unfinished rebase or merge") || strings.Contains(outcome.Findings, "recorded locally") {
+			t.Fatalf("findings = %s, want the unfinished rebase named and nothing recorded", outcome.Findings)
+		}
+	})
 }
 
 type mockReviewHost struct {
@@ -1691,89 +1702,91 @@ func TestCIStep_AutoFixUsesOnlySelectedFindings(t *testing.T) {
 // ci_timeout hours later with nothing to act on.
 func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"},{"name":"Greptile Review","state":"FAILURE","bucket":"fail","app":"greptile-apps"}]`
-	env := append(fakeCIGH(t, "OPEN", checksJSON), `FAKE_CLI_REVIEW_COMMENTS=[{"author":"greptile-apps[bot]","path":"main.go","line":4,"body":"deferred bot finding"}]`)
+		checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"},{"name":"Greptile Review","state":"FAILURE","bucket":"fail","app":"greptile-apps"}]`
+		env := append(fakeCIGH(t, "OPEN", checksJSON), `FAKE_CLI_REVIEW_COMMENTS=[{"author":"greptile-apps[bot]","path":"main.go","line":4,"body":"deferred bot finding"}]`)
 
-	var invocations int
-	ag := &mockAgent{
-		name: "wedged",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			invocations++
-			<-ctx.Done()
-			return nil, errors.New("pi exited: unable to access 'https://operator:secret@example.com/owner/repo.git': denied")
-		},
-	}
+		var invocations int
+		ag := &mockAgent{
+			name: "wedged",
+			runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+				invocations++
+				<-ctx.Done()
+				return nil, errors.New("pi exited: unable to access 'https://operator:secret@example.com/owner/repo.git': denied")
+			},
+		}
 
-	prURL := "https://github.com/test/repo/pull/3195"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 10}
-	sctx.Config.AgentTimeout = 50 * time.Millisecond
+		prURL := "https://github.com/test/repo/pull/3195"
+		sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Env = env
+		sctx.Run.PRURL = &prURL
+		sctx.Config.CITimeout = 30 * time.Second
+		sctx.Config.AutoFix = config.AutoFix{CI: 10}
+		sctx.Config.AgentTimeout = 50 * time.Millisecond
 
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
+		var logs []string
+		sctx.Log = func(s string) { logs = append(logs, s) }
 
-	polls := 0
-	step := &CIStep{
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			polls++
-			if polls > 3 {
-				t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
+		polls := 0
+		step := &CIStep{
+			waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+				polls++
+				if polls > 3 {
+					t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
+				}
+				return nil
+			},
+		}
+
+		outcome, err := driveCI(t, step, sctx)
+		if err != nil {
+			t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
+		}
+		if outcome == nil || !outcome.NeedsApproval {
+			t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
+		}
+		if invocations != 1 {
+			t.Fatalf("agent invocations = %d, want exactly one budget spent before asking", invocations)
+		}
+
+		var findings Findings
+		if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
+			t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
+		}
+		if len(findings.Items) != 3 {
+			t.Fatalf("findings = %#v, want timeout, selected check, and deferred bot findings", findings.Items)
+		}
+		byCategory := map[string]Finding{}
+		seenIDs := map[string]bool{}
+		var timeout Finding
+		for _, item := range findings.Items {
+			if item.ID == "" || seenIDs[item.ID] {
+				t.Fatalf("finding ID %q is empty or duplicated in %+v", item.ID, findings.Items)
 			}
-			return nil
-		},
-	}
-
-	outcome, err := driveCI(t, step, sctx)
-	if err != nil {
-		t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
-	}
-	if outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
-	}
-	if invocations != 1 {
-		t.Fatalf("agent invocations = %d, want exactly one budget spent before asking", invocations)
-	}
-
-	var findings Findings
-	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
-		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
-	}
-	if len(findings.Items) != 3 {
-		t.Fatalf("findings = %#v, want timeout, selected check, and deferred bot findings", findings.Items)
-	}
-	byCategory := map[string]Finding{}
-	seenIDs := map[string]bool{}
-	var timeout Finding
-	for _, item := range findings.Items {
-		if item.ID == "" || seenIDs[item.ID] {
-			t.Fatalf("finding ID %q is empty or duplicated in %+v", item.ID, findings.Items)
+			seenIDs[item.ID] = true
+			if item.Action != types.ActionAskUser {
+				t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", item.Action, types.ActionAskUser)
+			}
+			byCategory[item.Category] = item
+			if strings.Contains(item.Description, "produced no output at all") {
+				timeout = item
+			}
 		}
-		seenIDs[item.ID] = true
-		if item.Action != types.ActionAskUser {
-			t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", item.Action, types.ActionAskUser)
+		if byCategory[types.FindingCategoryCICheck].Check != "test" || byCategory[types.FindingCategoryCIReviewBot].Check != "Greptile Review" {
+			t.Fatalf("findings = %#v, want selected test and deferred review-bot findings", findings.Items)
 		}
-		byCategory[item.Category] = item
-		if strings.Contains(item.Description, "produced no output at all") {
-			timeout = item
+		if timeout.ID != "ci-fix-agent-timeout" || timeout.Description == "" {
+			t.Fatalf("findings = %#v, want an independently addressable timeout diagnostic", findings.Items)
 		}
-	}
-	if byCategory[types.FindingCategoryCICheck].Check != "test" || byCategory[types.FindingCategoryCIReviewBot].Check != "Greptile Review" {
-		t.Fatalf("findings = %#v, want selected test and deferred review-bot findings", findings.Items)
-	}
-	if timeout.ID != "ci-fix-agent-timeout" || timeout.Description == "" {
-		t.Fatalf("findings = %#v, want an independently addressable timeout diagnostic", findings.Items)
-	}
-	if strings.Contains(timeout.Description, "operator:secret") {
-		t.Fatalf("finding %q leaked adapter URL credentials", timeout.Description)
-	}
-	if !strings.Contains(timeout.Description, "https://redacted@example.com/owner/repo.git") {
-		t.Fatalf("finding %q, want the adapter URL preserved with credentials redacted", timeout.Description)
-	}
+		if strings.Contains(timeout.Description, "operator:secret") {
+			t.Fatalf("finding %q leaked adapter URL credentials", timeout.Description)
+		}
+		if !strings.Contains(timeout.Description, "https://redacted@example.com/owner/repo.git") {
+			t.Fatalf("finding %q, want the adapter URL preserved with credentials redacted", timeout.Description)
+		}
+	})
 }
 
 // TestCIStep_NonTimeoutFixFailureKeepsRetrying is the counter-test: only a

@@ -444,11 +444,25 @@ type MergedProof struct {
 	MergedBy       string
 }
 
+// PRHeadReader is implemented by hosts that can report the commit a pull
+// request currently points at without a full check read. The CI step uses it to
+// name the head a merge landed on when the provider cannot prove a merge, so a
+// merged completion is never recorded for a head nobody can attribute.
+type PRHeadReader interface {
+	GetPRHeadSHA(ctx context.Context, pr *PR) (string, error)
+}
+
 // MergedProofHost is implemented by hosts that can prove which exact PR head
-// was merged. The expected head must be checked even when the PR is already
-// merged, because merge and monitor polling can race.
+// was merged. ownHeads lists every head the run owns, its primary recorded
+// head first, then its durable last-pushed head and the caller worktree's
+// HEAD - so a merge that raced an outside rewrite of the branch can still
+// prove the run's own work landed. The head must be checked even when the PR
+// is already merged, because merge and monitor polling can race. Hosts that
+// cannot validate the whole set validate the first head alone; every host
+// reports which head the proof carries and the caller re-checks membership, so
+// a proof for a head the run owns nowhere can never pass.
 type MergedProofHost interface {
-	GetMergedProof(ctx context.Context, pr *PR, expectedHead string) (MergedProof, error)
+	GetMergedProof(ctx context.Context, pr *PR, ownHeads []string) (MergedProof, error)
 }
 
 // Host is the provider-agnostic interface to a PR-hosting service.
@@ -483,8 +497,9 @@ type Host interface {
 }
 
 // PRBaseBranchReader is implemented by providers that can read the target
-// branch of an existing PR by its durable identity. CI uses it when a run is
-// resumed after repository configuration changes.
+// branch of an existing PR by its durable identity. CI uses the live base for
+// conflict repairs and base-tip monitoring despite repository configuration
+// changes, and to align change scope before restarting at Review.
 type PRBaseBranchReader interface {
 	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
 }

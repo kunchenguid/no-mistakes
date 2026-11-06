@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -510,10 +511,17 @@ func TestCIStep_GitHubHeadObservationAcrossLookupFailures(t *testing.T) {
 			}
 			indexPath := filepath.Join(t.TempDir(), "head-index")
 			env = append(env, "FAKE_CLI_PR_HEAD_SEQUENCE="+string(sequence), "FAKE_CLI_PR_HEAD_INDEX="+indexPath)
-			sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
 			prURL := "https://github.com/test/repo/pull/42"
 			sctx.Run.PRURL = &prURL
+			// "head-B" is a head the run published, so the monitor reads its
+			// checks and an observation of it is a movement between the run's
+			// own heads - the case this test's remembered-failure clearing is
+			// about. A head the run never produced is a rewrite instead.
+			if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: "head-B", TargetKind: "upstream", TargetFingerprint: "fixture", Ref: "refs/heads/feature"}); err != nil {
+				t.Fatal(err)
+			}
 			sctx.Config.CITimeout = time.Minute
 			now := time.Unix(1700000000, 0)
 			waits := 0

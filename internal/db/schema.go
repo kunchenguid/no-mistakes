@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    observed_base_branch TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
 	 reviewer_profile     TEXT,
@@ -265,6 +266,19 @@ CREATE TABLE IF NOT EXISTS run_retries (
     checkpoint_head_sha TEXT NOT NULL,
     created_at          INTEGER NOT NULL
 );
+
+-- Push-bound heads a rewritten-remote recovery rebound into a run's binding
+-- without any run having validated them. One row per repository ref: the
+-- recovery's compare-and-swap is the only writer, and a later publication of
+-- the exact head by any run clears it, so branch-sync reports can say that no
+-- run validated the bound head until one does.
+CREATE TABLE IF NOT EXISTS unvalidated_rebound_heads (
+    repo_id    TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    ref        TEXT NOT NULL,
+    head_sha   TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, ref)
+);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -365,6 +379,10 @@ var migrationStatements = []string{
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	// The base branch the CI step OBSERVED on the pull request and aligned the
+	// run to. It scopes a restart at Review; it is never target intent, so no
+	// retarget is issued from it.
+	`ALTER TABLE runs ADD COLUMN observed_base_branch TEXT`,
 	// The caller-side, tighten-only decision to keep the generated Intent
 	// section out of the PR body (axi run --no-publish-intent, or
 	// intent.publish_intent: false in global config). Resolved once at run

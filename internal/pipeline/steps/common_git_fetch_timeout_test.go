@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
@@ -70,5 +72,46 @@ func TestFetchRunUpstreamBranch_TimesOutAndSaysSo(t *testing.T) {
 	}
 	if elapsed > 30*time.Second {
 		t.Fatalf("fetch took %v, the bound did not apply", elapsed)
+	}
+}
+
+// PR refresh must stop before drafting or updating when its remote base lookup
+// stalls. The oracle is the same finite budget as the upstream fetch; a lookup
+// using only the run context would wait for the five-second watchdog instead.
+func TestPRStep_BaseLookupTimesOutBeforePublication(t *testing.T) {
+	original := fetchUpstreamTimeout
+	fetchUpstreamTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { fetchUpstreamTimeout = original })
+
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "main")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.BaseBranch = "layer1"
+	gitCmd(t, dir, "remote", "set-url", "origin", hangingGitRemote(t))
+	recordPRTestPush(t, sctx)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchdog := time.AfterFunc(5*time.Second, cancel)
+	defer watchdog.Stop()
+	sctx.Ctx = ctx
+
+	start := time.Now()
+	outcome, err := (&PRStep{}).Execute(sctx)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "check upstream connectivity") {
+		t.Fatalf("error = %v, want a deadline error with connectivity guidance", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Fatalf("lookup took %v, reached the run watchdog instead of its own deadline", elapsed)
+	}
+	if outcome != nil || len(ag.calls) != 0 {
+		t.Fatalf("lookup failure must stop publication, got outcome %+v and %d agent calls", outcome, len(ag.calls))
+	}
+	for _, call := range []string{"pr create", "pr edit"} {
+		if strings.Contains(readFile(t, logFile), call) {
+			t.Fatalf("lookup failure must not publish through %s", call)
+		}
 	}
 }

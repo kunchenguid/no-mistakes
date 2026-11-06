@@ -21,8 +21,10 @@ import (
 )
 
 func TestTestNativeEarlyResultChildCompletion(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"early-exit", "early-exit-redirected", "early-repair", "success", "zombie-success", "failure", "deadline"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			dir, base, head := setupGitRepo(t)
 			controls := t.TempDir()
 			ready, release, completed := filepath.Join(controls, "ready"), filepath.Join(controls, "release"), filepath.Join(controls, "completed")

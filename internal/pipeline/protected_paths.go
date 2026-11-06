@@ -97,6 +97,21 @@ func HasUnreadableReviewQuestionHistory(findingsJSON string) bool {
 	return false
 }
 
+// HasCIHeadRewriteRefusal identifies the CI monitor's published-head-rewrite
+// park, which an automatic resolver must leave alone: the pull request branch
+// moved to a head the run owns nowhere and adoption is unsafe, or repeated
+// polls cannot establish an owned head's checks. Automatic approval cannot
+// settle which head to validate, and a fixer can only edit code. Same
+// carve-out shape and the same one predicate for every automatic path as
+// HasUnansweredReviewQuestion; a human's own approve or fix stays allowed.
+func HasCIHeadRewriteRefusal(findingsJSON string) bool {
+	findings, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil {
+		return false
+	}
+	return types.HasCIHeadRewrite(findings)
+}
+
 // approvalRefusal reports why Approve is rejected at a gate, or "" when it is
 // accepted.
 func approvalRefusal(step types.StepName, findingsJSON string) string {

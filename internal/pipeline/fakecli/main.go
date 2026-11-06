@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/fakecli/ghsanitize"
 	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
@@ -72,6 +73,8 @@ func handleFakeCLI(mode string) {
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
+	case "git-stalled-fetch":
+		fakeGitStalledFetchHandler(args)
 	case "git-move-head-passthrough":
 		fakeGitMoveHeadPassthroughHandler(args)
 	case "git-intervening-push-passthrough":
@@ -269,6 +272,9 @@ func fakeGHHandler(args []string) {
 	fakeGHHandlePRContentCommands(args, strings.Join(args, " "))
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
+	if prBase == "-" || prBase == "!" {
+		prBase = ""
+	}
 	prListJSON, hasPRListJSON := os.LookupEnv("FAKE_CLI_PR_LIST_JSON")
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
@@ -372,6 +378,30 @@ func fakeGitCommitErrorHandler(args []string) {
 	if len(args) > 0 && args[0] == "commit" {
 		fmt.Fprintln(os.Stderr, "intentional commit failure")
 		os.Exit(1)
+	}
+	fakeGitForward(args, os.Getenv("FAKE_CLI_REAL_GIT"))
+}
+
+func fakeGitStalledFetchHandler(args []string) {
+	if len(args) > 0 && args[0] == "hold-fetch-pipes" {
+		if err := os.WriteFile(os.Getenv("FAKE_CLI_FETCH_STARTED"), []byte("started"), 0o600); err != nil {
+			os.Exit(1)
+		}
+		time.Sleep(4 * time.Second)
+		return
+	}
+	if len(args) > 0 && args[0] == "fetch" {
+		helper, err := os.Executable()
+		if err != nil {
+			os.Exit(1)
+		}
+		child := exec.Command(helper, "hold-fetch-pipes")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Run(); err != nil {
+			os.Exit(1)
+		}
+		return
 	}
 	fakeGitForward(args, os.Getenv("FAKE_CLI_REAL_GIT"))
 }
@@ -515,6 +545,13 @@ func fakeGitRemoteErrorHandler(args []string) {
 }
 
 func fakePRHeadSHA() string {
+	if path := os.Getenv("FAKE_CLI_PR_HEAD_FILE"); path != "" {
+		head, err := os.ReadFile(path)
+		if err != nil {
+			os.Exit(1)
+		}
+		return strings.TrimSpace(string(head))
+	}
 	if raw := os.Getenv("FAKE_CLI_PR_HEAD_SEQUENCE"); raw != "" {
 		var heads []string
 		if err := json.Unmarshal([]byte(raw), &heads); err != nil || len(heads) == 0 {
@@ -723,6 +760,81 @@ func extractTrailingNumber(rawURL string) int {
 	return number
 }
 
+// fakeGHPRBaseBranch answers `gh pr view <n> --json baseRefName`, which the
+// CI step's restart-at-Review base alignment reads. FAKE_CLI_PR_BASE overrides
+// the default main; the sentinel "-" reports no base at all, and "!" fails the
+// read outright - the two ways a forge can decline to name a base.
+// FAKE_CLI_PR_BASE_OK_AFTER names a file whose existence ends a transient
+// outage: every read before it appears fails, every read after it answers
+// normally. A test that creates the file at a known moment - from the fix
+// agent, say - can put the outage on exactly the reads that precede it.
+func fakeGHPRBaseBranch(joined string) {
+	if !strings.Contains(joined, "pr view") || !strings.Contains(joined, "--json baseRefName") {
+		return
+	}
+	if marker := os.Getenv("FAKE_CLI_PR_BASE_OK_AFTER"); marker != "" {
+		if _, err := os.Stat(marker); err != nil {
+			fmt.Fprintln(os.Stderr, "fake gh: the pull request base could not be read")
+			os.Exit(1)
+		}
+	}
+	base := os.Getenv("FAKE_CLI_PR_BASE")
+	if file := os.Getenv("FAKE_CLI_PR_BASE_FILE"); file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		base = strings.TrimSpace(string(data))
+	}
+
+	switch base {
+	case "":
+		base = "main"
+	case "-":
+		base = ""
+	case "!":
+		fmt.Fprintln(os.Stderr, "fake gh: the pull request base could not be read")
+		os.Exit(1)
+	}
+	fmt.Println(base)
+	os.Exit(0)
+}
+
+// fakeGHMergedProof answers the merged-proof read
+// (`gh pr view <n> --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy`).
+// FAKE_CLI_PR_MERGED_PROOF_JSON overrides the whole payload; the default
+// synthesizes a complete MERGED proof at the fake's configured head, so a
+// monitor that trusts it validates the head the tests set up. It must be
+// checked before the plain `--json state` and `--json headRefOid` branches:
+// this argv contains both substrings.
+func fakeGHMergedProof(args []string, joined string) {
+	if !strings.Contains(joined, "pr view") || !strings.Contains(joined, "mergeCommit") {
+		return
+	}
+	if message := os.Getenv("FAKE_CLI_PR_MERGED_PROOF_ERR"); message != "" {
+		fmt.Fprintln(os.Stderr, message)
+		os.Exit(1)
+	}
+
+	if raw := os.Getenv("FAKE_CLI_PR_MERGED_PROOF_JSON"); raw != "" {
+		fmt.Println(raw)
+		os.Exit(0)
+	}
+	head := fakePRHeadSHA()
+	number := 42
+	for i, arg := range args {
+		if arg == "view" && i+1 < len(args) {
+			if parsed := extractTrailingNumber(args[i+1]); parsed != 0 {
+				number = parsed
+			}
+		}
+	}
+	payload := fmt.Sprintf(`{"number":%d,"url":"https://github.com/test/repo/pull/%d","state":"MERGED","headRefOid":%q,"mergeCommit":{"oid":%q},"mergedAt":"2026-01-01T00:00:00Z","mergedBy":{"login":"someone"}}`, number, number, head, head)
+	fmt.Println(payload)
+	os.Exit(0)
+}
+
 func fakeCIGHReconcileHandler(args []string) {
 	joined := strings.Join(args, " ")
 	if len(args) > 0 && args[0] == "api" && !strings.Contains(joined, "graphql") {
@@ -740,6 +852,7 @@ func fakeCIGHReconcileHandler(args []string) {
 		fmt.Println("https://github.com/test/repo/pull/42")
 		os.Exit(0)
 	}
+	fakeGHMergedProof(args, joined)
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		state, err := os.ReadFile(os.Getenv("FAKE_CLI_STATE_PATH"))
 		if err != nil {
@@ -848,6 +961,8 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	fakeGHMergedProof(args, joined)
+	fakeGHPRBaseBranch(joined)
 	if strings.Contains(joined, "pr list") {
 		if prListJSON := os.Getenv("FAKE_CLI_PR_LIST_JSON"); prListJSON != "" {
 			fmt.Print(prListJSON)
@@ -948,6 +1063,8 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	fakeGHMergedProof(args, joined)
+	fakeGHPRBaseBranch(joined)
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
 			fmt.Fprintln(os.Stderr, mergeableErr)
@@ -1142,8 +1259,15 @@ func fakeCIGlabMRViewJSON(state, conflicts, mergeStatus, pipelineStatus string) 
 		pipeline = fmt.Sprintf(`{"id":7,"sha":%q,"ref":%q,"status":%q,"web_url":"https://gitlab.com/test/repo/-/pipelines/7"}`,
 			pipelineSHA, pipelineRef, pipelineStatus)
 	}
-	return fmt.Sprintf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","sha":%q,"state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":%s}`,
-		sourceSHA, state, conflicts, mergeStatus, pipeline)
+	// A merge request always names its target branch; the CI step aligns a
+	// restart at Review with it, so the fake serves one too (FAKE_CLI_MR_TARGET_BRANCH,
+	// defaulting to the fixture's main).
+	targetBranch := os.Getenv("FAKE_CLI_MR_TARGET_BRANCH")
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+	return fmt.Sprintf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","sha":%q,"state":%q,"target_branch":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":%s}`,
+		sourceSHA, state, targetBranch, conflicts, mergeStatus, pipeline)
 }
 
 // fakeCIGlabIsPipelineJobsRead reports whether the invocation is the REST jobs
@@ -1360,6 +1484,7 @@ func fakeCIGHNoChecksHandler(args []string) {
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	fakeGHMergedProof(args, joined)
 	if strings.Contains(joined, "pr checks") {
 		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
 		os.Exit(1)

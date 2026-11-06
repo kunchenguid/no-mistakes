@@ -1773,3 +1773,39 @@ func asExitError(err error, target **exitError) bool {
 	}
 	return false
 }
+
+// A rewritten-remote recovery's rebind leaves the report saying the bound
+// head was never validated, in the structured field agents read and in the
+// human summary; a validated branch carries neither.
+func TestBranchSyncFieldRendersTheUnvalidatedBoundHead(t *testing.T) {
+	t.Parallel()
+
+	validated := branchSyncField(branchsync.State{State: branchsync.StateSynchronized, Safety: "already_synchronized"})
+	validatedRendered, err := toon.MarshalString(validated.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(validatedRendered, "bound_head_unvalidated") {
+		t.Fatalf("validated branch rendered %s, want no unvalidated marker", validatedRendered)
+	}
+
+	rebound := branchSyncField(branchsync.State{
+		State:                branchsync.StateSynchronized,
+		Safety:               "already_synchronized",
+		BoundHeadUnvalidated: "abc123",
+		NextAction:           &branchsync.NextAction{Code: "validate_rebound_head", Command: "no-mistakes axi run --intent \"...\""},
+	})
+	rendered, err := toon.MarshalString(rebound.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered, "bound_head_unvalidated") || !strings.Contains(rendered, "abc123") {
+		t.Fatalf("rebound branch rendered %s, want bound_head_unvalidated abc123", rendered)
+	}
+	if !strings.Contains(rendered, "validate_rebound_head") {
+		t.Fatalf("rebound branch rendered %s, want the validate_rebound_head next action", rendered)
+	}
+	if got := humanSyncSummary(branchsync.State{State: branchsync.StateSynchronized, BoundHeadUnvalidated: "abc123"}); !strings.Contains(got, "no run validated") {
+		t.Fatalf("human summary = %q, want the unvalidated-head warning", got)
+	}
+}
