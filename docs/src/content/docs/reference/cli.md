@@ -45,7 +45,7 @@ Each skill installation contains a short `SKILL.md` core and its linked `referen
 `init` writes no skill files into the repo; the user-level copies serve Claude Code (`~/.claude/skills`) and agents that use the vendor-neutral `~/.agents/skills` convention (Codex, OpenCode, Rovo Dev, and Pi) across all repos. Grok Build is a pipeline runner and does not consume this installed skill.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
-With `--skip-user-skill`, `init` does not run the skill installer at all: neither user-level `SKILL.md` is created, refreshed, or otherwise touched (including through the symlink layouts above), and a missing skills directory is not created.
+With `--skip-user-skill`, `init` does not run the skill installer at all: no user-level skill documents are created, refreshed, or otherwise touched (including through the symlink layouts above), and a missing skills directory is not created.
 Everything else about `init` is unchanged, and it reports `skipped: --skip-user-skill` on its skill line.
 The flag applies to that run only and is not remembered, so a later `init` without it installs or refreshes the skill again.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
@@ -88,7 +88,7 @@ Install or refresh the `/no-mistakes` agent skill independently of repository se
 no-mistakes skill install
 ```
 
-Writes the skill bundled with the current binary to `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, using the same installer as `init` and following the same symlink layouts. Re-running the command overwrites stale skill content. Installation errors return a nonzero exit status.
+Installs the complete skill set bundled with the current binary using the [installation locations, refresh behavior, and symlink support described for `init`](#no-mistakes-init). Installation errors return a nonzero exit status.
 
 This command works outside a Git repository and does not register a gate or start the daemon. To control when the user-level skill is installed, run `init --skip-user-skill` for repository setup and `skill install` separately when wanted.
 
