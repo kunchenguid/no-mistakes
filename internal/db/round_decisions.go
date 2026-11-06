@@ -115,8 +115,10 @@ var ErrStepRoundDecisionRecorded = errors.New("the round already records a decis
 // SetStepRoundIgnored records that a fix response declined every finding the
 // round's gate showed (--ignore with no --findings), under its own selection
 // source so an explicit ignore stays distinguishable from an approve, skip, or
-// abort. It never replaces a user or auto-fix selection, nor an external
-// settlement and the reason stored with it, and reports
+// abort. It never replaces any decision already recorded - a user or auto-fix
+// selection, an external settlement and the reason stored with it, or a plain
+// decline, which is not a settling source and would leave the caller echoing a
+// sticky ignore that never suppresses anything - and reports
 // ErrStepRoundDecisionRecorded instead of storing nothing silently. The
 // invariant is enforced in the statement, not assumed by the caller.
 func (d *DB) SetStepRoundIgnored(id string, origins ...types.ResponseOrigin) error {
@@ -130,11 +132,11 @@ func (d *DB) SetStepRoundIgnored(id string, origins ...types.ResponseOrigin) err
 	return nil
 }
 
-// setStepRoundDecline writes source onto a round whose decision is unrecorded
-// and refreshes the caller origin of a round that already records a decline,
-// and reports whether the row was written. A recorded decision is never
-// rewritten: a retry on an already declined round must not promote a plain
-// decline to the sticky ignore the operator's first response did not record.
+// setStepRoundDecline writes source onto a round whose decision is unrecorded,
+// refreshes the caller origin of a round that already records this same source,
+// and reports whether the row was written. A round that records any other
+// decision is left untouched, so a retry can never rewrite one source as
+// another.
 func (d *DB) setStepRoundDecline(id, source string, origins ...types.ResponseOrigin) (bool, error) {
 	origin := types.ResponseOriginUnknown
 	if len(origins) > 0 {
@@ -144,10 +146,10 @@ func (d *DB) setStepRoundDecline(id, source string, origins ...types.ResponseOri
 	result, err := d.sql.Exec(
 		`UPDATE step_rounds
 		    SET selected_finding_ids = CASE WHEN selection_source IS NULL THEN ? ELSE selected_finding_ids END,
-		        selection_source = CASE WHEN selection_source IS NULL THEN ? ELSE selection_source END,
+		        selection_source = ?,
 		        response_origin = ?
-		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ? OR selection_source = ?)`,
-		declined, source, origin, id, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserIgnored,
+		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ?)`,
+		declined, source, origin, id, source,
 	)
 	if err != nil {
 		return false, fmt.Errorf("set step round declined: %w", err)

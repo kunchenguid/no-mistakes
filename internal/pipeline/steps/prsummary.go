@@ -1306,6 +1306,9 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	// Had findings and the final state still contains them - approved as-is.
 	count := countFindingsBySeverity(currentFindings)
 	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
+	if settledFindings > 0 {
+		line = fmt.Sprintf("%s, %s", line, settledWithoutFixText(settledFindings))
+	}
 	return buildDetail(line)
 }
 
@@ -1448,10 +1451,17 @@ func buildFixResultText(rounds []*db.StepRound, settled int) string {
 		}
 	}
 	if settled > 0 {
-		parts = append(parts, fmt.Sprintf("%d settled by the operator without a fix", settled))
+		parts = append(parts, settledWithoutFixText(settled))
 	}
 
 	return strings.Join(parts, " → ")
+}
+
+// settledWithoutFixText owns the published wording for a human disposition
+// that removed a finding without a fix, so every Review summary line reports a
+// settlement the same way whether or not findings remain.
+func settledWithoutFixText(settled int) string {
+	return fmt.Sprintf("%d settled by the operator without a fix", settled)
 }
 
 // buildStepDetails renders the collapsible body for a step as an

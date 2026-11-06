@@ -361,6 +361,33 @@ func TestBuildPipelineSummary_ASettledFindingIsPublishedAsSettled(t *testing.T) 
 	}
 }
 
+// A Review that settled one finding and ended with another still reported must
+// still publish the settlement. docs reference/pipeline-steps.md states the PR
+// body reports a settled finding as settled without a fix, and a line that only
+// counts what remains says nothing about the human decision at all.
+func TestBuildPipelineSummary_ASettlementIsPublishedWhenFindingsRemain(t *testing.T) {
+	t.Parallel()
+	two := `{"findings":[` +
+		`{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible"},` +
+		`{"id":"bug","severity":"error","file":"main.go","line":9,"description":"off-by-one"}],"summary":"2 findings"}`
+	remaining := `{"findings":[{"id":"bug","severity":"error","file":"main.go","line":9,"description":"off-by-one"}],"summary":"1 error"}`
+	settled := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible","user_instructions":"grant verified on the machine"}]}`
+	empty := db.DeclinedSelectionJSON
+	source := db.RoundSelectionSourceExternal
+
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &remaining}}
+	rounds := map[string][]*db.StepRound{"s1": {
+		{Round: 1, Trigger: "initial", FindingsJSON: &two, SelectedFindingIDs: &empty, SelectionSource: &source, UserFindingsJSON: &settled, DurationMS: 1000},
+		{Round: 2, Trigger: "external", FindingsJSON: &remaining, DurationMS: 700},
+	}}
+
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+	if !strings.Contains(md, "1 settled by the operator without a fix") {
+		t.Errorf("the settlement was dropped because a finding remained, got:\n%s", md)
+	}
+}
+
 // The common mixed response - fix one finding, decline another - records a
 // single user selection, and the Review disposition filter then drops the
 // declined finding from every later report. The body must credit the fix and

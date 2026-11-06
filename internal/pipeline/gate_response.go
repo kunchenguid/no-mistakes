@@ -281,12 +281,12 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 	return decisionIDsInGate(keys, gate)
 }
 
-// earlierChosenToFixIDs names the gate's findings an earlier round already
-// chose to fix. It matches by fingerprint, not by the line-sensitive decision
-// key, because a response that declines or externally settles such a finding
-// is never effective at any line - filterSettledReviewFindings protects a fix
-// selection by fingerprint - so a refusal is the only honest answer.
-func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
+// chosenToFixFingerprints reports every finding a human round of this step
+// chose to fix, by fingerprint and with no uniqueness condition: a selection
+// the gate accepted is a selection whatever else the payload showed, and this
+// is the one set both the gate refusal and the settlement filter decide on, so
+// the protection can never be narrower than the suppression.
+func chosenToFixFingerprints(rounds []*db.StepRound) map[types.Finding]bool {
 	chosen := make(map[types.Finding]bool)
 	for _, round := range rounds {
 		if !humanDecidedRound(round) {
@@ -296,6 +296,16 @@ func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool 
 			chosen[findingFingerprint(item)] = true
 		}
 	}
+	return chosen
+}
+
+// earlierChosenToFixIDs names the gate's findings an earlier round already
+// chose to fix. It matches by fingerprint, not by the line-sensitive decision
+// key, because a response that declines or externally settles such a finding
+// is never effective at any line - filterSettledReviewFindings never credits a
+// disposition for one - so a refusal is the only honest answer.
+func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
+	chosen := chosenToFixFingerprints(rounds)
 	ids := make(map[string]bool)
 	findings, _ := types.ParseFindingsJSON(gate)
 	for _, item := range findings.Items {

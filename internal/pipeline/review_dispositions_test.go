@@ -385,6 +385,47 @@ func TestExecutor_DispositionsRefuseAnEarlierFixAtANewLine(t *testing.T) {
 	}
 }
 
+// A gate that shows one fingerprint twice cannot be settled, so the only
+// response left is to fix both sites. That selection must still protect the
+// fingerprint: an earlier explicit ignore cannot settle a site the operator
+// then chose to fix, however many findings shared the ambiguous payload.
+func TestFilterSettledReviewFindings_AnAmbiguousGateStillCreditsTheFixSelection(t *testing.T) {
+	item := types.Finding{ID: "first", File: "first.go", Line: 10, Severity: types.FindingSeverityWarning, Description: "duplicate check missing", Action: types.ActionAskUser}
+	firstRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
+	empty := db.DeclinedSelectionJSON
+	ignoreSource := db.RoundSelectionSourceUserIgnored
+
+	twinA := item
+	twinA.ID = "twin-a"
+	twinB := item
+	twinB.ID = "twin-b"
+	twinB.Line = 50
+	secondRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{twinA, twinB}})
+	chosen := `["twin-a","twin-b"]`
+	fixSource := db.RoundSelectionSourceUser
+
+	remaining := item
+	remaining.ID = "still-open"
+	remaining.Line = 70
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{remaining}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+
+	rounds := []*db.StepRound{
+		{FindingsJSON: &firstRound, SelectionSource: &ignoreSource, SelectedFindingIDs: &empty},
+		{FindingsJSON: &secondRound, SelectionSource: &fixSource, SelectedFindingIDs: &chosen},
+	}
+	filtered, err := filterSettledReviewFindings(raw, rounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := types.ParseFindingsJSON(filtered)
+	if err != nil || len(parsed.Items) != 1 {
+		t.Fatalf("an ambiguous fix round lost its selection and the finding was settled: %+v %v", parsed.Items, err)
+	}
+	if got := SettledReviewFindingCount(rounds); got != 0 {
+		t.Fatalf("settled count = %d, want 0: the operator chose to fix that finding", got)
+	}
+}
+
 func TestFilterSettledReviewFindings_AmbiguousFingerprintFailsClosed(t *testing.T) {
 	item := types.Finding{ID: "first", File: "first.go", Severity: types.FindingSeverityInfo, Description: "same", Action: types.ActionNoOp}
 	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
