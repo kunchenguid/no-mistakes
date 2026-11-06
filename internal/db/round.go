@@ -12,9 +12,11 @@ const (
 	RoundSelectionSourceAutoFix = "auto_fix"
 	// RoundSelectionSourceUserDeclined records that a caller resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort, or a fix response that declined every finding the gate
-	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
-	// finding-level state at all, so "the caller declined every finding" and
+	// skip, or abort, or a non-Review fix response that declined every finding
+	// the gate showed (--ignore with no --findings). Review records an explicit
+	// ignore under RoundSelectionSourceUserIgnored instead. Before this source
+	// existed, approve, skip, and abort wrote no finding-level state at all,
+	// so "the caller declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
 	// partial selection stores one, as the complement of
@@ -55,7 +57,9 @@ type StepRound struct {
 	// dispatched to the fix agent after the user edited per-finding
 	// instructions or added their own findings. It includes both the
 	// selected agent-produced findings (with any attached user
-	// instructions) and the user-authored findings.
+	// instructions) and the user-authored findings. With
+	// RoundSelectionSourceExternal, it instead holds the externally settled
+	// findings and their reason in UserInstructions; no fixer is dispatched.
 	UserFindingsJSON *string
 	// SelectedFindingIDs, when non-nil, is a JSON array of finding IDs that
 	// were chosen (by the user or auto-fix filter) to be fixed AFTER this

@@ -1440,9 +1440,8 @@ func (e *respondRefusalError) helpLines(runID string) []string {
 	return help
 }
 
-// respondDispositionFields renders what a response recorded for its gate. It is
-// empty for actions that record no finding-level decision, so only a fix
-// response is echoed.
+// respondDispositionFields renders the accepted fix or external-settlement
+// dispositions. Other actions emit no echo, even when they record a decline.
 func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.ResolvedExternal == nil && result.Kept == nil) {
 		return nil
