@@ -40,8 +40,8 @@ func VerifyRemoteBranchExists(ctx context.Context, workDir, branch string) error
 }
 
 // runPRBaseBranch returns the per-run PR base branch override stored on the
-// run record, or "" when unset. It is the operator's TARGET intent and the only
-// base the PR step retargets an existing pull request to.
+// run record, or "" when unset. It is the operator's TARGET intent, preserved
+// even when PR refresh falls back because that target was deleted.
 func runPRBaseBranch(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.Run == nil || sctx.Run.PRBaseBranch == nil {
 		return ""
@@ -63,8 +63,8 @@ func observedBaseBranch(sctx *pipeline.StepContext) string {
 // targetPRBaseBranch resolves the branch this run means to target: the
 // operator's per-run override, then the configured pr.base_branch, then the
 // repository default. It deliberately ignores the observed base, because
-// observation is not intent: a pull request the forge retargeted must not be
-// moved back by the PR step.
+// observation is not intent and cannot itself request a retarget. PRStep
+// resolves the deleted-target fallback after discovering the existing PR.
 func targetPRBaseBranch(sctx *pipeline.StepContext) string {
 	branch := ""
 	if runBase := runPRBaseBranch(sctx); runBase != "" {
