@@ -324,3 +324,32 @@ func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.
 		}
 	}
 }
+
+func TestCommitIdentityInheritedIncludeCannotOverrideRun(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, _ := setupTestGitRepo(t, p, d, "identity-command-include")
+	identity := git.CommitIdentity{AuthorName: "Submitter", AuthorEmail: "submitter@example.test", CommitterName: "Submitter", CommitterEmail: "submitter@example.test"}
+	if err := git.CopyLocalUserIdentity(context.Background(), repo.WorkingPath, identity); err != nil {
+		t.Fatal(err)
+	}
+	included := filepath.Join(t.TempDir(), "daemon-config")
+	if err := os.WriteFile(included, []byte("[author]\nname = Included Daemon\nemail = included@example.test\n[committer]\nname = Included Daemon\nemail = included@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "include.path")
+	t.Setenv("GIT_CONFIG_VALUE_0", included)
+	environment, err := pipelineEnvironment(nil, identity)
+	if err != nil {
+		return // Refusing an unprovable environment before commit is safe.
+	}
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "inherited include")
+	cmd.Dir, cmd.Env = repo.WorkingPath, environment.Apply(nil)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("agent commit: %v: %s", err, out)
+	}
+	want := "Submitter <submitter@example.test> | Submitter <submitter@example.test>"
+	if got := gitOutput(t, repo.WorkingPath, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
+		t.Fatalf("command-scope include replaced run identity: %q, want %q", got, want)
+	}
+}

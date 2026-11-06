@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
@@ -37,7 +39,15 @@ func submissionIdentity(ctx context.Context, checkout string) (git.CommitIdentit
 		if err != nil {
 			return identity, err
 		}
-		scopes = append(scopes, []string{"--file", path})
+		absolute := path
+		if !filepath.IsAbs(absolute) {
+			absolute = filepath.Join(checkout, absolute)
+		}
+		if _, err := os.Stat(absolute); err == nil {
+			scopes = append(scopes, []string{"--file", path})
+		} else if !os.IsNotExist(err) {
+			return identity, err
+		}
 	}
 	values := make(map[string]string)
 	for _, scope := range scopes {
