@@ -82,12 +82,9 @@ func submissionIdentity(ctx context.Context, checkout string) (git.CommitIdentit
 	return identity, nil
 }
 
-func pipelineEnvironment(forge *forgecontext.Context, identity git.CommitIdentity) (runenv.Overlay, error) {
+func pipelineEnvironment(forge *forgecontext.Context, identity git.CommitIdentity) runenv.Overlay {
 	environment := forgeEnvironment(forge).Clone()
-	bound, err := identity.SubprocessEnvironment(environment.Apply(nil))
-	if err != nil {
-		return runenv.Overlay{}, err
-	}
+	bound := identity.Environment()
 	for _, key := range bound.Unset {
 		delete(environment.Set, key)
 	}
@@ -98,5 +95,5 @@ func pipelineEnvironment(forge *forgecontext.Context, identity git.CommitIdentit
 	for key, value := range bound.Set {
 		environment.Set[key] = value
 	}
-	return environment, nil
+	return environment
 }

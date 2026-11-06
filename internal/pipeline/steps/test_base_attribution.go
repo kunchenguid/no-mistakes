@@ -166,10 +166,7 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 		}
 		return nil
 	}
-	env, err := stepEnvironment(sctx)
-	if err != nil {
-		return "", 0, err
-	}
+	env := stepEnvironment(sctx)
 	if prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare); prepareCmd != "" {
 		output, exitCode, err := runShellCommandWithPriority(ctx, checkout, env, prepareCmd, sctx.Config.CommandOverrides["prepare"].Nice)
 		if err := exceeded(); err != nil {

@@ -240,11 +240,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	environment, err := pipelineEnvironment(forgeCtx, identity)
-	if err != nil {
-		return nil, err
-	}
-	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, environment, quotaRecord)
+	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, pipelineEnvironment(forgeCtx, identity), quotaRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -2171,13 +2167,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
 	// fail-closed check. The quota-aware record is fresh-read here (a nil
 	// input) and persisted beside the gates pin below.
-	environment, err := pipelineEnvironment(forgeCtx, identity)
-	if err != nil {
-		m.db.UpdateRunError(run.ID, err.Error())
-		trackStartFailure("commit_identity_environment")
-		return "", err
-	}
-	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, environment, nil)
+	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, pipelineEnvironment(forgeCtx, identity), nil)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")

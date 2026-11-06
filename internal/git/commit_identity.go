@@ -51,23 +51,13 @@ func CaptureCommitIdentity(ctx context.Context, dir string) (CommitIdentity, err
 	return identity, identity.Validate()
 }
 
+// Environment binds both roles above every Git config source. Agents and
+// configured commands share this overlay, including their descendant processes.
 func (i CommitIdentity) Environment() runenv.Overlay {
 	return runenv.Overlay{Set: map[string]string{
 		"GIT_AUTHOR_NAME": i.AuthorName, "GIT_AUTHOR_EMAIL": i.AuthorEmail,
 		"GIT_COMMITTER_NAME": i.CommitterName, "GIT_COMMITTER_EMAIL": i.CommitterEmail,
 	}, Unset: []string{"GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"}}
-}
-
-func (i CommitIdentity) SubprocessEnvironment(base []string) (runenv.Overlay, error) {
-	environment := i.Environment()
-	for key := range environment.Set {
-		environment.Unset = append(environment.Unset, key)
-	}
-	environment.Set = nil
-	if err := stripIdentityConfig(&environment, base); err != nil {
-		return runenv.Overlay{}, err
-	}
-	return environment, nil
 }
 
 type commitIdentityContextKey struct{}

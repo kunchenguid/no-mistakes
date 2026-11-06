@@ -268,7 +268,7 @@ func TestSubmissionIdentityWithLinkedCheckouts(t *testing.T) {
 	}
 }
 
-func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.T) {
+func TestCommitIdentityAgentEnvironmentPinsEveryRepository(t *testing.T) {
 	p, d := newParkedRunEnv(t)
 	repo, _ := setupTestGitRepo(t, p, d, "identity-agent")
 	identity := git.CommitIdentity{AuthorName: "Submitting Author", AuthorEmail: "author@example.test", CommitterName: "Submitting Committer", CommitterEmail: "committer@example.test"}
@@ -299,15 +299,11 @@ func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.
 	t.Setenv("GIT_CONFIG_PARAMETERS", "'committer.name'='Daemon Config Committer' 'committer.email=daemon-config@example.test' 'test.parameter'='O'\\''Brien = value'")
 	for target, want := range map[string]string{
 		repo.WorkingPath: "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
-		nested:           "Fixture <fixture@example.test> | Fixture <fixture@example.test>",
+		nested:           "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
 	} {
 		cmd := exec.Command("git", "commit", "--allow-empty", "-m", "agent subprocess")
 		cmd.Dir = target
-		environment, err := pipelineEnvironment(forge, identity)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd.Env = environment.Apply(nil)
+		cmd.Env = pipelineEnvironment(forge, identity).Apply(nil)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("agent commit: %v: %s", err, out)
 		}
@@ -339,10 +335,7 @@ func TestCommitIdentityInheritedIncludeCannotOverrideRun(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "include.path")
 	t.Setenv("GIT_CONFIG_VALUE_0", included)
-	environment, err := pipelineEnvironment(nil, identity)
-	if err != nil {
-		return // Refusing an unprovable environment before commit is safe.
-	}
+	environment := pipelineEnvironment(nil, identity)
 	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "inherited include")
 	cmd.Dir, cmd.Env = repo.WorkingPath, environment.Apply(nil)
 	if out, err := cmd.CombinedOutput(); err != nil {

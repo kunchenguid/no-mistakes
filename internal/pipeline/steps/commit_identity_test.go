@@ -61,7 +61,7 @@ func TestAgentCommitRewritePreservesAuthorAndBindsCommitter(t *testing.T) {
 	}
 }
 
-func TestCommitIdentitySubprocessesKeepNestedRepositoryIdentity(t *testing.T) {
+func TestCommitIdentitySubprocessesPinEveryRepository(t *testing.T) {
 	for _, entry := range []string{"command", "shell", "repository command"} {
 		t.Run(entry, func(t *testing.T) {
 			sctx, dir, _ := agentCommitContext(t, nil)
@@ -112,7 +112,7 @@ func TestCommitIdentitySubprocessesKeepNestedRepositoryIdentity(t *testing.T) {
 			}
 			for target, want := range map[string]string{
 				dir:    "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
-				nested: "Fixture <fixture@example.test> | Fixture <fixture@example.test>",
+				nested: "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
 			} {
 				if got := gitCmd(t, target, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
 					t.Errorf("%s identity = %q, want %q", target, got, want)
