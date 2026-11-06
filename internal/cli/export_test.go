@@ -24,7 +24,7 @@ func TestExportCLI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	build := exec.Command("go", "build", "-o", binary, "./cmd/no-mistakes")
+	build := exec.Command("go", "build", "-ldflags", "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=v1.0.0", "-o", binary, "./cmd/no-mistakes")
 	build.Dir = filepath.Clean(filepath.Join(filepath.Dir(source), "../.."))
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build export CLI: %v\n%s", err, out)
@@ -32,7 +32,13 @@ func TestExportCLI(t *testing.T) {
 	invoke := func(home string, args ...string) (string, string, error) {
 		t.Helper()
 		cmd := exec.Command(binary, args...)
-		cmd.Env = append(os.Environ(), "NM_HOME="+home, "NO_MISTAKES_TELEMETRY=off", "NO_MISTAKES_NO_UPDATE_CHECK=1")
+		// A release build with update checks enabled must still stay local.
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "NM_HOME=") && !strings.HasPrefix(entry, "NO_MISTAKES_NO_UPDATE_CHECK=") {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		cmd.Env = append(cmd.Env, "NM_HOME="+home, "NO_MISTAKES_NO_UPDATE_CHECK=0")
 		cmd.Dir = t.TempDir()
 		var out, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &stderr
@@ -154,6 +160,10 @@ INSERT INTO agent_invocations(id, run_id, step_name, round, purpose, agent, mode
 		after, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(before, after) {
 			t.Fatalf("export mutated DB: %v", err)
+		}
+		entries, err := os.ReadDir(home)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "state.sqlite" {
+			t.Fatalf("export created runtime storage: %v, %v", entries, err)
 		}
 	})
 
