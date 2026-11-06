@@ -157,6 +157,20 @@ INSERT INTO agent_invocations(id, run_id, step_name, round, purpose, agent, mode
 		if stdout, _, err := invoke(home, "export", "--run", "missing", "--json"); err == nil || stdout != "" {
 			t.Fatalf("missing run returned %q, %v", stdout, err)
 		}
+		// A read-only WAL reader can create -wal/-shm sidecars. Checkpoint
+		// after closing the exporter so any record writes hidden in WAL would
+		// reach the main file and fail the byte comparison as well.
+		checkpoint, err := sql.Open("sqlite", "file:"+path+"?mode=rw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := checkpoint.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			checkpoint.Close()
+			t.Fatal(err)
+		}
+		if err := checkpoint.Close(); err != nil {
+			t.Fatal(err)
+		}
 		after, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(before, after) {
 			t.Fatalf("export mutated DB: %v", err)

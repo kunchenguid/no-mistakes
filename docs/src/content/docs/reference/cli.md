@@ -888,9 +888,10 @@ no-mistakes export --run <id> --json
 ```
 
 Both flags are required. The command reads the existing `NM_HOME` database in a
-single read-only snapshot. It never creates or migrates storage, runs agents,
+single read-only snapshot. It never creates a database, migrates its schema, runs agents,
 queries a forge, or sends telemetry. A missing run, damaged database, or schema
 missing required columns returns a nonzero exit status and no JSON document.
+SQLite may create its normal `-wal` and `-shm` sidecars while reading a WAL database.
 
 The JSON document has `schema_version: 1` and these fields:
 
