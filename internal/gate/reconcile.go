@@ -45,10 +45,7 @@ type StaleBranchPlan struct {
 }
 
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
-// reconciliation. It removes the branch only after Git proves the live head
-// contains all of its content or a recovery anchor preserves each private-only
-// commit that proof misses, or under the exact run-owned-head exception
-// described in docs/src/content/docs/concepts/gate-model.md.
+// reconciliation. See PlanStaleBranchReconciliation for preservation requirements.
 func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, upstream ReconciliationUpstream) (StaleBranchReconciliation, error) {
 	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, upstream)
 	if err != nil || !plan.Reconcile {
@@ -64,12 +61,11 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // proven to survive nor preserved by a recovery anchor is refused before
 // publication.
 //
-// Rewritten histories require final-tree survival, proven by a tree-preserving
-// merge rather than by per-commit patch identity. runOwnedHead is a policy exception, not containment evidence:
+// runOwnedHead is a policy exception, not containment evidence:
 // fresh submissions must leave it empty, and pipeline publication goes through
-// PlanMirrorPublicationReconciliation instead. The contract and rationale are
-// owned by docs/src/content/docs/concepts/gate-model.md (Private mirror
-// reconciliation).
+// PlanMirrorPublicationReconciliation instead. The preservation contract,
+// including selected-base deletions, is owned by
+// docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, upstream ReconciliationUpstream) (StaleBranchPlan, error) {
 	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, upstream, false, runOwnedHead)
 }
