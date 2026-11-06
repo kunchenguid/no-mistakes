@@ -135,6 +135,25 @@ func TestSplitFixResponse_RefusesDecliningAContentFixedTwice(t *testing.T) {
 	}
 }
 
+func TestSplitFixResponse_OmittingAMovedEarlierFixKeepsTheDecision(t *testing.T) {
+	at := func(id string, line int) string {
+		return `{"findings":[{"id":"` + id + `","severity":"warning","file":"a.go","line":` + strconv.Itoa(line) +
+			`,"description":"missing nil check","action":"ask-user"}]}`
+	}
+	rounds := []*db.StepRound{userDecisionRound(t, at("first", 10), "first")}
+
+	got, err := splitFixResponse(types.StepReview, at("second", 19), rounds, nil, nil)
+	if err != nil {
+		t.Fatalf("omitting a moved earlier fix was refused: %v", err)
+	}
+	if strings.Join(got.Kept, ",") != "second" {
+		t.Fatalf("kept = %v, want the moved finding to keep its earlier decision", got.Kept)
+	}
+	if len(got.Fixed) != 0 || len(got.Ignored) != 0 {
+		t.Fatalf("dispositions = %+v, want nothing fixed and nothing declined", got)
+	}
+}
+
 // Only Review carries a decision forward by content. A step that re-derives its
 // findings every round settles nothing, so a finding at a new line is a new
 // finding there: the response may decline it, exactly as it could before the
@@ -152,6 +171,11 @@ func TestSplitFixResponse_ANonReviewStepKeepsExactFixIdentity(t *testing.T) {
 	}
 	if strings.Join(got.Ignored, ",") != "rederived" {
 		t.Fatalf("ignored = %v, want [rederived]", got.Ignored)
+	}
+	_, err = splitFixResponse(types.StepLint, moved, rounds, nil, nil)
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || strings.Join(refusal.Missing, ",") != "rederived" {
+		t.Fatalf("omitting a re-derived Lint finding must require a decision: %v", err)
 	}
 }
 

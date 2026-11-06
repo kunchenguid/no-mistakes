@@ -1252,15 +1252,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
 	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
-	// A finding the operator ignored or settled outside the worktree left the
-	// final set without ever being fixed, so it is reported as settled rather
-	// than folded into the fixed count. Only Review carries findings forward
-	// and suppresses a settled one; a declined Test or Lint finding is
-	// re-derived by the next round, so its absence really does mean it is gone.
-	settledFindings := 0
-	if sr.StepName == types.StepReview {
-		settledFindings = pipeline.SettledReviewFindingCount(rounds)
-	}
+	settledFindings := settledWithoutFixCount(sr, rounds)
 	riskLevel := ""
 	if sr.StepName == types.StepReview {
 		src := finalFindings
@@ -1464,6 +1456,23 @@ func settledWithoutFixText(settled int) string {
 	return fmt.Sprintf("%d settled by the operator without a fix", settled)
 }
 
+func settledWithoutFixCount(sr *db.StepResult, rounds []*db.StepRound) int {
+	if sr.StepName != types.StepReview {
+		return 0
+	}
+	return pipeline.SettledReviewFindingCount(rounds)
+}
+
+func emptyRoundDetailLine(isFixRound bool, settled int) string {
+	if settled > 0 {
+		return fmt.Sprintf("✅ No issues remain - %s.", settledWithoutFixText(settled))
+	}
+	if isFixRound {
+		return "✅ Re-checked - no issues remain."
+	}
+	return "✅ No issues found."
+}
+
 // buildStepDetails renders the collapsible body for a step as an
 // issue -> fix -> outcome narrative rather than a round-by-round log. Each
 // round is shown as the review state observed at its end; a fix round is
@@ -1482,8 +1491,8 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	// True only when the step recorded final findings but no round captured
 	// them - a data gap we must not paper over as "no issues found".
 	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
-
-	for _, r := range rounds {
+	for i, r := range rounds {
+		settled := settledWithoutFixCount(sr, rounds[:i])
 		isFixRound := r.IsFixRound()
 		if isFixRound {
 			inner.WriteString(fixRoundLine(r))
@@ -1491,13 +1500,10 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		}
 
 		if r.FindingsJSON == nil {
-			switch {
-			case missingRoundFindingsData:
+			if missingRoundFindingsData {
 				inner.WriteString("findings not recorded\n\n")
-			case isFixRound:
-				inner.WriteString("✅ Re-checked - no issues remain.\n\n")
-			default:
-				inner.WriteString("✅ No issues found.\n\n")
+			} else {
+				inner.WriteString(emptyRoundDetailLine(isFixRound, settled) + "\n\n")
 			}
 			continue
 		}
@@ -1509,11 +1515,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		}
 
 		if len(findings.Items) == 0 {
-			if isFixRound {
-				inner.WriteString("✅ Re-checked - no issues remain.\n")
-			} else {
-				inner.WriteString("✅ No issues found.\n")
-			}
+			inner.WriteString(emptyRoundDetailLine(isFixRound, settled) + "\n")
 			writeTestedDetails(&inner, sr, &findings, flavor)
 			inner.WriteString("\n")
 			continue

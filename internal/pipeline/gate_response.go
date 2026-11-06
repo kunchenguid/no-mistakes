@@ -210,6 +210,9 @@ func splitFixResponse(step types.StepName, gateFindingsJSON string, rounds []*db
 	}
 
 	decided := earlierUserDecisionIDs(rounds, gateFindingsJSON)
+	for id := range chosenToFix {
+		decided[id] = true
+	}
 	var unaccounted []string
 	for _, id := range gate {
 		if fixSet[id] || ignoreSet[id] || decided[id] {
@@ -289,9 +292,7 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 // selection never named, a twin at another line or an instance a payload showed
 // twice, stays declinable on its own. Every other step re-derives its findings
 // each round and settles nothing, so it keeps the exact identity
-// earlierUserDecisionIDs reads: the two halves of a response's accounting have
-// to agree about which finding is the same finding, or a re-derived finding at
-// a new line is neither already decided nor declinable.
+// earlierUserDecisionIDs reads.
 func earlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate string) map[string]bool {
 	if step != types.StepReview {
 		keys := make(map[string]bool)
