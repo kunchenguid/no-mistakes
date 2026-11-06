@@ -92,12 +92,21 @@ func (s *settlementIdentities) matchesChosen(item types.Finding) bool {
 // the content after a later reviewer moves it. Protection is assigned, never
 // accumulated, so deciding one content in several rounds never weakens it.
 func (s *settlementIdentities) recordChosen(selected, shown []types.Finding) {
-	selectedCounts := countFindingFingerprints(selected)
+	selectedKeys := countFindingKeys(selected)
 	shownCounts := countFindingFingerprints(shown)
+	unselected := make(map[types.Finding]bool)
+	for _, item := range shown {
+		key := findingKey(item)
+		if selectedKeys[key] == 0 {
+			unselected[findingFingerprint(item)] = true
+		} else {
+			selectedKeys[key]--
+		}
+	}
 	for _, item := range selected {
 		s.exact[findingKey(item)] = true
 		fingerprint := findingFingerprint(item)
-		if shownCounts[fingerprint] > 0 && selectedCounts[fingerprint] >= shownCounts[fingerprint] {
+		if shownCounts[fingerprint] > 0 && !unselected[fingerprint] {
 			s.unique[fingerprint] = 1
 		}
 	}
@@ -267,12 +276,14 @@ func chosenToFixSettlements(rounds []*db.StepRound) *settlementIdentities {
 				shown = payload.Items
 			}
 		}
-		gate := countFindingFingerprints(shown)
+		gate := countFindingKeys(shown)
 		var selected []types.Finding
 		for _, item := range selectedFindingIdentities([]*db.StepRound{round}) {
 			selected = append(selected, item)
-			if gate[findingFingerprint(item)] == 0 {
+			key := findingKey(item)
+			if gate[key] == 0 {
 				shown = append(shown, item)
+				gate[key]++
 			}
 		}
 		chosen.recordChosen(selected, shown)
