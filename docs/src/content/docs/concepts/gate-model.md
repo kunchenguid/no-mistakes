@@ -128,8 +128,9 @@ default branch. Publication supplies the same resolved upstream URL used by
 rebase and push, including a refreshed checkout registration. The caller
 supplies the integration branch selected under the
 [`pr.base_branch` rules](/no-mistakes/reference/repo-config/#prbase_branch).
-AXI submission without a run override also fetches the default branch to
-resolve trusted configuration before checking whether reconciliation is needed.
+Only when this proof is needed does AXI submission without a run override
+fetch the default branch to resolve trusted configuration. A submission
+without a stale mirror does not query upstream for reconciliation.
 
 The selected base's merge base with the live head identifies the upstream
 changes already integrated by the branch. The live and private heads must

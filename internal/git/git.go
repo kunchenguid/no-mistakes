@@ -51,10 +51,7 @@ func RunRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
 // RunWithInput executes a git command with exact standard input and returns
 // trimmed stdout. It carries the same bare-repository handling as Run.
 func RunWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
-	if isBareGitDir(dir) {
-		return runInDirWithEnvAndInput(ctx, dir, nil, input, append([]string{"--git-dir=" + dir}, args...)...)
-	}
-	return runInDirWithEnvAndInput(ctx, dir, nil, input, args...)
+	return RunWithEnvAndInput(ctx, dir, nil, input, args...)
 }
 
 // RunBare executes Git against exactly bareDir. Unlike Run, it never falls
@@ -75,10 +72,16 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 // GIT_AUTHOR_*/GIT_COMMITTER_* identity for commit-tree - and carries the same
 // bare-repository handling as Run.
 func RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
+	return RunWithEnvAndInput(ctx, dir, extraEnv, "", args...)
+}
+
+// RunWithEnvAndInput combines RunWithInput's exact stdin with RunWithEnv's
+// environment overrides and the same explicit bare-repository handling.
+func RunWithEnvAndInput(ctx context.Context, dir string, extraEnv []string, input string, args ...string) (string, error) {
 	if isBareGitDir(dir) {
-		return runInDirWithEnv(ctx, dir, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+		return runInDirWithEnvAndInput(ctx, dir, extraEnv, input, append([]string{"--git-dir=" + dir}, args...)...)
 	}
-	return runInDirWithEnv(ctx, dir, extraEnv, args...)
+	return runInDirWithEnvAndInput(ctx, dir, extraEnv, input, args...)
 }
 
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {

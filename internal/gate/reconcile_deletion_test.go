@@ -163,8 +163,13 @@ done
 			if change == "many_deletions" {
 				t.Setenv("GIT_TRACE", trace)
 			}
-			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", proofUpstream)
-			publicationPlan, publicationErr := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, proofUpstream)
+			resolutions := 0
+			resolveUpstream := func() ReconciliationUpstream {
+				resolutions++
+				return proofUpstream
+			}
+			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", resolveUpstream)
+			publicationPlan, publicationErr := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, resolveUpstream)
 			if (err == nil) != (publicationErr == nil) || plan.Reconcile != publicationPlan.Reconcile {
 				t.Fatalf("submission/publication differ: plan=%+v err=%v; publication=%+v err=%v", plan, err, publicationPlan, publicationErr)
 			}
@@ -198,6 +203,9 @@ done
 					if strings.Contains(line, " update-index ") {
 						updates++
 					}
+				}
+				if resolutions != 2 {
+					t.Fatalf("upstream resolutions = %d, want one per planning proof (2 total)", resolutions)
 				}
 				if updates != 2 {
 					t.Fatalf("index update processes = %d, want one per planning proof (2 total)", updates)

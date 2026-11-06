@@ -25,6 +25,10 @@ type ReconciliationUpstream struct {
 	BaseBranch string
 }
 
+// ReconciliationUpstreamResolver supplies one caller-owned upstream identity.
+// Planning invokes it once, only if the deletion-aware proof is needed.
+type ReconciliationUpstreamResolver func() ReconciliationUpstream
+
 // StaleBranchPlan is the verdict of a non-mutating stale-branch inspection.
 // Planning checks containment, recovery-anchor preservation, or the exact
 // run-owned-head policy exception without touching any ref, so a caller can
@@ -46,8 +50,8 @@ type StaleBranchPlan struct {
 
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
 // reconciliation. See PlanStaleBranchReconciliation for preservation requirements.
-func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, upstream ReconciliationUpstream) (StaleBranchReconciliation, error) {
-	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, upstream)
+func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, resolveUpstream ReconciliationUpstreamResolver) (StaleBranchReconciliation, error) {
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, resolveUpstream)
 	if err != nil || !plan.Reconcile {
 		return StaleBranchReconciliation{}, err
 	}
@@ -66,8 +70,8 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // PlanMirrorPublicationReconciliation instead. The preservation contract,
 // including selected-base deletions, is owned by
 // docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
-func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, upstream ReconciliationUpstream) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, upstream, false, runOwnedHead)
+func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, resolveUpstream ReconciliationUpstreamResolver) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, resolveUpstream, false, runOwnedHead)
 }
 
 // PlanMirrorPublicationReconciliation is the pipeline-publication variant of
@@ -78,11 +82,11 @@ func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 // agent-created head nor any other recorded head is eligible; every other
 // mirror head still needs the full preservation proof or the recovery-anchor
 // preservation credit.
-func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, upstream ReconciliationUpstream, runOwnedHeads ...string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, upstream, true, runOwnedHeads...)
+func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, resolveUpstream ReconciliationUpstreamResolver, runOwnedHeads ...string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, resolveUpstream, true, runOwnedHeads...)
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, upstream ReconciliationUpstream, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, resolveUpstream ReconciliationUpstreamResolver, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
@@ -167,8 +171,8 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				remaining = append(remaining, commit)
 			}
 		}
-		if len(remaining) > 0 {
-			if contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, liveHead, gateHead, upstream); contained && err == nil {
+		if len(remaining) > 0 && resolveUpstream != nil {
+			if contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, liveHead, gateHead, resolveUpstream()); contained && err == nil {
 				remaining = nil
 			}
 		}
@@ -566,6 +570,16 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, liveHead, pri
 	for _, path := range strings.Split(string(livePaths), "\x00") {
 		present[path] = true
 	}
+	var removed strings.Builder
+	for _, path := range strings.Split(strings.TrimSuffix(string(deleted), "\x00"), "\x00") {
+		if path != "" && !present[path] {
+			removed.WriteString(path)
+			removed.WriteByte(0)
+		}
+	}
+	if removed.Len() == 0 {
+		return false, nil
+	}
 	indexDir, err := os.MkdirTemp("", "no-mistakes-deletion-proof-")
 	if err != nil {
 		return false, err
@@ -577,13 +591,8 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, liveHead, pri
 	if _, err := git.RunWithEnv(ctx, repoDir, env, "read-tree", privateHead); err != nil {
 		return false, err
 	}
-	for _, path := range strings.Split(strings.TrimSuffix(string(deleted), "\x00"), "\x00") {
-		if path == "" || present[path] {
-			continue
-		}
-		if _, err := git.RunWithEnv(ctx, repoDir, env, "update-index", "--force-remove", "--", path); err != nil {
-			return false, err
-		}
+	if _, err := git.RunWithEnvAndInput(ctx, repoDir, env, removed.String(), "update-index", "--force-remove", "-z", "--stdin"); err != nil {
+		return false, err
 	}
 	tree, err := git.RunWithEnv(ctx, repoDir, env, "write-tree")
 	if err != nil {

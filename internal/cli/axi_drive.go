@@ -876,7 +876,10 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, submissionHead); err != nil {
 		return "", err
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "", submissionReconciliationUpstream(ctx, env, submissionHead, baseBranch))
+	resolveUpstream := func() gate.ReconciliationUpstream {
+		return submissionReconciliationUpstream(ctx, env, submissionHead, baseBranch)
+	}
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "", resolveUpstream)
 	if err != nil {
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
 	}
