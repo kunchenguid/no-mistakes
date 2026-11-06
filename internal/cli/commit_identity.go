@@ -13,7 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
-	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 func captureSubmissionIdentity(ctx context.Context, client *ipc.Client, dir string) (*git.CommitIdentity, error) {
@@ -48,16 +47,44 @@ func captureHookIdentity(ctx context.Context, client *ipc.Client, p *paths.Paths
 	if err != nil {
 		return nil, err
 	}
-	var checkouts []string
-	for _, field := range strings.Split(listing, "\x00") {
-		if path, ok := strings.CutPrefix(field, "worktree "); ok {
-			checkouts = append(checkouts, path)
+	if err := client.RequireCommitIdentity(); err != nil {
+		return nil, err
+	}
+	var identity *git.CommitIdentity
+	for _, entry := range strings.Split(listing, "\x00\x00") {
+		if entry == "" {
+			continue
+		}
+		fields := strings.Split(entry, "\x00")
+		checkout, ok := strings.CutPrefix(fields[0], "worktree ")
+		if !ok || checkout == "" {
+			return nil, fmt.Errorf("cannot prove the pushing checkout identity: invalid worktree listing")
+		}
+		prunable := false
+		for _, field := range fields[1:] {
+			if field == "prunable" || strings.HasPrefix(field, "prunable ") {
+				prunable = true
+				break
+			}
+		}
+		if prunable {
+			continue
+		}
+		candidate, err := git.CaptureCommitIdentity(ctx, checkout)
+		if err != nil {
+			return nil, fmt.Errorf("cannot prove the pushing checkout identity: %w", err)
+		}
+		if identity != nil && *identity != candidate {
+			return nil, fmt.Errorf("cannot prove the pushing checkout identity: worktree identities differ; submit with no-mistakes axi run")
+		}
+		if identity == nil {
+			identity = &candidate
 		}
 	}
-	if len(checkouts) != 1 || worktrees.Canonical(checkouts[0]) != worktrees.Canonical(repo.WorkingPath) {
-		return nil, fmt.Errorf("cannot prove the pushing checkout identity with linked worktrees; submit with no-mistakes axi run")
+	if identity == nil {
+		return nil, fmt.Errorf("cannot prove the pushing checkout identity: no live checkouts")
 	}
-	return captureSubmissionIdentity(ctx, client, repo.WorkingPath)
+	return identity
 }
 
 const commitIdentityPushOptionPrefix = "no-mistakes.commit-identity="

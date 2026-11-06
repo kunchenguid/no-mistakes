@@ -51,7 +51,7 @@ func TestCommitIdentityNotifyPushBindsSnapshotAndRefusesAmbiguousCheckout(t *tes
 		wantErr string
 	}{
 		{"snapshot", []string{snapshot}, ""},
-		{"no snapshot", nil, "cannot prove the pushing checkout"},
+		{"conflicting identities without snapshot", nil, "worktree identities differ"},
 		{"bad encoding", []string{commitIdentityPushOptionPrefix + "!"}, "decode commit identity"},
 		{"bad json", []string{commitIdentityPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte("{"))}, "parse commit identity"},
 		{"null", []string{commitIdentityPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte("null"))}, "incomplete or invalid"},
@@ -175,6 +175,124 @@ func TestCommitIdentityPushPathsCarryLinkedCheckoutSnapshot(t *testing.T) {
 			want := git.CommitIdentity{AuthorName: "Linked Submitter", AuthorEmail: "linked@example.test", CommitterName: "Linked Submitter", CommitterEmail: "linked@example.test"}
 			if !found || got != want {
 				t.Fatalf("pushed snapshot = %+v, found=%v, want %+v", got, found, want)
+			}
+		})
+	}
+}
+
+func TestCommitIdentityPlainPushRequiresLiveCheckoutAgreement(t *testing.T) {
+	for _, mode := range []string{"agreement", "different author", "different committer", "missing identity", "unreadable identity", "explicit roles"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "absent-global"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GIT_CONFIG_COUNT", "0")
+			t.Setenv("GIT_CONFIG_PARAMETERS", "")
+			for _, key := range []string{
+				"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+				"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE", "EMAIL",
+			} {
+				t.Setenv(key, "")
+				if err := os.Unsetenv(key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requests := make(chan ipc.PushReceivedParams, 1)
+			olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+				serveTranscriptHomesProbe(srv)
+				srv.Handle(ipc.MethodPushReceived, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+					var params ipc.PushReceivedParams
+					if err := json.Unmarshal(raw, &params); err != nil {
+						return nil, err
+					}
+					requests <- params
+					return &ipc.PushReceivedResult{RunID: "agreement-run"}, nil
+				})
+			})
+			env, err := openAxiRunEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer env.close()
+			main := env.repo.WorkingPath
+			gateDir := env.p.RepoDir(env.repo.ID)
+			cliGit(t, main, "clone", "--bare", main, gateDir)
+			cliGit(t, gateDir, "config", "core.hooksPath", "hooks")
+			cliGit(t, main, "remote", "add", gate.RemoteName, gateDir)
+			if err := os.WriteFile(filepath.Join(gateDir, "hooks", "post-receive"), []byte(git.PostReceiveHookScript()), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			linked := filepath.Join(t.TempDir(), "live linked checkout")
+			stale := filepath.Join(t.TempDir(), "stale checkout")
+			cliGit(t, main, "worktree", "add", "-b", "linked", linked)
+			cliGit(t, main, "worktree", "add", "-b", "stale", stale)
+			cliGit(t, main, "config", "extensions.worktreeConfig", "true")
+			if err := os.RemoveAll(stale); err != nil {
+				t.Fatal(err)
+			}
+			listing := cliGit(t, main, "worktree", "list", "--porcelain", "-z")
+			entries, prunable := 0, 0
+			for _, entry := range strings.Split(listing, "\x00\x00") {
+				if entry == "" {
+					continue
+				}
+				entries++
+				for _, field := range strings.Split(entry, "\x00") {
+					if field == "prunable" || strings.HasPrefix(field, "prunable ") {
+						prunable++
+					}
+				}
+			}
+			if entries != 3 || prunable != 1 {
+				t.Fatalf("fixture must contain main, live linked, and prunable checkouts: entries=%d prunable=%d", entries, prunable)
+			}
+			want := git.CommitIdentity{AuthorName: "Test", AuthorEmail: "test@example.com", CommitterName: "Test", CommitterEmail: "test@example.com"}
+			switch mode {
+			case "different author":
+				cliGit(t, linked, "config", "--worktree", "author.name", "Linked Author")
+			case "different committer":
+				cliGit(t, linked, "config", "--worktree", "committer.email", "linked@example.test")
+			case "missing identity":
+				cliGit(t, linked, "config", "--worktree", "author.email", "")
+			case "unreadable identity":
+				configPath := cliGit(t, linked, "rev-parse", "--git-path", "config.worktree")
+				if !filepath.IsAbs(configPath) {
+					configPath = filepath.Join(linked, configPath)
+				}
+				if err := os.WriteFile(configPath, []byte("[invalid\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "explicit roles":
+				cliGit(t, linked, "config", "--worktree", "user.name", "Different Config")
+				cliGit(t, linked, "config", "--worktree", "user.email", "different@example.test")
+				t.Setenv("GIT_AUTHOR_NAME", "Submitting Author")
+				t.Setenv("GIT_AUTHOR_EMAIL", "author@example.test")
+				t.Setenv("GIT_COMMITTER_NAME", "Submitting Committer")
+				t.Setenv("GIT_COMMITTER_EMAIL", "committer@example.test")
+				want = git.CommitIdentity{AuthorName: "Submitting Author", AuthorEmail: "author@example.test", CommitterName: "Submitting Committer", CommitterEmail: "committer@example.test"}
+			}
+			cliGit(t, main, "commit", "--allow-empty", "-m", "plain submission")
+			head := cliGit(t, main, "rev-parse", "HEAD")
+			if _, err := git.Run(context.Background(), main, "push", gate.RemoteName, "HEAD:refs/heads/plain-submission"); err != nil {
+				t.Fatalf("plain push transport failed: %v", err)
+			}
+			if got := cliGit(t, gateDir, "rev-parse", "refs/heads/plain-submission"); got != head {
+				t.Fatalf("plain push landed %q, want %q", got, head)
+			}
+			if mode != "agreement" && mode != "explicit roles" {
+				select {
+				case got := <-requests:
+					t.Fatalf("unprovable identity launched a run: %+v", got)
+				default:
+				}
+				return
+			}
+			select {
+			case got := <-requests:
+				if got.CommitIdentity == nil || *got.CommitIdentity != want || got.New != head || got.Ref != "refs/heads/plain-submission" {
+					t.Fatalf("plain push launch snapshot = %+v, want identity %+v at %s", got, want, head)
+				}
+			default:
+				t.Fatal("plain push did not launch a run despite identity agreement")
 			}
 		})
 	}
