@@ -40,7 +40,7 @@ func TestReconcileStaleBranchArchivesPatchEquivalentHeadBeforeNonForcePush(t *te
 	}
 	t.Logf("Before reconciliation, ordinary push: %s", before)
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestReconcileStaleBranchLeavesContainedAncestorForNonForcePush(t *testing.T
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestReconcileStaleBranchRefusesAndNamesUniquePrivateCommits(t *testing.T) {
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err == nil {
 		t.Fatal("unique private commit was reconciled instead of refused")
 	}
@@ -177,11 +177,11 @@ func TestReconcileStaleBranchArchivesRunOwnedHeadWithoutPatchEquivalence(t *test
 	reconcileGit(t, gateDir, "fetch", work, submittedHead+":refs/heads/feature/reconcile")
 
 	// Without run ownership the changed patch is genuinely unproven.
-	if _, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, ""); err == nil {
+	if _, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil); err == nil {
 		t.Fatal("changed patch was reconciled without proof of ownership")
 	}
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, submittedHead)
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, submittedHead, nil)
 	if err != nil {
 		t.Fatalf("run-owned submitted head was refused: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestPlanStaleBranchReconciliationMutatesNothingAndApplyRefusesMovedHead(t *
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
-	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestReconcileStaleBranchIncludesPatchesHiddenByMergeSimplification(t *testi
 	gateDir := filepath.Join(t.TempDir(), "gate.git")
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-	result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+	result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 	if err != nil || !result.Reconciled {
 		t.Fatalf("merge-contained patch was refused: result=%+v err=%v", result, err)
 	}
@@ -364,7 +364,7 @@ func TestRestoreReconciledBranchPreservesConcurrentRefAndRequiresArchive(t *test
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			if err != nil || !result.Reconciled {
 				t.Fatalf("reconciliation = %+v, err = %v", result, err)
 			}
@@ -434,7 +434,7 @@ func TestReconcileStaleBranchDecision41AExactSubmittedHeadOnly(t *testing.T) {
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			plan, err := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, ownedHead)
+			plan, err := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, nil, ownedHead)
 			if variant != "exact" {
 				if err == nil || plan.Reconcile {
 					t.Fatalf("non-exact submitted head exempted: plan=%+v err=%v", plan, err)
@@ -522,9 +522,9 @@ func TestReconcileStaleBranchDecision41AExactLastPushedHead(t *testing.T) {
 			var plan StaleBranchPlan
 			var err error
 			if variant == "fresh_submission" {
-				plan, err = PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "")
+				plan, err = PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			} else {
-				plan, err = PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, ownedHeads...)
+				plan, err = PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, nil, ownedHeads...)
 			}
 			switch variant {
 			case "exact":
@@ -601,7 +601,7 @@ func TestReconcileStaleBranchRefusesPatchesDiscardedByOursMerge(t *testing.T) {
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			if err == nil || result.Reconciled || !strings.Contains(err.Error(), privateHead) {
 				t.Fatalf("discarded patch accepted or not named: result=%+v err=%v", result, err)
 			}
@@ -662,7 +662,7 @@ func TestReconcileStaleBranchRebasedEquivalentsSurviveALaterEdit(t *testing.T) {
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			if later != "edit" {
 				if err == nil || result.Reconciled || !strings.Contains(err.Error(), privateHead) {
 					t.Fatalf("reverted content was reconciled or not named: result=%+v err=%v", result, err)
@@ -728,7 +728,7 @@ func TestReconcileStaleBranchRebasedAcrossContextDrift(t *testing.T) {
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			if later == "reverted" {
 				if err == nil || result.Reconciled || !strings.Contains(err.Error(), privateHead) {
 					t.Fatalf("reverted content was reconciled or not named: result=%+v err=%v", result, err)
@@ -793,7 +793,7 @@ func TestReconcileStaleBranchContextDriftThenLaterEdit(t *testing.T) {
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			if later == "dropped" {
 				if err == nil || result.Reconciled || !strings.Contains(err.Error(), firstPrivate) || !strings.Contains(err.Error(), privateHead) {
 					t.Fatalf("dropped content was reconciled or the whole range was not named: result=%+v err=%v", result, err)
@@ -851,7 +851,7 @@ func TestReconcileStaleBranchSurvivalPointPastTheBoundFailsClosed(t *testing.T) 
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
-			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "", nil)
 			if tc.reconcile {
 				if err != nil || !result.Reconciled {
 					t.Fatalf("survival point inside the bound was refused: result=%+v err=%v", result, err)
@@ -909,7 +909,7 @@ func TestPlanStaleBranchReconciliationCreditsRecoveryAnchoredCommits(t *testing.
 	anchor := "refs/no-mistakes/recover/01M3GQ106JNJRM9DFQSPF48NSE"
 	reconcileGit(t, gateDir, "update-ref", anchor, privateHead)
 
-	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err != nil {
 		t.Fatalf("recovery-anchored chain was refused instead of reconciled: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestPlanStaleBranchReconciliationStillRefusesUnanchoredCommitsAndNamesTheSa
 	// the first commit, so the second private commit stays unanchored.
 	reconcileGit(t, gateDir, "update-ref", "refs/no-mistakes/recover/01M3H865WHYBM2QWPD8ZY1QG81", firstPrivateHead)
 
-	_, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	_, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err == nil {
 		t.Fatal("unanchored private commit was reconciled instead of refused")
 	}
@@ -981,7 +981,7 @@ func TestPlanStaleBranchReconciliationNamesRunOwnedSatisfierOnlyWhenSupplied(t *
 	ctx := context.Background()
 	work, gateDir, _, firstPrivateHead, liveHead := setupAnchoredPrivateBranch(t)
 
-	_, err := PlanMirrorPublicationReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, firstPrivateHead)
+	_, err := PlanMirrorPublicationReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, nil, firstPrivateHead)
 	if err == nil {
 		t.Fatal("unanchored private commit was reconciled instead of refused")
 	}
@@ -989,7 +989,7 @@ func TestPlanStaleBranchReconciliationNamesRunOwnedSatisfierOnlyWhenSupplied(t *
 		t.Fatalf("refusal omitted the supplied run-owned satisfier: %v", err)
 	}
 
-	_, err = PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	_, err = PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err == nil {
 		t.Fatal("unanchored private commit was reconciled instead of refused")
 	}
@@ -1017,7 +1017,7 @@ func TestPlanStaleBranchReconciliationIgnoresSymbolicRecoveryAnchors(t *testing.
 		t.Fatalf("symbolic recovery ref produced evidence: %+v", anchors)
 	}
 
-	_, err = PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	_, err = PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "", nil)
 	if err == nil {
 		t.Fatal("symbolic recovery ref was credited instead of ignored")
 	}

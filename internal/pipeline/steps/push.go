@@ -129,6 +129,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // revalidation); pass this run's current steps (sctx.DB.GetStepsByRun) for
 // the ordinary Push step.
 func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, attestationSteps []*db.StepResult) error {
+	// Refuse before remote reads, attestation writes, or mirror reconciliation.
+	// Both ordinary pushes and direct CI-repair publication pass this boundary.
+	if err := assertExternalPublisherPolicy(sctx, headBeingPushed); err != nil {
+		return err
+	}
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -272,7 +277,10 @@ func planGateMirrorReconciliation(ctx context.Context, sctx *pipeline.StepContex
 	if err != nil {
 		return plan, fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
 	}
-	plan, err = gatepkg.PlanMirrorPublicationReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, runOwnedSubmittedHead(sctx), publishedHead)
+	resolveUpstream := func() gatepkg.ReconciliationUpstream {
+		return gatepkg.ReconciliationUpstream{URL: resolveUpstreamURL(sctx), BaseBranch: effectivePRBaseBranch(sctx)}
+	}
+	plan, err = gatepkg.PlanMirrorPublicationReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, resolveUpstream, runOwnedSubmittedHead(sctx), publishedHead)
 	if err != nil {
 		return gatepkg.StaleBranchPlan{}, fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
 	}

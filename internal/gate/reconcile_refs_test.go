@@ -14,7 +14,7 @@ func TestReconciliationRejectsSymbolicRefs(t *testing.T) {
 			t.Run(phase+"/"+symbolic, func(t *testing.T) {
 				ctx := context.Background()
 				work, gateDir, privateHead, liveHead := reconciliationRefFixture(t)
-				plan, err := PlanMirrorPublicationReconciliation(ctx, gateDir, work, "feature", liveHead, privateHead)
+				plan, err := PlanMirrorPublicationReconciliation(ctx, gateDir, work, "feature", liveHead, nil, privateHead)
 				if err != nil || !plan.Reconcile {
 					t.Fatalf("direct-ref fixture plan = %+v, err = %v", plan, err)
 				}
@@ -32,7 +32,7 @@ func TestReconciliationRejectsSymbolicRefs(t *testing.T) {
 				reconcileGit(t, gateDir, "symbolic-ref", ref, target)
 				refsBefore := reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)")
 				if phase == "plan" {
-					_, err = PlanMirrorPublicationReconciliation(ctx, gateDir, work, "feature", liveHead, privateHead)
+					_, err = PlanMirrorPublicationReconciliation(ctx, gateDir, work, "feature", liveHead, nil, privateHead)
 				} else {
 					_, err = ApplyStaleBranchReconciliation(ctx, gateDir, plan)
 				}
@@ -79,7 +79,7 @@ done
 			if err := os.WriteFile(filepath.Join(gateDir, "hooks", "reference-transaction"), []byte(hook), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature", liveHead, privateHead)
+			result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature", liveHead, privateHead, nil)
 			if err != nil || !result.Reconciled || result.PreviousHead != privateHead || result.ArchivedTag != archive {
 				t.Fatalf("direct Decision 41-A reconciliation = %+v, err = %v", result, err)
 			}
