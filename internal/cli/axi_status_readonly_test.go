@@ -136,7 +136,22 @@ func TestAxiStatusReadOnly(t *testing.T) {
 	}
 
 	t.Run("does not repair schema", func(t *testing.T) {
-		dir, p, _, _ := setupAxiQueryRepo(t)
+		dir, p, database, repo := setupAxiQueryRepo(t)
+		run(t, dir, "git", "checkout", "-b", "feature/schema-reader")
+		live, err := database.InsertRun(repo.ID, "feature/schema-reader", "head", "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateRunStatus(live.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
+		}
+		step, err := database.InsertStepResult(live.ID, types.StepTest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateStepStatus(step.ID, types.StepStatusRunning); err != nil {
+			t.Fatal(err)
+		}
 		conn, err := sql.Open("sqlite", p.DB())
 		if err != nil {
 			t.Fatal(err)
@@ -147,15 +162,15 @@ func TestAxiStatusReadOnly(t *testing.T) {
 		if _, err := conn.Exec("DROP TABLE intent_cache; DROP TRIGGER runs_verification_plan_immutable"); err != nil {
 			t.Fatal(err)
 		}
-		if out, err := query(t, dir); err != nil {
-			t.Fatalf("status: %v\n%s", err, out)
-		}
-		var n int
-		if err := conn.QueryRow("SELECT count(*) FROM sqlite_master WHERE name IN ('intent_cache', 'runs_verification_plan_immutable')").Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 0 {
-			t.Fatalf("status recreated %d schema/migration objects", n)
+		for _, args := range [][]string{nil, {"--run", live.ID}} {
+			assertRun(t, dir, live.ID, "test", "running", args...)
+			var n int
+			if err := conn.QueryRow("SELECT count(*) FROM sqlite_master WHERE name IN ('intent_cache', 'runs_verification_plan_immutable')").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatalf("status recreated %d schema/migration objects", n)
+			}
 		}
 	})
 
