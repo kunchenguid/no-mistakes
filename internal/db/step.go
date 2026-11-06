@@ -59,28 +59,27 @@ type StepResult struct {
 // agent-process failure - rather than because of what the step judged.
 const StepFailureCauseAgentInvocation = "agent_invocation"
 
-const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at`
+const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit, round_started_at, override_reason, skip_reason, approval_reason, failure_cause, carried_from, review_max_fix_rounds, response_origin`
 
 // readableStepResultColumns tolerates databases that predate the optional
 // columns. The ci_fix_attempts column is no longer read: the CI step's fix
 // rounds are counted by the executor from the round history, exactly like
 // every other step's, and the column only remains because migrations are
 // append-only.
-func (d *DB) readableStepResultColumns() string {
-	columns := stepResultColumns
-	for _, column := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit", "round_started_at", "override_reason", "skip_reason", "approval_reason", "failure_cause", "carried_from", "review_max_fix_rounds"} {
-		if d.hasColumn("step_results", column) {
-			columns += ", " + column
-		} else {
-			columns += ", NULL AS " + column
-		}
+func (d *DB) readableStepResultColumns() (string, error) {
+	return d.readProjection("step_results", stepResultColumns, stepScanTargets(&StepResult{})...)
+}
+
+func stepScanTargets(s *StepResult) []any {
+	return []any{&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin}
+}
+
+func scanStepResult(row interface{ Scan(...any) error }, s *StepResult) error {
+	if err := row.Scan(stepScanTargets(s)...); err != nil {
+		return err
 	}
-	if d.hasColumn("step_results", "response_origin") {
-		columns += ", response_origin"
-	} else {
-		columns += ", 'unknown' AS response_origin"
-	}
-	return columns
+	s.ResponseOrigin = s.ResponseOrigin.OrUnknown()
+	return nil
 }
 
 // InsertStepResult creates a new step result record.
@@ -151,10 +150,14 @@ func (s *StepResult) RoundsStepID() string {
 
 // GetStepResult returns a step result by ID.
 func (d *DB) GetStepResult(id string) (*StepResult, error) {
+	columns, err := d.readableStepResultColumns()
+	if err != nil {
+		return nil, err
+	}
 	s := &StepResult{}
-	err := d.sql.QueryRow(
-		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin)
+	err = scanStepResult(d.sql.QueryRow(
+		`SELECT `+columns+` FROM step_results WHERE id = ?`, id,
+	), s)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -174,8 +177,12 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 // ids are monotonic ULIDs, so ordering by id reproduces insertion - that is,
 // execution - order deterministically.
 func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
+	columns, err := d.readableStepResultColumns()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(
-		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE run_id = ? ORDER BY step_order, id`, runID,
+		`SELECT `+columns+` FROM step_results WHERE run_id = ? ORDER BY step_order, id`, runID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get steps by run: %w", err)
@@ -184,7 +191,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin); err != nil {
+		if err := scanStepResult(rows, s); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)

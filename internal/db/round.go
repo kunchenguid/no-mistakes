@@ -67,6 +67,12 @@ type StepRound struct {
 	CreatedAt       int64
 }
 
+const roundReadColumns = "id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, repair_published, duration_ms, created_at, response_origin"
+
+func roundScanTargets(r *StepRound) []any {
+	return []any{&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.RepairPublished, &r.DurationMS, &r.CreatedAt, &r.ResponseOrigin}
+}
+
 // StepRoundStats summarizes execution rounds for a step. It lets status
 // surfaces show whether a running/fixing step is in an initial pass or a fix
 // pass without reloading every round in callers.
@@ -288,8 +294,12 @@ func (d *DB) SetStepRoundUserFindings(id string, userFindingsJSON *string) error
 
 // GetRoundsByStep returns all rounds for a step result, ordered by round number.
 func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
+	columns, err := d.readProjection("step_rounds", roundReadColumns, roundScanTargets(&StepRound{})...)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(
-		`SELECT id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, repair_published, duration_ms, created_at, response_origin FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
+		`SELECT `+columns+` FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
 		stepResultID,
 	)
 	if err != nil {
@@ -299,9 +309,10 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	var rounds []*StepRound
 	for rows.Next() {
 		r := &StepRound{}
-		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.RepairPublished, &r.DurationMS, &r.CreatedAt, &r.ResponseOrigin); err != nil {
+		if err := rows.Scan(roundScanTargets(r)...); err != nil {
 			return nil, fmt.Errorf("scan step round: %w", err)
 		}
+		r.ResponseOrigin = r.ResponseOrigin.OrUnknown()
 		rounds = append(rounds, r)
 	}
 	return rounds, rows.Err()

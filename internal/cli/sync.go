@@ -660,11 +660,20 @@ func branchSyncField(state branchsync.State) toON.Field {
 }
 
 func cachedBranchSyncField(ctxCmd *cobra.Command, runID string) *toON.Field {
-	service, closeFn, err := openSyncService()
+	// Cached annotations must not initialize or migrate the database.
+	env, err := openAxiQueryEnv("")
 	if err != nil {
 		return nil
 	}
-	defer closeFn()
+	defer env.close()
+	if env.globalConfigErr != nil {
+		return nil
+	}
+	service := &branchsync.Service{
+		DB: env.d, Repo: env.repo, WorkDir: ".",
+		GateDir: env.p.RepoDir(env.repo.ID), Paths: env.p,
+		RemoteTimeout: env.cfg.BranchSyncRemoteTimeout,
+	}
 	state := service.InspectCached(ctxCmd.Context())
 	if runID != "" && state.Pipeline.RunID != runID {
 		return nil

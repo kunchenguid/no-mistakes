@@ -412,6 +412,8 @@ Answering requires an active run, because only its executor can resume the revie
 
 ## no-mistakes axi status
 
+Status and [`axi logs`](#no-mistakes-axi-logs) open the existing database read-only, without creating state directories or running schema migrations. They can read committed run and step state while another connection holds a SQLite WAL write transaction. Missing additive run columns use their pre-migration defaults. A missing, empty, or corrupt database returns a read error instead of a no-run result. Cached `branch_sync` annotations also use a read-only connection.
+
 Without `--run` or `--branch`, show the current branch's run: its active run, else its most recent one.
 Resolution is scoped to the current branch and never falls back to another branch's run, because one clone commonly has several worktrees on different branches.
 On a successful status response, when the current branch has no run of its own - including a detached `HEAD`, which owns no branch and so reports `current_branch: unknown` - the output carries no run object at all.
@@ -557,7 +559,7 @@ On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pi
 
 ## no-mistakes axi logs
 
-Show one pipeline step's recorded findings and log output.
+Show one pipeline step's recorded findings and log output, using the [read-only database access described for status](#no-mistakes-axi-status).
 
 ```sh
 no-mistakes axi logs --step review
