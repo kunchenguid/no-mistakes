@@ -127,3 +127,34 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	}
 	return types.MarshalFindingsJSON(filtered)
 }
+
+// ambiguousSettlementIDs names the findings whose disposition could never be
+// matched again, because another finding in the same payload shares their
+// fingerprint. filterSettledReviewFindings skips exactly those, so recording
+// one would report a decision the run can never act on.
+func ambiguousSettlementIDs(gateFindingsJSON string, ids []string) []string {
+	if len(ids) == 0 || gateFindingsJSON == "" {
+		return nil
+	}
+	findings, err := types.ParseFindingsJSON(gateFindingsJSON)
+	if err != nil {
+		return nil
+	}
+	named := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		named[id] = true
+	}
+	counts := countFindingFingerprints(findings.Items)
+	var ambiguous []string
+	seen := make(map[string]bool, len(ids))
+	for _, item := range findings.Items {
+		if !named[item.ID] || seen[item.ID] || !settleableReviewFinding(item) {
+			continue
+		}
+		if counts[findingFingerprint(item)] != 1 {
+			seen[item.ID] = true
+			ambiguous = append(ambiguous, item.ID)
+		}
+	}
+	return ambiguous
+}

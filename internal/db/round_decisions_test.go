@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -235,8 +236,8 @@ func TestSetStepRoundIgnored_KeepsAnExternalDispositionAndItsReason(t *testing.T
 	if err := d.SetStepRoundUserDecision(round.ID, &empty, RoundSelectionSourceExternal, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetStepRoundIgnored(round.ID, types.ResponseOrigin("interactive")); err != nil {
-		t.Fatal(err)
+	if err := d.SetStepRoundIgnored(round.ID, types.ResponseOrigin("interactive")); !errors.Is(err, ErrStepRoundDecisionRecorded) {
+		t.Fatalf("error = %v, want ErrStepRoundDecisionRecorded so the caller can refuse the response", err)
 	}
 
 	rounds, err := d.GetRoundsByStep(sr.ID)
@@ -274,5 +275,70 @@ func TestSetStepRoundIgnored_RecordsItsOwnSource(t *testing.T) {
 	}
 	if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != DeclinedSelectionJSON {
 		t.Fatalf("selected_finding_ids = %v, want %q", rounds[0].SelectedFindingIDs, DeclinedSelectionJSON)
+	}
+}
+
+// Recovery re-parks a round that recorded an approve, skip, or abort decline.
+// An ignore-only fix response answering that gate refines the decline into an
+// explicit ignore and refreshes the caller origin: the decline round carries no
+// findings of its own to lose.
+func TestSetStepRoundIgnored_RefinesARecordedDecline(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo(t.TempDir(), "https://example.invalid/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sr, round := seedRound(t, d, repo.ID, "feature", types.StepReview)
+
+	if err := d.SetStepRoundDeclined(round.ID, types.ResponseOrigin("interactive")); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetStepRoundIgnored(round.ID, types.ResponseOrigin("auto_yes")); err != nil {
+		t.Fatal(err)
+	}
+
+	rounds, err := d.GetRoundsByStep(sr.ID)
+	if err != nil || len(rounds) != 1 {
+		t.Fatalf("rounds: %v %d", err, len(rounds))
+	}
+	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUserIgnored {
+		t.Fatalf("selection_source = %v, want %q", rounds[0].SelectionSource, RoundSelectionSourceUserIgnored)
+	}
+	if rounds[0].ResponseOrigin != types.ResponseOrigin("auto_yes") {
+		t.Fatalf("response_origin = %q, want %q", rounds[0].ResponseOrigin, "auto_yes")
+	}
+	if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != DeclinedSelectionJSON {
+		t.Fatalf("selected_finding_ids = %v, want %q", rounds[0].SelectedFindingIDs, DeclinedSelectionJSON)
+	}
+}
+
+// A user selection and its dispatched payload are never replaced by an
+// ignore-only response, and the caller is told nothing was stored.
+func TestSetStepRoundIgnored_KeepsAUserSelection(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo(t.TempDir(), "https://example.invalid/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sr, round := seedRound(t, d, repo.ID, "feature", types.StepReview)
+
+	selected := `["keep-a"]`
+	payload := declinedFindings
+	if err := d.SetStepRoundUserDecision(round.ID, &selected, RoundSelectionSourceUser, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetStepRoundIgnored(round.ID); !errors.Is(err, ErrStepRoundDecisionRecorded) {
+		t.Fatalf("error = %v, want ErrStepRoundDecisionRecorded", err)
+	}
+
+	rounds, err := d.GetRoundsByStep(sr.ID)
+	if err != nil || len(rounds) != 1 {
+		t.Fatalf("rounds: %v %d", err, len(rounds))
+	}
+	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUser {
+		t.Fatalf("selection_source = %v, want the original %q", rounds[0].SelectionSource, RoundSelectionSourceUser)
+	}
+	if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != selected {
+		t.Fatalf("selected_finding_ids = %v, want the original %q", rounds[0].SelectedFindingIDs, selected)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -169,19 +170,15 @@ func TestFilterSettledReviewFindings_AnExplicitIgnoreIsStickyButAnApprovalIsNot(
 	raw, _ := types.MarshalFindingsJSON(current)
 	selection := db.DeclinedSelectionJSON
 	for _, tc := range []struct {
-		name, source, nextTrigger string
-		want                      int
+		name, source string
+		want         int
 	}{
-		{"approve", db.RoundSelectionSourceUserDeclined, "coverage", 1},
-		{"approve ahead of a fix round", db.RoundSelectionSourceUserDeclined, "auto_fix", 1},
-		{"explicit ignore", db.RoundSelectionSourceUserIgnored, "auto_fix", 0},
+		{"approve", db.RoundSelectionSourceUserDeclined, 1},
+		{"explicit ignore", db.RoundSelectionSourceUserIgnored, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source := tc.source
-			rounds := []*db.StepRound{
-				{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &selection},
-				{Trigger: tc.nextTrigger},
-			}
+			rounds := []*db.StepRound{{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &selection}}
 			filtered, err := filterSettledReviewFindings(raw, rounds)
 			if err != nil {
 				t.Fatal(err)
@@ -359,5 +356,132 @@ func TestExecutor_ExternalDispositionRefusesWhatItCannotSettle(t *testing.T) {
 	}
 	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A disposition is matched on a later round by fingerprint, so one the gate
+// shows twice under identical content could never be matched again. Recording
+// it would echo a decision the run can never act on.
+func TestExecutor_DispositionsRefuseAnAmbiguousFingerprint(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := coverageWorkdir(t, database, run)
+	twin := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		first, second := twin, twin
+		first.ID, first.Line = "twin-a", 10
+		second.ID, second.Line = "twin-b", 40
+		return dispositionCoverageOutcome(t, sctx, []types.Finding{first, second}, []string{"first.go"}), nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	go func() { defer close(finished); _ = exec.Execute(ctx, run, repo, workDir) }()
+	t.Cleanup(func() { cancel(); <-finished })
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	_, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"twin-a"}, nil, nil, nil, "grant verified on the machine")
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "twin-a cannot be settled") {
+		t.Fatalf("external disposition on an ambiguous finding was accepted: %v", err)
+	}
+	_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"twin-a"}, []string{"twin-b"}, nil, nil, "")
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "twin-b cannot be declined") {
+		t.Fatalf("ignore of an ambiguous finding was accepted: %v", err)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Recovery re-parks a round whose external disposition is already recorded.
+// A fix response there would overwrite the only column holding the operator's
+// reason, so it is refused and the gate stays parked.
+func TestExecutor_RecoveredExternalRoundRefusesAFixResponse(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := declinedTestFindings
+	round, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := db.DeclinedSelectionJSON
+	settled := `{"findings":[{"id":"journal-version-deduplication","severity":"error","file":"x.js","line":497,` +
+		`"description":"dedup checks only the last event; check all prior events instead","action":"ask-user",` +
+		`"user_instructions":"grant verified on the machine"}]}`
+	if err := database.SetStepRoundUserDecision(round.ID, &empty, db.RoundSelectionSourceExternal, &settled, types.ResponseOrigin("interactive")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(stepResult.ID, declinedTestFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepReview, declinedTestFindings)}, nil)
+	events := collectEvents(exec)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(ctx, run, repo, t.TempDir()) }()
+	waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepReview)
+
+	for _, tc := range []struct {
+		name     string
+		selected []string
+		ignore   []string
+	}{
+		{"ignore only", nil, []string{"journal-version-deduplication"}},
+		{"with a selection", []string{"journal-version-deduplication"}, nil},
+	} {
+		deadline := time.Now().Add(5 * time.Second)
+		var err error
+		for {
+			_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, tc.selected, tc.ignore, nil, nil, "")
+			if err == nil || !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		var refusal *RespondRefusal
+		if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "already records an external finding disposition") {
+			t.Fatalf("%s: fix response overwrote a recorded external disposition: %v", tc.name, err)
+		}
+	}
+
+	rounds, err := database.GetRoundsByStep(stepResult.ID)
+	if err != nil || len(rounds) != 1 {
+		t.Fatalf("rounds: %v %d", err, len(rounds))
+	}
+	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != db.RoundSelectionSourceExternal {
+		t.Fatalf("selection_source = %v, want the recorded %q", rounds[0].SelectionSource, db.RoundSelectionSourceExternal)
+	}
+	if rounds[0].UserFindingsJSON == nil || !strings.Contains(*rounds[0].UserFindingsJSON, "grant verified on the machine") {
+		t.Fatalf("the operator's reason was erased: %v", rounds[0].UserFindingsJSON)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor timed out")
 	}
 }

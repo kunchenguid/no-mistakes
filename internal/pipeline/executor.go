@@ -422,6 +422,13 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 				Help:               fixResponseRevertHelp,
 			}
 		}
+		if ambiguous := ambiguousSettlementIDs(e.waitingFindings, ids); len(ambiguous) > 0 {
+			e.mu.Unlock()
+			return RespondDispositions{}, &RespondRefusal{
+				Message: fmt.Sprintf("%s cannot be settled: the gate shows another finding with identical content", strings.Join(ambiguous, ",")),
+				Help:    ambiguousSettlementHelp,
+			}
+		}
 		record := types.FilterFindings(types.Findings{Items: items.Items}, ids)
 		for i := range record.Items {
 			record.Items[i].UserInstructions = strings.TrimSpace(approvalReason)
@@ -487,6 +494,23 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, refusal
 		}
+		// Recovery re-parks a round that already recorded its decision. A fix
+		// response carries a user selection forward (restorePendingDecision)
+		// and may replace an approve/skip/abort decline, but it has nowhere to
+		// put an external settlement: the round holds one decision, and this
+		// write would erase the operator's recorded reason.
+		for _, round := range rounds {
+			if round.ID != e.waitingRoundID || round.SelectionSource == nil {
+				continue
+			}
+			if *round.SelectionSource == db.RoundSelectionSourceExternal {
+				e.mu.Unlock()
+				return RespondDispositions{}, &RespondRefusal{
+					Message: "this round already records an external finding disposition, so the response was not recorded",
+					Help:    decidedRoundHelp,
+				}
+			}
+		}
 		if step == types.StepReview && e.db != nil && e.waitingStepResultID != "" {
 			limit, err := e.reviewFixRoundLimit(e.waitingStepResultID)
 			if err != nil {
@@ -503,6 +527,18 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		if err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err
+		}
+		// A Review decline is sticky, so it is held to the same matching rule
+		// the filter applies: a decline the filter could never match again
+		// would be echoed as recorded and never suppress anything.
+		if step == types.StepReview {
+			if ambiguous := ambiguousSettlementIDs(e.waitingFindings, split.Ignored); len(ambiguous) > 0 {
+				e.mu.Unlock()
+				return RespondDispositions{}, &RespondRefusal{
+					Message: fmt.Sprintf("%s cannot be declined: the gate shows another finding with identical content", strings.Join(ambiguous, ",")),
+					Help:    ambiguousSettlementHelp,
+				}
+			}
 		}
 		dispositions = split
 		// Dispatch and persistence must use the same ids the validation
@@ -2310,6 +2346,12 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 	if idsJSON == "" {
 		if len(response.ignoreFindingIDs) > 0 {
 			if err := e.db.SetStepRoundIgnored(e.waitingRoundID, response.origin); err != nil {
+				if errors.Is(err, db.ErrStepRoundDecisionRecorded) {
+					return &RespondRefusal{
+						Message: "this round already records a decision this response cannot replace, so the declines were not recorded",
+						Help:    decidedRoundHelp,
+					}
+				}
 				return fmt.Errorf("record the response's declines: %w", err)
 			}
 			return nil

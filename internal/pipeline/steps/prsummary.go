@@ -1254,7 +1254,8 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	// the final set without ever being fixed, so it must not be published as a
 	// cleared finding. The step reports the count it found and did not clear,
 	// exactly as it does for findings approved as-is.
-	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings && !roundsSettledAFinding(rounds)
+	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings &&
+		!(sr.StepName == types.StepReview && roundsSettledAFinding(rounds))
 	riskLevel := ""
 	if sr.StepName == types.StepReview {
 		src := finalFindings
@@ -1384,16 +1385,38 @@ func roundsHaveFindings(rounds []*db.StepRound) bool {
 }
 
 // roundsSettledAFinding reports whether a round recorded a human disposition
-// that drops a finding from later reports without fixing it: an explicit
-// ignore, or a fact the operator verified outside the review worktree.
+// that drops a finding from later reports without fixing it: a decline, or a
+// fact the operator verified outside the review worktree. Only Review carries
+// findings forward and suppresses a settled one, so only Review consults this;
+// a declined Test or Lint finding is re-derived by the next round and its
+// absence from the final set really does mean it is gone.
+//
+// The decline set is the one declinedFindingLines already owns - the
+// complement of the recorded selection, minus the findings an earlier round
+// chose to fix - because that is the set the Review disposition filter
+// suppresses. Keying on the ignore-only and external sources alone missed the
+// common mixed response, which records a user selection and declines the rest.
 func roundsSettledAFinding(rounds []*db.StepRound) bool {
+	var earlierFixes map[string]bool
+	for _, r := range rounds {
+		earlierFixes = withChosenToFix(earlierFixes, r)
+	}
 	for _, r := range rounds {
 		if r == nil || r.SelectionSource == nil {
 			continue
 		}
 		switch *r.SelectionSource {
-		case db.RoundSelectionSourceUserIgnored, db.RoundSelectionSourceExternal:
-			return true
+		case db.RoundSelectionSourceExternal:
+			if r.UserFindingsJSON == nil {
+				continue
+			}
+			if settled, err := types.ParseFindingsJSON(*r.UserFindingsJSON); err == nil && len(settled.Items) > 0 {
+				return true
+			}
+		case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserIgnored:
+			if len(declinedFindingLines(r, earlierFixes)) > 0 {
+				return true
+			}
 		}
 	}
 	return false

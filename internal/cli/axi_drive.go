@@ -1447,12 +1447,15 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.ResolvedExternal == nil && result.Kept == nil) {
 		return nil
 	}
-	fixed, ignored, kept := result.Fixed, result.Ignored, result.Kept
+	fixed, ignored, external, kept := result.Fixed, result.Ignored, result.ResolvedExternal, result.Kept
 	if fixed == nil {
 		fixed = []string{}
 	}
 	if ignored == nil {
 		ignored = []string{}
+	}
+	if external == nil {
+		external = []string{}
 	}
 	if kept == nil {
 		kept = []string{}
@@ -1460,7 +1463,7 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 	return []toon.Field{{Key: "recorded", Value: toon.NewObject(
 		toon.Field{Key: "fixed", Value: fixed},
 		toon.Field{Key: "ignored", Value: ignored},
-		toon.Field{Key: "resolved_external", Value: result.ResolvedExternal},
+		toon.Field{Key: "resolved_external", Value: external},
 		toon.Field{Key: "kept", Value: kept},
 	)}}
 }

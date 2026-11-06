@@ -66,6 +66,15 @@ const fixResponseRevertHelp = "Reverting an applied fix is out of scope for a ga
 // closed: the gate stays parked and nothing is recorded.
 const fixResponseUnreadableHelp = "The response was refused rather than validated against unreadable state, and the gate is still parked: inspect it with `no-mistakes axi status`, then retry, or approve or skip the step instead."
 
+// ambiguousSettlementHelp is the refusal help for a disposition that names a
+// finding the gate shows twice under the same content. A later review turn
+// cannot tell the two apart, so the decision could never be applied.
+const ambiguousSettlementHelp = "The gate shows another finding with the same file, severity and description, so a later review turn could not tell them apart: list them in --findings to have the pipeline fix them, or resolve the gate with approve, skip, or abort."
+
+// decidedRoundHelp is the refusal help for a fix response aimed at a round
+// that already records a disposition this response would overwrite.
+const decidedRoundHelp = "The recorded decision and its reason stay in the round history: let the review continue, or resolve the gate with approve, skip, or abort."
+
 // decodeRoundDecision checks the stored decision fields a fix response is
 // attributed by. Only a value that is PRESENT and undecodable fails: a round
 // that recorded no decision at all (no selection, no source) is a valid,

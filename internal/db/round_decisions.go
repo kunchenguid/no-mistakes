@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -52,12 +53,12 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 		   JOIN step_results res ON res.id = sr.step_result_id
 		   JOIN runs r ON r.id = res.run_id
 		  WHERE r.repo_id = ? AND r.branch = ? AND r.id != ?
-		    AND sr.selection_source IN (?, ?, ?, ?)
+		    AND sr.selection_source IN (?, ?, ?)
 		    AND sr.findings_json IS NOT NULL
 		  ORDER BY sr.created_at DESC, sr.id DESC
 		  LIMIT ?`,
 		repoID, branch, excludeRunID,
-		RoundSelectionSourceUser, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserIgnored, RoundSelectionSourceExternal,
+		RoundSelectionSourceUser, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserIgnored,
 		queryLimit,
 	)
 	if err != nil {
@@ -102,34 +103,58 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 // a data loss, so the invariant is enforced in the statement rather than
 // assumed by the caller.
 func (d *DB) SetStepRoundDeclined(id string, origins ...types.ResponseOrigin) error {
-	return d.setStepRoundDecline(id, RoundSelectionSourceUserDeclined, origins...)
+	_, err := d.setStepRoundDecline(id, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserDeclined, origins...)
+	return err
 }
+
+// ErrStepRoundDecisionRecorded reports that the round already carries a
+// decision the caller's write is not allowed to replace, so nothing was
+// stored. A caller that echoes what it recorded must refuse instead.
+var ErrStepRoundDecisionRecorded = errors.New("the round already records a decision this response cannot replace")
 
 // SetStepRoundIgnored records that a fix response declined every finding the
-// round's gate showed (--ignore with no --findings). It is the same write as
-// SetStepRoundDeclined under its own selection source, so an explicit ignore
-// stays distinguishable from an approve/skip/abort, and it carries the same
-// statement-enforced invariant: it never overwrites another selection and it
-// never clears the user findings an earlier decision on this round recorded.
+// round's gate showed (--ignore with no --findings), under its own selection
+// source so an explicit ignore stays distinguishable from an approve, skip, or
+// abort. An ignore may refine a plain decline on a round recovery re-parked,
+// which carries no findings of its own to lose. It never replaces a user or
+// auto-fix selection, nor an external settlement and the reason stored with
+// it, and reports ErrStepRoundDecisionRecorded instead of storing nothing
+// silently. The invariant is enforced in the statement, not assumed by the
+// caller.
 func (d *DB) SetStepRoundIgnored(id string, origins ...types.ResponseOrigin) error {
-	return d.setStepRoundDecline(id, RoundSelectionSourceUserIgnored, origins...)
+	stored, err := d.setStepRoundDecline(id, RoundSelectionSourceUserIgnored, RoundSelectionSourceUserDeclined, origins...)
+	if err != nil {
+		return err
+	}
+	if !stored {
+		return ErrStepRoundDecisionRecorded
+	}
+	return nil
 }
 
-func (d *DB) setStepRoundDecline(id, source string, origins ...types.ResponseOrigin) error {
+// setStepRoundDecline writes source onto a round whose decision is unrecorded,
+// already this same source, or the replaces source, and reports whether the
+// row was written.
+func (d *DB) setStepRoundDecline(id, source, replaces string, origins ...types.ResponseOrigin) (bool, error) {
 	origin := types.ResponseOriginUnknown
 	if len(origins) > 0 {
 		origin = origins[0].OrUnknown()
 	}
 	declined := DeclinedSelectionJSON
-	if _, err := d.sql.Exec(
+	result, err := d.sql.Exec(
 		`UPDATE step_rounds
 		    SET selected_finding_ids = CASE WHEN selection_source IS NULL THEN ? ELSE selected_finding_ids END,
-		        selection_source = CASE WHEN selection_source IS NULL THEN ? ELSE selection_source END,
+		        selection_source = ?,
 		        response_origin = ?
-		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ?)`,
-		declined, source, origin, id, source,
-	); err != nil {
-		return fmt.Errorf("set step round declined: %w", err)
+		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ? OR selection_source = ?)`,
+		declined, source, origin, id, source, replaces,
+	)
+	if err != nil {
+		return false, fmt.Errorf("set step round declined: %w", err)
 	}
-	return nil
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("set step round declined: %w", err)
+	}
+	return affected > 0, nil
 }

@@ -352,13 +352,13 @@ Finding IDs are trimmed before validation. Missing or repeated gate finding IDs 
 
 A user-authored addition that collides with existing finding content is retained instead of being silently dropped. A matching non-user `no-op` can be replaced by the user record; collisions with blocking or other user-authored records keep both records. Its normalized ID, action, and instructions stay attached to the record sent to the fixer.
 
-Every successful fix response echoes what it recorded in a `recorded:` object: `fixed` (the findings selected, including `--add-finding` items under their normalized IDs), `ignored` (the findings explicitly declined), and `kept` (the gate findings omitted that a previous response for this step had already decided). A finding the restored decision dispatched is reported under `fixed`, not also under `kept`. Approve, skip, and abort emit no disposition echo. They are not decision-free: a nonempty gate they resolve is recorded as a decline round, which is what later rounds read as `user_chose_to_ignore`. `--yes` resolution is unchanged: it selects every current finding.
+Every successful fix response echoes what it recorded in a `recorded:` object: `fixed` (the findings selected, including `--add-finding` items under their normalized IDs), `ignored` (the findings explicitly declined), `resolved_external` (the findings settled outside the review worktree, empty for a fix response), and `kept` (the gate findings omitted that a previous response for this step had already decided). A finding the restored decision dispatched is reported under `fixed`, not also under `kept`. On a Review gate, `--ignore` is refused for a finding the gate shows twice under identical content, since the decline could never be matched on a later round, and every fix response is refused on a round that already records an external disposition, which keeps the operator's reason intact. Approve, skip, and abort emit no disposition echo. They are not decision-free: a nonempty gate they resolve is recorded as a decline round, which is what later rounds read as `user_chose_to_ignore`. `--yes` resolution is unchanged: it selects every current finding.
 
 `--action complete-coverage` continues a Review gate under the [coverage continuation rules](/no-mistakes/reference/pipeline-steps/#coverage-continuation).
 It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--instructions-file`, `--add-finding`, `--add-finding-file`, and `--reason`.
 The CLI supplies the observed head, step result, and latest round binding automatically.
 
-`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It also refuses a reviewer question, a pipeline-owned finding such as `review-questions-unreadable`, and any finding an earlier round of the same Review chose to fix. It starts another static Review turn without a fix or approval. Later rereviews can reissue the same finding under a different ID or line; the recorded decision suppresses only an unambiguous matching fingerprint. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
+`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It also refuses a reviewer question, a pipeline-owned finding such as `review-questions-unreadable`, any finding an earlier round of the same Review chose to fix, and any finding the gate shows twice under identical content. It starts another static Review turn without a fix or approval. Later rereviews can reissue the same finding under a different ID or line, and the recorded decision still suppresses it; a decision that could never be matched is refused rather than recorded. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
@@ -618,18 +618,20 @@ The top-level keys are `schema_version` (currently `1`), `run_id`, `step`, and `
 Each round has these fields:
 
 - `round`: the step-local round number; identify a round by `(run_id, step, round)`, not by finding ID alone.
-- `trigger`: the recorded execution trigger, such as `initial`, `auto_fix`, legacy `user_fix`, `coverage`, `answer`, or `retry`; consumers must allow new trigger values.
+- `trigger`: the recorded execution trigger, such as `initial`, `auto_fix`, legacy `user_fix`, `coverage`, `external`, `answer`, or `retry`; consumers must allow new trigger values.
 - `summary` and `findings`: the round's complete summary and array of finding objects, or `null` when absent.
   Finding fields are preserved, including optional fields and instructions; consumers must ignore unknown fields.
   TOON prints an integer outside ±(2^53−1) as a quoted decimal string to keep it exact; `--json` keeps it a number.
   An explicit empty findings array stays `[]` and does not mean that earlier findings were resolved.
 - `selected_finding_ids`: IDs selected for fixing **after this round**, or `null` when no selection was recorded.
   `[]` is an explicit selection of nothing, distinct from no decision.
-- `selection_source`: the recorded source (`user`, `auto_fix`, or `user_declined`), or `null`.
+- `selection_source`: the recorded source (`user`, `auto_fix`, `user_declined`, `user_ignored`, or `resolved_external`), or `null`.
   An automatic selection does not mean the user declined the remaining findings.
   `user_declined` does not distinguish approve, skip, and abort; this export does not infer a verdict or whether a fix succeeded.
+  `user_ignored` is a fix response that declined every finding its gate showed, and `resolved_external` is a settlement outside the review worktree; neither is a verdict on the step.
 - `response_origin`: the recorded caller classification (`interactive`, `auto_yes`, or `unknown`).
 - `user_findings`: the merged finding array dispatched after user edits or additions, or `null` when absent.
+  On a `resolved_external` round it is not a fix dispatch: it holds the settled findings, each carrying the operator's reason in `user_instructions`.
 - `fix_summary`: the recorded fix result, or `null` when absent.
 - `duration_ms` and `created_at`: recorded duration in milliseconds and creation time in Unix seconds.
 

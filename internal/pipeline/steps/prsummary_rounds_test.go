@@ -363,3 +363,44 @@ func TestBuildPipelineSummary_ASettledFindingIsNotPublishedAsCleared(t *testing.
 		})
 	}
 }
+
+// The common mixed response - fix one finding, decline another - records a
+// user selection, and the Review disposition filter then drops the declined
+// finding from every later report. The body must still count it as found, and
+// must keep calling a round that declined nothing cleared.
+func TestBuildPipelineSummary_AMixedFixAndIgnoreIsNotPublishedAsCleared(t *testing.T) {
+	t.Parallel()
+	two := `{"findings":[` +
+		`{"id":"bug","severity":"warning","file":"main.go","line":3,"description":"off-by-one"},` +
+		`{"id":"grant","severity":"warning","file":"main.go","line":9,"description":"private grant not visible"}],"summary":"2 warnings"}`
+	one := `{"findings":[{"id":"bug","severity":"warning","file":"main.go","line":3,"description":"off-by-one"}],"summary":"1 warning"}`
+	source := db.RoundSelectionSourceUser
+	selected := `["bug"]`
+	for _, tc := range []struct {
+		name      string
+		findings  string
+		cleared   bool
+		wantFound string
+	}{
+		{"declines the finding it did not select", two, false, "⚠️ **Review** - 2 warnings"},
+		{"selects every finding it showed", one, true, "1 issue found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shown := tc.findings
+			steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+			rounds := map[string][]*db.StepRound{"s1": {
+				{Round: 1, Trigger: "initial", FindingsJSON: &shown, SelectedFindingIDs: &selected, SelectionSource: &source, DurationMS: 1000},
+				{Round: 2, Trigger: "auto_fix", DurationMS: 700},
+			}}
+
+			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+			if cleared := strings.Contains(md, "🔧 **Review** -"); cleared != tc.cleared {
+				t.Errorf("published as cleared = %v, want %v, got:\n%s", cleared, tc.cleared, md)
+			}
+			if !strings.Contains(md, tc.wantFound) {
+				t.Errorf("expected %q, got:\n%s", tc.wantFound, md)
+			}
+		})
+	}
+}
