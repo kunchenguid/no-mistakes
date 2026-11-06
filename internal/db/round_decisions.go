@@ -103,7 +103,7 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 // a data loss, so the invariant is enforced in the statement rather than
 // assumed by the caller.
 func (d *DB) SetStepRoundDeclined(id string, origins ...types.ResponseOrigin) error {
-	_, err := d.setStepRoundDecline(id, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserDeclined, origins...)
+	_, err := d.setStepRoundDecline(id, RoundSelectionSourceUserDeclined, origins...)
 	return err
 }
 
@@ -115,14 +115,12 @@ var ErrStepRoundDecisionRecorded = errors.New("the round already records a decis
 // SetStepRoundIgnored records that a fix response declined every finding the
 // round's gate showed (--ignore with no --findings), under its own selection
 // source so an explicit ignore stays distinguishable from an approve, skip, or
-// abort. An ignore may refine a plain decline on a round recovery re-parked,
-// which carries no findings of its own to lose. It never replaces a user or
-// auto-fix selection, nor an external settlement and the reason stored with
-// it, and reports ErrStepRoundDecisionRecorded instead of storing nothing
-// silently. The invariant is enforced in the statement, not assumed by the
-// caller.
+// abort. It never replaces a user or auto-fix selection, nor an external
+// settlement and the reason stored with it, and reports
+// ErrStepRoundDecisionRecorded instead of storing nothing silently. The
+// invariant is enforced in the statement, not assumed by the caller.
 func (d *DB) SetStepRoundIgnored(id string, origins ...types.ResponseOrigin) error {
-	stored, err := d.setStepRoundDecline(id, RoundSelectionSourceUserIgnored, RoundSelectionSourceUserDeclined, origins...)
+	stored, err := d.setStepRoundDecline(id, RoundSelectionSourceUserIgnored, origins...)
 	if err != nil {
 		return err
 	}
@@ -132,10 +130,12 @@ func (d *DB) SetStepRoundIgnored(id string, origins ...types.ResponseOrigin) err
 	return nil
 }
 
-// setStepRoundDecline writes source onto a round whose decision is unrecorded,
-// already this same source, or the replaces source, and reports whether the
-// row was written.
-func (d *DB) setStepRoundDecline(id, source, replaces string, origins ...types.ResponseOrigin) (bool, error) {
+// setStepRoundDecline writes source onto a round whose decision is unrecorded
+// and refreshes the caller origin of a round that already records a decline,
+// and reports whether the row was written. A recorded decision is never
+// rewritten: a retry on an already declined round must not promote a plain
+// decline to the sticky ignore the operator's first response did not record.
+func (d *DB) setStepRoundDecline(id, source string, origins ...types.ResponseOrigin) (bool, error) {
 	origin := types.ResponseOriginUnknown
 	if len(origins) > 0 {
 		origin = origins[0].OrUnknown()
@@ -144,10 +144,10 @@ func (d *DB) setStepRoundDecline(id, source, replaces string, origins ...types.R
 	result, err := d.sql.Exec(
 		`UPDATE step_rounds
 		    SET selected_finding_ids = CASE WHEN selection_source IS NULL THEN ? ELSE selected_finding_ids END,
-		        selection_source = ?,
+		        selection_source = CASE WHEN selection_source IS NULL THEN ? ELSE selection_source END,
 		        response_origin = ?
 		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ? OR selection_source = ?)`,
-		declined, source, origin, id, source, replaces,
+		declined, source, origin, id, RoundSelectionSourceUserDeclined, RoundSelectionSourceUserIgnored,
 	)
 	if err != nil {
 		return false, fmt.Errorf("set step round declined: %w", err)

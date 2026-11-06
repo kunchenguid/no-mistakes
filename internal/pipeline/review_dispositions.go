@@ -23,10 +23,11 @@ func settleableReviewFinding(item types.Finding) bool {
 // accepted only when it identifies one finding in each report; ambiguous
 // matches fail closed. Approve/skip/abort do not settle individual findings.
 //
-// An earlier round's fix selection protects only its own finding identity -
-// exactly the identity splitFixResponse refuses to let a later response decline
-// - so every disposition the daemon accepts is effective, and a finding an
-// earlier round chose to fix is never suppressed by a later omission.
+// A finding an earlier round chose to fix is never settled: the gate refuses a
+// decline or an external disposition that names it, and an omission the gate
+// permitted because an earlier round already decided it is not a decline. The
+// protection is keyed by fingerprint, the same key the suppression uses, so a
+// moved line cannot carry a fix selection out of the gate.
 func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, error) {
 	if raw == "" || len(rounds) == 0 {
 		return raw, nil
@@ -55,7 +56,7 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	filtered.Items = make([]types.Finding, 0, len(current.Items))
 	for _, item := range current.Items {
 		key := findingFingerprint(item)
-		if settleableReviewFinding(item) && counts[key] == 1 && !fixed[findingKey(item)] && (ignored[key] || external[key]) {
+		if settleableReviewFinding(item) && counts[key] == 1 && !fixed[key] && (ignored[key] || external[key]) {
 			removed = true
 			continue
 		}
@@ -74,24 +75,31 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 // count nothing: the filter fails the step on them, so a completed step's
 // rounds always parse.
 func SettledReviewFindingCount(rounds []*db.StepRound) int {
-	ignored, external, _, err := settledReviewDispositions(rounds)
+	ignored, external, fixed, err := settledReviewDispositions(rounds)
 	if err != nil {
 		return 0
 	}
 	settled := make(map[types.Finding]bool, len(ignored)+len(external))
 	for key := range ignored {
-		settled[key] = true
+		if !fixed[key] {
+			settled[key] = true
+		}
 	}
 	for key := range external {
-		settled[key] = true
+		if !fixed[key] {
+			settled[key] = true
+		}
 	}
 	return len(settled)
 }
 
 // settledReviewDispositions reads this step's recorded human dispositions into
 // the three fingerprint sets every consumer decides on: the findings an ignore
-// declined, the findings settled outside the worktree, and the identities an
-// earlier round chose to fix.
+// declined, the findings settled outside the worktree, and the findings an
+// earlier round chose to fix. A round's unselected finding is credited as
+// declined only when no earlier round chose to fix it, the same subtraction the
+// reviewer's round history performs: a fix response may omit a finding an
+// earlier round decided, and that omission rules on nothing.
 func settledReviewDispositions(rounds []*db.StepRound) (ignored, external, fixed map[types.Finding]bool, err error) {
 	ignored = make(map[types.Finding]bool)
 	external = make(map[types.Finding]bool)
@@ -152,8 +160,8 @@ func settledReviewDispositions(rounds []*db.StepRound) (ignored, external, fixed
 				continue
 			}
 			if ids[item.ID] {
-				fixed[findingKey(item)] = true
-			} else {
+				fixed[key] = true
+			} else if !fixed[key] {
 				ignored[key] = true
 			}
 		}

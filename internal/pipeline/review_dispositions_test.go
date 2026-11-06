@@ -248,10 +248,11 @@ func TestFilterSettledReviewFindings_AQuestionAndAReservedMarkerAreNeverSettled(
 	}
 }
 
-// An earlier fix selection protects only its own identity, so a later explicit
-// disposition of a re-reported finding at a new line is effective. Otherwise
-// the daemon records and echoes a decision the run never acts on.
-func TestFilterSettledReviewFindings_ALaterDispositionBeatsAnEarlierFixAtANewLine(t *testing.T) {
+// A finding an earlier round chose to fix is never settled, at its own line or
+// at a new one: the gate refuses the disposition, so a recorded one can only
+// come from a stale database, and honouring it would carry the operator's fix
+// selection out of the gate and out of the outstanding set.
+func TestFilterSettledReviewFindings_AnEarlierFixSurvivesALaterDispositionAtANewLine(t *testing.T) {
 	item := types.Finding{ID: "original", File: "first.go", Line: 10, Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
 	firstRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
 	chosen := `["original"]`
@@ -272,32 +273,115 @@ func TestFilterSettledReviewFindings_ALaterDispositionBeatsAnEarlierFixAtANewLin
 	later.Line = 27
 	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{later}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
 
-	filtered, err := filterSettledReviewFindings(raw, []*db.StepRound{
+	rounds := []*db.StepRound{
 		{FindingsJSON: &firstRound, SelectionSource: &fixSource, SelectedFindingIDs: &chosen},
 		{FindingsJSON: &secondRound, SelectionSource: &externalSource, SelectedFindingIDs: &empty, UserFindingsJSON: &settled},
-	})
+	}
+	filtered, err := filterSettledReviewFindings(raw, rounds)
 	if err != nil {
 		t.Fatal(err)
 	}
 	parsed, err := types.ParseFindingsJSON(filtered)
-	if err != nil || len(parsed.Items) != 0 {
-		t.Fatalf("external disposition was defeated by the earlier fix: %+v %v", parsed.Items, err)
+	if err != nil || len(parsed.Items) != 1 {
+		t.Fatalf("a moved line carried an earlier fix selection out of the gate: %+v %v", parsed.Items, err)
 	}
+	if got := SettledReviewFindingCount(rounds); got != 0 {
+		t.Fatalf("settled count = %d, want 0: nothing the filter removed was settled", got)
+	}
+}
 
-	// The same finding still shown at the identity the earlier round chose to
-	// fix keeps its fix decision: an omission can never reverse it.
-	sameLine, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
-	ignoreSource := db.RoundSelectionSourceUserIgnored
-	kept, err := filterSettledReviewFindings(sameLine, []*db.StepRound{
-		{FindingsJSON: &firstRound, SelectionSource: &fixSource, SelectedFindingIDs: &chosen},
-		{FindingsJSON: &firstRound, SelectionSource: &ignoreSource, SelectedFindingIDs: &empty},
-	})
+// A fix response may omit a finding an earlier round already decided, and the
+// gate accepts that omission without the operator ruling on it. Crediting it as
+// a decline would suppress a finding the same operator asked to have fixed.
+func TestFilterSettledReviewFindings_AnOmissionIsNeverADecline(t *testing.T) {
+	grant := types.Finding{ID: "grant", File: "first.go", Line: 10, Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
+	note := types.Finding{ID: "note", File: "second.go", Line: 5, Severity: types.FindingSeverityInfo, Description: "stale note", Action: types.ActionNoOp}
+	firstRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{grant, note}})
+	firstChoice := `["grant","note"]`
+	fixSource := db.RoundSelectionSourceUser
+
+	fresh := types.Finding{ID: "fresh", File: "second.go", Line: 41, Severity: types.FindingSeverityError, Description: "new call is unchecked", Action: types.ActionAskUser}
+	secondRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{grant, fresh}})
+	secondChoice := `["fresh"]`
+
+	moved := grant
+	moved.ID = "grant-again"
+	moved.Line = 12
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{moved}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+
+	rounds := []*db.StepRound{
+		{FindingsJSON: &firstRound, SelectionSource: &fixSource, SelectedFindingIDs: &firstChoice},
+		{FindingsJSON: &secondRound, SelectionSource: &fixSource, SelectedFindingIDs: &secondChoice},
+	}
+	filtered, err := filterSettledReviewFindings(raw, rounds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err = types.ParseFindingsJSON(kept)
+	parsed, err := types.ParseFindingsJSON(filtered)
 	if err != nil || len(parsed.Items) != 1 {
-		t.Fatalf("an omission reversed an earlier fix: %+v %v", parsed.Items, err)
+		t.Fatalf("an omission settled a finding the operator chose to fix: %+v %v", parsed.Items, err)
+	}
+	if got := SettledReviewFindingCount(rounds); got != 0 {
+		t.Fatalf("settled count = %d, want 0: no finding was settled without a fix", got)
+	}
+}
+
+// A re-minted finding at a new line is the same finding, so a response that
+// declines or externally settles what an earlier round chose to fix is refused
+// there too. Accepting it would echo a decision the filter never applies.
+func TestExecutor_DispositionsRefuseAnEarlierFixAtANewLine(t *testing.T) {
+	for _, mode := range []string{"ignore", "resolved_external"} {
+		t.Run(mode, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			workDir := coverageWorkdir(t, database, run)
+			calls := 0
+			step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+				calls++
+				id, line := "original", 10
+				if calls > 1 {
+					id, line = "reissued", 19
+				}
+				return dispositionCoverageOutcome(t, sctx, []types.Finding{
+					{ID: id, File: "first.go", Line: line, Severity: types.FindingSeverityError, Description: "grant missing", Action: types.ActionAskUser},
+				}, []string{"first.go"}), nil
+			}}
+			exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			finished := make(chan struct{})
+			go func() { defer close(finished); _ = exec.Execute(ctx, run, repo, workDir) }()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("executor did not exit")
+				}
+			})
+
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+			if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"original"}, nil, nil, nil, ""); err != nil {
+				t.Fatal(err)
+			}
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+			var err error
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if mode == "ignore" {
+					_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, []string{"reissued"}, nil, nil, "")
+				} else {
+					_, err = exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"reissued"}, nil, nil, nil, "grant verified on the machine")
+				}
+				if err == nil || !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			var refusal *RespondRefusal
+			if !errors.As(err, &refusal) || len(refusal.DeclinedEarlierFix) != 1 || refusal.DeclinedEarlierFix[0] != "reissued" {
+				t.Fatalf("a moved earlier fix was accepted as settled: %v", err)
+			}
+		})
 	}
 }
 

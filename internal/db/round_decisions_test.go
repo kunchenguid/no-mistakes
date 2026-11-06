@@ -279,10 +279,11 @@ func TestSetStepRoundIgnored_RecordsItsOwnSource(t *testing.T) {
 }
 
 // Recovery re-parks a round that recorded an approve, skip, or abort decline.
-// An ignore-only fix response answering that gate refines the decline into an
-// explicit ignore and refreshes the caller origin: the decline round carries no
-// findings of its own to lose.
-func TestSetStepRoundIgnored_RefinesARecordedDecline(t *testing.T) {
+// An ignore-only fix response answering that gate is accepted and refreshes
+// the caller origin, but the recorded decline stays a decline: promoting it to
+// the sticky ignore source would suppress findings on the strength of a
+// response the operator never gave.
+func TestSetStepRoundIgnored_KeepsARecordedDecline(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo(t.TempDir(), "https://example.invalid/repo", "main")
 	if err != nil {
@@ -301,8 +302,8 @@ func TestSetStepRoundIgnored_RefinesARecordedDecline(t *testing.T) {
 	if err != nil || len(rounds) != 1 {
 		t.Fatalf("rounds: %v %d", err, len(rounds))
 	}
-	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUserIgnored {
-		t.Fatalf("selection_source = %v, want %q", rounds[0].SelectionSource, RoundSelectionSourceUserIgnored)
+	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUserDeclined {
+		t.Fatalf("selection_source = %v, want the recorded %q", rounds[0].SelectionSource, RoundSelectionSourceUserDeclined)
 	}
 	if rounds[0].ResponseOrigin != types.ResponseOrigin("auto_yes") {
 		t.Fatalf("response_origin = %q, want %q", rounds[0].ResponseOrigin, "auto_yes")

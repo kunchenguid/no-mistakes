@@ -281,14 +281,29 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 	return decisionIDsInGate(keys, gate)
 }
 
+// earlierChosenToFixIDs names the gate's findings an earlier round already
+// chose to fix. It matches by fingerprint, not by the line-sensitive decision
+// key, because a response that declines or externally settles such a finding
+// is never effective at any line - filterSettledReviewFindings protects a fix
+// selection by fingerprint - so a refusal is the only honest answer.
 func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
-	keys := make(map[string]bool)
+	chosen := make(map[types.Finding]bool)
 	for _, round := range rounds {
-		for key := range ChosenFindingKeys(round) {
-			keys[key] = true
+		if !humanDecidedRound(round) {
+			continue
+		}
+		for _, item := range selectedFindingIdentities([]*db.StepRound{round}) {
+			chosen[findingFingerprint(item)] = true
 		}
 	}
-	return decisionIDsInGate(keys, gate)
+	ids := make(map[string]bool)
+	findings, _ := types.ParseFindingsJSON(gate)
+	for _, item := range findings.Items {
+		if chosen[findingFingerprint(item)] {
+			ids[item.ID] = true
+		}
+	}
+	return ids
 }
 
 func decisionIDsInGate(keys map[string]bool, gate string) map[string]bool {
