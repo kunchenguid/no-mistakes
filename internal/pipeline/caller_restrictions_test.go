@@ -145,12 +145,16 @@ func TestExecutorCallerRestrictionsReachDirectIntentAgents(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("invocations = %d, want summarizer, disambiguator and StepContext calls", len(calls))
 	}
+	sourcePathJSON, err := json.Marshal(run.CallerRestrictions.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i, call := range calls {
 		head := submitted
 		if i > 0 {
 			head = "advanced-head"
 		}
-		for _, want := range []string{content, callerrestrictions.Source, run.CallerRestrictions.SourcePath, run.CallerRestrictions.SHA256, run.ID, run.RepoID, run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`} {
+		for _, want := range []string{content, callerrestrictions.Source, string(sourcePathJSON), run.CallerRestrictions.SHA256, run.ID, run.RepoID, run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`} {
 			if !strings.Contains(call.Prompt, want) {
 				t.Errorf("invocation %d lost %q: %s", i, want, call.Prompt)
 			}

@@ -133,12 +133,16 @@ func TestCallerRestrictionsPRDraftPrivacy(t *testing.T) {
 				t.Fatalf("draft agent calls = %d", len(ag.calls))
 			}
 			prompt := ag.calls[0].Prompt
-			for _, want := range []string{sctx.Run.CallerRestrictions.Content, sctx.Run.CallerRestrictions.SourcePath, sctx.Run.CallerRestrictions.SHA256, callerrestrictions.Source, sctx.Run.ID, sctx.Run.RepoID, sctx.Run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`, fmt.Sprintf(`"CapturedAt":%d`, sctx.Run.CallerRestrictions.CapturedAt), "restrictions and their provenance are private", "Never quote, paraphrase or reproduce", "return no publishable content", "only tighten trusted configuration"} {
+			sourcePathJSON, err := json.Marshal(sctx.Run.CallerRestrictions.SourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{sctx.Run.CallerRestrictions.Content, string(sourcePathJSON), sctx.Run.CallerRestrictions.SHA256, callerrestrictions.Source, sctx.Run.ID, sctx.Run.RepoID, sctx.Run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`, fmt.Sprintf(`"CapturedAt":%d`, sctx.Run.CallerRestrictions.CapturedAt), "restrictions and their provenance are private", "Never quote, paraphrase or reproduce", "return no publishable content", "only tighten trusted configuration"} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("draft input missing %q", want)
 				}
 			}
-			for _, private := range []string{sctx.Run.CallerRestrictions.SourcePath, sctx.Run.CallerRestrictions.SHA256, sctx.Run.ID, sctx.Run.RepoID, `"RunID"`, `"SourcePath"`, `"SHA256"`, "normal step gate"} {
+			for _, private := range []string{sctx.Run.CallerRestrictions.SourcePath, string(sourcePathJSON), sctx.Run.CallerRestrictions.SHA256, sctx.Run.ID, sctx.Run.RepoID, `"RunID"`, `"SourcePath"`, `"SHA256"`, "normal step gate"} {
 				if strings.Contains(output, private) {
 					t.Errorf("draft output includes private metadata or gate reporting %q", private)
 				}

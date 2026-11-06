@@ -27,9 +27,10 @@ type transcriptHomesAgent struct{ want string }
 func (a transcriptHomesAgent) Name() string { return "fake" }
 func (a transcriptHomesAgent) Close() error { return nil }
 func (a transcriptHomesAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	_, data, ok := strings.Cut(opts.Prompt, "\n---\n")
+	_, framed, started := strings.Cut(opts.Prompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+	data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
 	var packet struct{ Transcript string }
-	if !ok || json.Unmarshal([]byte(data), &packet) != nil || !strings.Contains(packet.Transcript, a.want) || strings.Contains(packet.Transcript, "OTHER_ACCOUNT") {
+	if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil || !strings.Contains(packet.Transcript, a.want) || strings.Contains(packet.Transcript, "OTHER_ACCOUNT") {
 		return nil, fmt.Errorf("summary did not receive only the selected synthetic account")
 	}
 	b, _ := json.Marshal(map[string]string{"summary": a.want})
