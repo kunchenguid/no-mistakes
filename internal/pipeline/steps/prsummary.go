@@ -1453,7 +1453,7 @@ func buildFixResultText(rounds []*db.StepRound, settled int) string {
 // that removed a finding without a fix, so every Review summary line reports a
 // settlement the same way whether or not findings remain.
 func settledWithoutFixText(settled int) string {
-	return fmt.Sprintf("%d settled by the operator without a fix", settled)
+	return fmt.Sprintf("at least %d settled by the operator without a fix", settled)
 }
 
 func settledWithoutFixCount(sr *db.StepResult, rounds []*db.StepRound) int {

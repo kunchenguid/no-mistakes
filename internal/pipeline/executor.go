@@ -414,7 +414,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		// of this step chose to fix, exactly as --ignore can only decline one.
 		// Accepting it here and silently never applying it would report a
 		// decision the run never acted on.
-		chosenToFix := earlierChosenToFixIDs(step, rounds, e.waitingFindings)
+		chosenToFix := EarlierChosenToFixIDs(step, rounds, e.waitingFindings)
 		var reversals []string
 		for _, id := range gate {
 			if named[id] && chosenToFix[id] {

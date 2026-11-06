@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // Reproduction: a finding the user chose to fix in round 1 is carried into the
@@ -82,7 +83,7 @@ func TestRoundHistory_ReusedIDDeclineSurvivesEarlierSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocks := renderRoundHistoryBlocks(rounds, true)
+	blocks := renderRoundHistoryBlocks(rounds, true, types.StepReview)
 	if !strings.Contains(blocks[1], "user_chose_to_ignore:") {
 		t.Fatalf("new decline suppressed: %s", blocks[1])
 	}

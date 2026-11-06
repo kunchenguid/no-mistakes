@@ -194,7 +194,7 @@ func splitFixResponse(step types.StepName, gateFindingsJSON string, rounds []*db
 		}
 	}
 
-	chosenToFix := earlierChosenToFixIDs(step, rounds, gateFindingsJSON)
+	chosenToFix := EarlierChosenToFixIDs(step, rounds, gateFindingsJSON)
 	var reversals []string
 	for _, id := range gate {
 		if ignoreSet[id] && chosenToFix[id] {
@@ -284,7 +284,7 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 	return decisionIDsInGate(keys, gate)
 }
 
-// earlierChosenToFixIDs names the gate's findings an earlier round already
+// EarlierChosenToFixIDs names the gate's findings an earlier round already
 // chose to fix.
 //
 // Only Review carries a decision forward by content, so only there does the
@@ -293,7 +293,7 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 // twice, stays declinable on its own. Every other step re-derives its findings
 // each round and settles nothing, so it keeps the exact identity
 // earlierUserDecisionIDs reads.
-func earlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate string) map[string]bool {
+func EarlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate string) map[string]bool {
 	if step != types.StepReview {
 		keys := make(map[string]bool)
 		for _, round := range rounds {

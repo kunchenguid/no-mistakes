@@ -354,7 +354,7 @@ func TestBuildPipelineSummary_ASettledFindingIsPublishedAsSettled(t *testing.T) 
 
 			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-			if !strings.Contains(md, "🔧 **Review** - 1 issue found → 1 settled by the operator without a fix ✅") {
+			if !strings.Contains(md, "🔧 **Review** - 1 issue found → at least 1 settled by the operator without a fix ✅") {
 				t.Errorf("expected the settled finding named as settled, got:\n%s", md)
 			}
 		})
@@ -399,7 +399,7 @@ func TestBuildPipelineSummary_ASettledRoundIsNotPublishedAsACleanRound(t *testin
 			if strings.Contains(md, "✅ Re-checked - no issues remain.") {
 				t.Errorf("the settled round was published as fully re-checked, got:\n%s", md)
 			}
-			if !strings.Contains(md, "✅ No issues remain - 1 settled by the operator without a fix.") {
+			if !strings.Contains(md, "✅ No issues remain - at least 1 settled by the operator without a fix.") {
 				t.Errorf("the round detail does not name the settlement, got:\n%s", md)
 			}
 		})
@@ -424,7 +424,7 @@ func TestBuildPipelineSummary_SettlementDoesNotRelabelEarlierEmptyRounds(t *test
 	if strings.Count(md, "✅ No issues found.") != 1 {
 		t.Fatalf("the initial empty round must retain its clean result:\n%s", md)
 	}
-	if strings.Count(md, "✅ No issues remain - 1 settled by the operator without a fix.") != 2 {
+	if strings.Count(md, "✅ No issues remain - at least 1 settled by the operator without a fix.") != 2 {
 		t.Fatalf("each empty round after the settlement must name the settlement:\n%s", md)
 	}
 }
