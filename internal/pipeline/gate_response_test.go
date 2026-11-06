@@ -114,6 +114,35 @@ func TestSplitFixResponse_AllowsDecliningATwinTheSelectionNeverNamed(t *testing.
 	}
 }
 
+// A selection that named every instance its payload showed leaves no instance
+// behind for the twin carve-out to speak for, so the content stays protected
+// once a fix round moves it: declining the survivor would reverse two applied
+// fixes, which a gate response can never do, and omitting it keeps the earlier
+// fix decision instead of being refused as unaccounted.
+func TestSplitFixResponse_RefusesDecliningATwinPairTheSelectionNamedInFull(t *testing.T) {
+	twins := `{"findings":[` +
+		`{"id":"twin-a","severity":"warning","file":"a.go","line":10,"description":"missing nil check","action":"ask-user"},` +
+		`{"id":"twin-b","severity":"warning","file":"a.go","line":50,"description":"missing nil check","action":"ask-user"}]}`
+	moved := `{"findings":[` +
+		`{"id":"survivor","severity":"warning","file":"a.go","line":70,"description":"missing nil check","action":"ask-user"}]}`
+	rounds := []*db.StepRound{userDecisionRound(t, twins, "twin-a", "twin-b")}
+
+	_, err := splitFixResponse(types.StepReview, moved, rounds, nil, []string{"survivor"})
+
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || strings.Join(refusal.DeclinedEarlierFix, ",") != "survivor" {
+		t.Fatalf("a content whose every shown instance the operator fixed lost its protection: %v", err)
+	}
+
+	got, err := splitFixResponse(types.StepReview, moved, rounds, nil, nil)
+	if err != nil {
+		t.Fatalf("omitting the moved instance of a fully selected content was refused: %v", err)
+	}
+	if strings.Join(got.Kept, ",") != "survivor" {
+		t.Fatalf("kept = %v, want [survivor]: the omission keeps the earlier fix decision", got.Kept)
+	}
+}
+
 // Two applied fixes of one content protect it at least as well as one. A gate
 // response cannot reverse an applied fix, so the refusal cannot weaken because
 // the operator decided that content a second time.

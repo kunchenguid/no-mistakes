@@ -491,6 +491,78 @@ func TestFilterSettledReviewFindings_AnAmbiguousGateStillCreditsTheFixSelection(
 	}
 }
 
+// Both settlement paths read one protection set, so one matrix covers them: a
+// fix selection that named every instance its payload showed keeps the content
+// protected after the reviewer moves it, while a selection that named one of
+// two twins protects only that instance and leaves the other decidable. The
+// first half is what `docs/src/content/docs/reference/pipeline-steps.md`
+// promises ("A finding an earlier round of the same Review chose to fix is
+// refused by both dispositions, however a later review turn re-mints its ID or
+// moves its line"); the second half is the carve-out it states for an instance
+// the selection never named.
+func TestFilterSettledReviewFindings_AFullySelectedContentSurvivesBothDispositions(t *testing.T) {
+	item := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "missing nil check", Action: types.ActionAskUser}
+	at := func(id string, line int) types.Finding {
+		shown := item
+		shown.ID, shown.Line = id, line
+		return shown
+	}
+	twinA, twinB := at("twin-a", 10), at("twin-b", 50)
+	pair, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{twinA, twinB}})
+	survivor := at("survivor", 70)
+	moved, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{survivor}})
+	settledSurvivor := survivor
+	settledSurvivor.UserInstructions = "verified on the machine outside the review worktree"
+	resolved, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{settledSurvivor}})
+
+	later := at("later", 90)
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{later}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+
+	fixSource := db.RoundSelectionSourceUser
+	empty := db.DeclinedSelectionJSON
+	for _, selection := range []struct {
+		name      string
+		selected  string
+		wantItems int
+		wantCount int
+	}{
+		{"the selection named every instance shown", `["twin-a","twin-b"]`, 1, 0},
+		{"the selection named one of two twins", `["twin-a"]`, 0, 1},
+	} {
+		for _, disposition := range []struct {
+			name   string
+			source string
+			userJS *string
+		}{
+			{"explicit ignore", db.RoundSelectionSourceUserIgnored, nil},
+			{"resolved externally", db.RoundSelectionSourceExternal, &resolved},
+		} {
+			t.Run(selection.name+"/"+disposition.name, func(t *testing.T) {
+				chosen := selection.selected
+				source := disposition.source
+				rounds := []*db.StepRound{
+					{FindingsJSON: &pair, SelectionSource: &fixSource, SelectedFindingIDs: &chosen},
+					{FindingsJSON: &moved, SelectionSource: &source, SelectedFindingIDs: &empty, UserFindingsJSON: disposition.userJS},
+				}
+				filtered, err := filterSettledReviewFindings(raw, rounds)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parsed, err := types.ParseFindingsJSON(filtered)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(parsed.Items) != selection.wantItems {
+					t.Fatalf("findings = %+v, want %d reported", parsed.Items, selection.wantItems)
+				}
+				if got := SettledReviewFindingCount(rounds); got != selection.wantCount {
+					t.Fatalf("settled count = %d, want %d", got, selection.wantCount)
+				}
+			})
+		}
+	}
+}
+
 // A decline taken on one of two findings that differ only in line settles that
 // instance and nothing else, and it stops being matched by content once the
 // reviewer moves it, so the operator is asked again rather than having a moved

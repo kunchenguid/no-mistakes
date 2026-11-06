@@ -20,9 +20,13 @@ func settleableReviewFinding(item types.Finding) bool {
 
 // settlementIdentities records the finding instances a human decision named.
 // A decision is matched again by its exact instance, and by content alone only
-// when that content identified one finding in the payload the decision was
-// taken from: findings differing only in line are decided one instance at a
-// time, and a moved one is reported again rather than silently settled.
+// when the decision spoke for every instance of that content in the payload it
+// was taken from: findings differing only in line are decided one instance at a
+// time, and a moved one a decision left behind is reported again rather than
+// silently settled. record holds a disposition to one instance per payload,
+// which is its fail-closed direction; recordChosen credits a fix selection that
+// named every instance, because losing protection is a protection set's
+// fail-open direction.
 type settlementIdentities struct {
 	exact  map[types.Finding]bool
 	unique map[types.Finding]int
@@ -69,15 +73,22 @@ func (s *settlementIdentities) matches(item types.Finding, counts map[types.Find
 	return hasFindingMatch(item, s.exact, counts, s.unique)
 }
 
-// saturate makes the content identity monotone, which a protection set needs
-// and a disposition set must not have: hasFindingMatch requires the candidate
-// side to hold exactly one instance of a content, so two recorded decisions
-// about one content stop it matching. A disposition must then be asked again,
-// but a fix selection must not stop being protected because the operator
-// decided the same content twice.
-func (s *settlementIdentities) saturate() {
-	for fingerprint := range s.unique {
-		s.unique[fingerprint] = 1
+// recordChosen takes one human round's fix selection, which is a protection set
+// rather than a disposition: the content becomes matchable when the selection
+// named every instance that round's payload showed. A selection that left a
+// twin behind speaks only for the instance it named, so the twin stays
+// decidable; a selection that named them all keeps protecting the content after
+// a later reviewer moves it. Protection is assigned, never accumulated, so
+// deciding one content in several rounds never weakens it.
+func (s *settlementIdentities) recordChosen(selected, shown []types.Finding) {
+	selectedCounts := countFindingFingerprints(selected)
+	shownCounts := countFindingFingerprints(shown)
+	for _, item := range selected {
+		s.exact[findingKey(item)] = true
+		fingerprint := findingFingerprint(item)
+		if shownCounts[fingerprint] > 0 && selectedCounts[fingerprint] >= shownCounts[fingerprint] {
+			s.unique[fingerprint] = 1
+		}
 	}
 }
 
@@ -229,10 +240,10 @@ func settledReviewDispositions(rounds []*db.StepRound) (ignored, external *settl
 
 // chosenToFixSettlements reports every finding instance a human round of this
 // step chose to fix, so no consumer can settle one. A selection taken from a
-// payload that showed its content twice speaks only for the instance it named:
-// claiming the other one too refused the operator's own decline of a finding
-// they never selected. Repeated selections of one content never weaken that
-// protection, which is what saturate holds.
+// payload that showed its content twice speaks only for the instance it named,
+// unless it named them all: claiming an instance the operator never selected
+// refuses their own decline of a finding they left alone, while a payload whose
+// every instance was selected leaves no such instance behind.
 func chosenToFixSettlements(rounds []*db.StepRound) *settlementIdentities {
 	chosen := newSettlementIdentities()
 	for _, round := range rounds {
@@ -253,9 +264,8 @@ func chosenToFixSettlements(rounds []*db.StepRound) *settlementIdentities {
 				shown = append(shown, item)
 			}
 		}
-		chosen.record(selected, countFindingFingerprints(shown))
+		chosen.recordChosen(selected, shown)
 	}
-	chosen.saturate()
 	return chosen
 }
 
