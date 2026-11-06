@@ -1340,14 +1340,25 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if strings.TrimSpace(p.Gate) == "" {
 			return nil, fmt.Errorf("gate path is required")
 		}
-		if _, err := ownedGateRepoID(mgr.paths, p.Gate); err != nil {
+		repoID, err := ownedGateRepoID(mgr.paths, p.Gate)
+		if err != nil {
 			return nil, err
 		}
 		result, err := classify(ctx, "", false, true)
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
+		admission := &ipc.AdmitPushResult{Context: gateContextResult(result)}
+		if !result.Nested && p.ReviewerProfile != nil {
+			// Trusted project-instruction suppression can make an installed
+			// reviewer unrunnable, so admission needs the same fresh-policy
+			// check as AXI preflight rather than a binary-presence check alone.
+			if _, err := mgr.resolveReviewerProfile(ctx, repoID, p.ReviewerProfile); err != nil {
+				return nil, err
+			}
+			admission.ReviewerValidated = true
+		}
+		return admission, nil
 	})
 
 	srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, params json.RawMessage) (interface{}, error) {

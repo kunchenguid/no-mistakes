@@ -354,7 +354,8 @@ type GateContextParams struct {
 // AdmitPushParams asks whether a local receive hook's authenticated process
 // ancestry is allowed to mutate a managed gate ref.
 type AdmitPushParams struct {
-	Gate string `json:"gate"`
+	Gate            string                    `json:"gate"`
+	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
 }
 
 type ResolveReviewerProfileParams struct {
@@ -540,7 +541,9 @@ type GateContextResult struct {
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.
 type AdmitPushResult struct {
-	Context GateContextResult `json:"context"`
+	// The helper refuses an older daemon that silently ignores the profile.
+	ReviewerValidated bool              `json:"reviewer_validated,omitempty"`
+	Context           GateContextResult `json:"context"`
 }
 
 // HealthResult confirms the daemon is alive.

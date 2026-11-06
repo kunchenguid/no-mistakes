@@ -208,3 +208,48 @@ func TestReviewerSelectionRejectedBeforeGateSubmission(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewerAdmissionRefusesAnOlderDaemon(t *testing.T) {
+	bin := buildNoMistakesBinary(t)
+	calls := make(chan *agentcfg.ReviewerProfile, 1)
+	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+		srv.Handle(ipc.MethodAdmitPush, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			var params ipc.AdmitPushParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return nil, err
+			}
+			calls <- params.ReviewerProfile
+			return &ipc.AdmitPushResult{}, nil
+		})
+	})
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, err := findRepo(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := &agentcfg.ReviewerProfile{Agent: "codex", Model: "reviewer", Effort: agentcfg.EffortHigh}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "daemon", "admit-push", "--gate", p.RepoDir(repo.ID))
+	cmd.Env = append(os.Environ(), "GIT_PUSH_OPTION_COUNT=1", "GIT_PUSH_OPTION_0="+formatReviewerPushOptions(pin)[0])
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "daemon does not validate reviewer admission") {
+		t.Fatalf("older daemon accepted reviewer admission: %v\n%s", err, out)
+	}
+	select {
+	case got := <-calls:
+		if got == nil || *got != *pin {
+			t.Fatalf("reviewer lost at admission: %+v", got)
+		}
+	default:
+		t.Fatal("admission boundary was not called")
+	}
+}

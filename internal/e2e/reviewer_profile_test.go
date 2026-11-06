@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -181,14 +184,32 @@ func TestLiveReviewerSelectionMissingBeforeCustody(t *testing.T) {
 		return string(out)
 	}
 	before := refs()
-	for _, mode := range []string{"ordinary", "proof"} {
+	for _, mode := range []string{"ordinary", "proof", "direct", "direct-invalid"} {
 		t.Run(mode, func(t *testing.T) {
 			args := []string{"axi", "run", "--intent", "reject unavailable reviewer", "--reviewer", "codex", "--reviewer-model", "reviewer-e2e", "--reviewer-effort", "high"}
 			if mode == "proof" {
 				args = append(args, "--launch-nonce", "missing-reviewer", "--validation-generation", "missing-reviewer")
 			}
-			out, err := h.Run(args...)
-			if err == nil || !strings.Contains(out, "reviewer unavailable") {
+			var out string
+			var err error
+			wantErr := "reviewer unavailable"
+			if mode == "direct" || mode == "direct-invalid" {
+				pin := &agentcfg.ReviewerProfile{Agent: types.AgentCodex, Model: "reviewer-e2e", Effort: agentcfg.EffortHigh}
+				if mode == "direct-invalid" {
+					pin.Model = "opus[1m]"
+					wantErr = "pinned reviewer model"
+				}
+				raw, marshalErr := json.Marshal(pin)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				option := "no-mistakes.reviewer-profile=" + base64.RawURLEncoding.EncodeToString(raw)
+				output, pushErr := h.runGit(context.Background(), h.WorkDir, "push", "-o", option, gate.RemoteName, "HEAD")
+				out, err = string(output), pushErr
+			} else {
+				out, err = h.Run(args...)
+			}
+			if err == nil || !strings.Contains(out, wantErr) {
 				t.Fatalf("missing reviewer not rejected: %v\n%s", err, out)
 			}
 			if after := refs(); before != after {
@@ -197,7 +218,7 @@ func TestLiveReviewerSelectionMissingBeforeCustody(t *testing.T) {
 			if runs := h.Runs(); len(runs) != 0 {
 				t.Fatalf("rejected launch created runs: %+v", runs)
 			}
-			t.Logf("%s: unavailable reviewer rejected, refs unchanged, no run created\n%s", mode, out)
+			t.Logf("%s: reviewer rejected, refs unchanged, no run created\n%s", mode, out)
 		})
 	}
 }

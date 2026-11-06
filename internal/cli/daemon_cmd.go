@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -61,6 +62,26 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var pushOptions []string
+			if rawCount := os.Getenv("GIT_PUSH_OPTION_COUNT"); rawCount != "" {
+				count, err := strconv.Atoi(rawCount)
+				// Every declared option needs an environment entry. This also
+				// bounds iteration by the actual environment, not an untrusted count.
+				if err != nil || count < 0 || count > len(os.Environ()) {
+					return fmt.Errorf("invalid git push option count")
+				}
+				for i := 0; i < count; i++ {
+					option, ok := os.LookupEnv(fmt.Sprintf("GIT_PUSH_OPTION_%d", i))
+					if !ok {
+						return fmt.Errorf("missing git push option")
+					}
+					pushOptions = append(pushOptions, option)
+				}
+			}
+			reviewer, err := parseReviewerPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			// Resolve the daemon root from the gate itself, not NM_HOME: this
 			// runs as a git hook helper, and git sets no NM_HOME for a hook.
 			p, err := paths.ForGate(gatePath)
@@ -73,10 +94,13 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 			var result ipc.AdmitPushResult
-			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath}, &result); err != nil {
+			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, ReviewerProfile: reviewer}, &result); err != nil {
 				return err
 			}
 			if !result.Context.Nested {
+				if reviewer != nil && !result.ReviewerValidated {
+					return fmt.Errorf("daemon does not validate reviewer admission; restart it before pushing a reviewer selection")
+				}
 				return nil
 			}
 			return emitGateContextRefusal(cmd, gatecontext.Result{
