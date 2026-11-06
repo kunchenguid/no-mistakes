@@ -12,17 +12,31 @@ import (
 )
 
 func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
-	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream", "selected_restores", "selected_deletes", "missing_base", "unknown_base", "missing_upstream", "stale_origin"} {
+	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream", "selected_restores", "selected_deletes", "missing_base", "unknown_base", "missing_upstream", "stale_origin", "many_deletions"} {
 		t.Run(change, func(t *testing.T) {
 			work := initReconcileRepo(t)
 			reconcileGit(t, work, "branch", "-M", "main")
-			writeReconcileFile(t, work, "doomed.txt", "original doomed\n")
+			doomedPaths := []string{"doomed.txt"}
+			if change == "many_deletions" {
+				for i := 0; i < 64; i++ {
+					doomedPaths = append(doomedPaths, fmt.Sprintf("doomed path %03d.txt", i))
+				}
+				doomedPaths = append(doomedPaths, "--literal-doomed.txt")
+				if runtime.GOOS != "windows" {
+					doomedPaths = append(doomedPaths, "doomed\nnewline.txt")
+				}
+			}
+			for _, path := range doomedPaths {
+				writeReconcileFile(t, work, path, "original doomed\n")
+			}
 			writeReconcileFile(t, work, "keep.txt", "original keep\n")
 			reconcileGit(t, work, "add", "-A")
 			reconcileGit(t, work, "commit", "-m", "base files")
 			base := reconcileGit(t, work, "rev-parse", "HEAD")
 			reconcileGit(t, work, "checkout", "-b", "feature")
-			writeReconcileFile(t, work, "doomed.txt", "private doomed\n")
+			for _, path := range doomedPaths {
+				writeReconcileFile(t, work, path, "private doomed\n")
+			}
 			writeReconcileFile(t, work, "keep.txt", "private keep\n")
 			reconcileGit(t, work, "add", "-A")
 			reconcileGit(t, work, "commit", "-m", "edit both files")
@@ -33,7 +47,7 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			privateHead := reconcileGit(t, work, "rev-parse", "HEAD")
 			reconcileGit(t, work, "checkout", "main")
 			if change != "branch_deletion" && change != "selected_deletes" {
-				reconcileGit(t, work, "rm", "doomed.txt")
+				reconcileGit(t, work, append([]string{"rm", "--"}, doomedPaths...)...)
 				reconcileGit(t, work, "commit", "-m", "base deletes doomed")
 			} else {
 				writeReconcileFile(t, work, "base.txt", "advanced base\n")
@@ -68,7 +82,7 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 				if _, err := reconcileGitAllowFail(work, "rebase", selectedBase); err == nil {
 					t.Fatal("fixture must encounter the modify/delete conflict")
 				}
-				reconcileGit(t, work, "rm", "doomed.txt")
+				reconcileGit(t, work, append([]string{"rm", "--"}, doomedPaths...)...)
 				t.Setenv("GIT_EDITOR", "true")
 				reconcileGit(t, work, "rebase", "--continue")
 			} else {
@@ -145,6 +159,10 @@ done
 			if change == "stale_origin" {
 				reconcileGit(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
 			}
+			trace := filepath.Join(t.TempDir(), "git.trace")
+			if change == "many_deletions" {
+				t.Setenv("GIT_TRACE", trace)
+			}
 			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", proofUpstream)
 			publicationPlan, publicationErr := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, proofUpstream)
 			if (err == nil) != (publicationErr == nil) || plan.Reconcile != publicationPlan.Reconcile {
@@ -156,7 +174,7 @@ done
 			if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
 				t.Fatalf("planning created archive %s", tags)
 			}
-			if change != "kept" && change != "later_edit" && change != "selected_deletes" && change != "stale_origin" {
+			if change != "kept" && change != "later_edit" && change != "selected_deletes" && change != "stale_origin" && change != "many_deletions" {
 				if err == nil || plan.Reconcile {
 					t.Fatalf("lost content accepted: plan=%+v err=%v", plan, err)
 				}
@@ -169,6 +187,21 @@ done
 			}
 			if err != nil || !plan.Reconcile {
 				t.Fatalf("accepted base deletion refused: plan=%+v err=%v", plan, err)
+			}
+			if change == "many_deletions" {
+				raw, err := os.ReadFile(trace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				updates := 0
+				for _, line := range strings.Split(string(raw), "\n") {
+					if strings.Contains(line, " update-index ") {
+						updates++
+					}
+				}
+				if updates != 2 {
+					t.Fatalf("index update processes = %d, want one per planning proof (2 total)", updates)
+				}
 			}
 			result, err := ApplyStaleBranchReconciliation(context.Background(), gateDir, plan)
 			if err != nil || !result.Reconciled || result.PreviousHead != privateHead {
