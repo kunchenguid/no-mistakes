@@ -27,6 +27,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
@@ -823,6 +824,10 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 // triggerRunWithPRText is triggerRun carrying caller-supplied PR text on the
 // push and on the rerun fallback.
 func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (string, error) {
+	if err := env.client.RequireTranscriptHomes(); err != nil {
+		return "", err
+	}
+	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
@@ -914,6 +919,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	// clean-head evidence because it may have changed while waiting above.
 	var rr ipc.RerunResult
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
+	params.TranscriptHomes = homes
 	params.OmitIntent = omitIntent
 	params.FreshLaunch = true
 	params.PiProfile = profile
@@ -957,6 +963,10 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
 func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+	if err := env.client.RequireTranscriptHomes(); err != nil {
+		return nil, err
+	}
+	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
@@ -991,7 +1001,8 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-		RepoID: env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
+		TranscriptHomes: homes,
+		RepoID:          env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
 		ReviewerProfile: agentcfg.OptionalReviewerProfile(profiles),

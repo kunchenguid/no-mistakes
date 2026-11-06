@@ -183,6 +183,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				wantHead = ""
 			}
 			srv := ipc.NewServer()
+			serveTranscriptHomesProbe(srv)
 			commitDuringWait := make(chan struct{}, 1)
 			commitBeforePush := make(chan struct{}, 1)
 			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {

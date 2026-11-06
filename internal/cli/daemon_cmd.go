@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -201,8 +202,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 
+			if err := client.RequireTranscriptHomes(); err != nil {
+				return err
+			}
+			homes := runenv.CaptureTranscriptHomes()
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				TranscriptHomes:        homes,
 				Gate:                   gatePath,
 				Ref:                    ref,
 				Old:                    oldSHA,

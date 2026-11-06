@@ -1418,6 +1418,9 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeRunPRTextResult{OK: true}, nil
 	})
+	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
@@ -1502,7 +1505,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.handleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.PiProfile, p.ReviewerProfile)
+		runID, err := mgr.handleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
 			return nil, err
 		}
