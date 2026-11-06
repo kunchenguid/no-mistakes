@@ -21,6 +21,16 @@ type Repo struct {
 	URLsVerified bool `json:"-"`
 }
 
+const repoReadColumns = "id, working_path, upstream_url, fork_url, default_branch, created_at"
+
+func repoScanTargets(r *Repo) []any {
+	return []any{&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt}
+}
+
+func (d *DB) repoColumns() (string, error) {
+	return d.readProjection("repos", repoReadColumns, repoScanTargets(&Repo{})...)
+}
+
 // PushURL returns the remote URL that should receive branch updates.
 func (r *Repo) PushURL() string {
 	if r == nil {
@@ -112,8 +122,12 @@ func (d *DB) RepoWorkingPaths() ([]string, error) {
 
 // GetRepos returns every authoritative repository record ordered by ID.
 func (d *DB) GetRepos() ([]*Repo, error) {
+	columns, err := d.repoColumns()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos ORDER BY id`,
+		`SELECT ` + columns + ` FROM repos ORDER BY id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get repos: %w", err)
@@ -123,7 +137,7 @@ func (d *DB) GetRepos() ([]*Repo, error) {
 	var repos []*Repo
 	for rows.Next() {
 		r := &Repo{}
-		if err := rows.Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+		if err := rows.Scan(repoScanTargets(r)...); err != nil {
 			return nil, fmt.Errorf("scan repo: %w", err)
 		}
 		repos = append(repos, r)
@@ -136,10 +150,14 @@ func (d *DB) GetRepos() ([]*Repo, error) {
 
 // GetRepo returns a repo by ID.
 func (d *DB) GetRepo(id string) (*Repo, error) {
+	columns, err := d.repoColumns()
+	if err != nil {
+		return nil, err
+	}
 	r := &Repo{}
-	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+	err = d.sql.QueryRow(
+		`SELECT `+columns+` FROM repos WHERE id = ?`, id,
+	).Scan(repoScanTargets(r)...)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -157,10 +175,14 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 // differ in case on a case-sensitive volume are different files and stay
 // distinct. A path that cannot be stat'ed matches nothing but itself.
 func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
+	columns, err := d.repoColumns()
+	if err != nil {
+		return nil, err
+	}
 	r := &Repo{}
-	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE working_path = ?`, workingPath,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+	err = d.sql.QueryRow(
+		`SELECT `+columns+` FROM repos WHERE working_path = ?`, workingPath,
+	).Scan(repoScanTargets(r)...)
 	if err == nil {
 		return r, nil
 	}
@@ -176,8 +198,12 @@ func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 // insertion order (rowid) when created_at ties, rather than to whichever row
 // sorts first by its path-derived id.
 func (d *DB) getRepoBySameFile(workingPath string) (*Repo, error) {
+	columns, err := d.repoColumns()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos ORDER BY created_at, rowid`,
+		`SELECT ` + columns + ` FROM repos ORDER BY created_at, rowid`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get repo by path: %w", err)
@@ -187,7 +213,7 @@ func (d *DB) getRepoBySameFile(workingPath string) (*Repo, error) {
 	var target os.FileInfo
 	for rows.Next() {
 		r := &Repo{}
-		if err := rows.Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+		if err := rows.Scan(repoScanTargets(r)...); err != nil {
 			return nil, fmt.Errorf("scan repo: %w", err)
 		}
 		if target == nil {

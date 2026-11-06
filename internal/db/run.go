@@ -138,42 +138,11 @@ type Run struct {
 const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
 
 func (d *DB) runColumns() (string, error) {
-	rows, err := d.sql.Query(`SELECT name FROM pragma_table_info('runs')`)
-	if err != nil {
-		return "", fmt.Errorf("read run schema: %w", err)
-	}
-	defer rows.Close()
-	present := make(map[string]bool)
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return "", fmt.Errorf("read run schema: %w", err)
-		}
-		present[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("read run schema: %w", err)
-	}
-	columns := strings.Split(runColumns, ", ")
-	for i, name := range columns {
-		if !present[name] {
-			columns[i] = "NULL"
-		}
-		switch name {
-		case "ci_ready_no_ci", "push_active", "parked_ms", "omit_intent":
-			columns[i] = "COALESCE(" + columns[i] + ", 0)"
-		case "quota_routing":
-			columns[i] = "COALESCE(" + columns[i] + ", '')"
-		}
-	}
-	return strings.Join(columns, ", "), nil
+	return d.readProjection("runs", runColumns, runScanTargets(&Run{}, &sql.NullString{})...)
 }
 
-func scanRun(row interface {
-	Scan(...any) error
-}, r *Run) error {
-	var storedClosingIssues sql.NullString
-	err := row.Scan(
+func runScanTargets(r *Run, storedClosingIssues *sql.NullString) []any {
+	return []any{
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI, &r.CIReleasedAt,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
@@ -182,11 +151,18 @@ func scanRun(row interface {
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
-		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
+		storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
 		&r.ReviewerProfile,
-	)
+	}
+}
+
+func scanRun(row interface {
+	Scan(...any) error
+}, r *Run) error {
+	var storedClosingIssues sql.NullString
+	err := row.Scan(runScanTargets(r, &storedClosingIssues)...)
 	if err != nil {
 		return err
 	}
@@ -1587,7 +1563,11 @@ func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
 // that what was written survives a restart.
 func (d *DB) GetRunGates(id string) (string, error) {
 	var gates sql.NullString
-	err := d.sql.QueryRow(`SELECT gates_json FROM runs WHERE id = ?`, id).Scan(&gates)
+	columns, err := d.readProjection("runs", "gates_json", &gates)
+	if err != nil {
+		return "", err
+	}
+	err = d.sql.QueryRow(`SELECT `+columns+` FROM runs WHERE id = ?`, id).Scan(&gates)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

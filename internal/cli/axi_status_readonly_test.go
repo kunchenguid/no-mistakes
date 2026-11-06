@@ -107,7 +107,7 @@ func TestAxiStatusReadOnly(t *testing.T) {
 	for _, preFork := range []bool{false, true} {
 		name := "v1.106.1"
 		if preFork {
-			name += " without fork registration"
+			name += " without additive metadata"
 		}
 		t.Run("released schema/"+name, func(t *testing.T) {
 			dir, _, _, repo := setupAxiQueryRepo(t)
@@ -153,18 +153,35 @@ func TestAxiStatusReadOnly(t *testing.T) {
 				if _, err := writer.Exec("ALTER TABLE repos DROP COLUMN fork_url"); err != nil {
 					t.Fatal(err)
 				}
+				for _, column := range []string{"reviewed_head_sha", "starting_head_sha", "trusted_config_sha", "global_config_yaml", "repo_config_yaml", "user_findings_json", "selected_finding_ids", "selection_source", "fix_summary", "repair_published", "response_origin"} {
+					if _, err := writer.Exec("ALTER TABLE step_rounds DROP COLUMN " + column); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, column := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit", "round_started_at", "override_reason", "skip_reason", "approval_reason", "failure_cause", "carried_from", "response_origin"} {
+					if _, err := writer.Exec("ALTER TABLE step_results DROP COLUMN " + column); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if _, err := writer.Exec(`INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at) VALUES (?, ?, ?, 'main', 1)`, repo.ID, dir, repo.UpstreamURL); err != nil {
 				t.Fatal(err)
 			}
 			const id = "released-schema-run"
-			if _, err := writer.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, ?, 'feature/released-schema', 'head', 'base', 'running', 1, 2)`, id, repo.ID); err != nil {
+			head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+			if _, err := writer.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, created_at, updated_at) VALUES (?, ?, 'feature/released-schema', ?, ?, ?, 'running', 1, 2)`, id, repo.ID, head, base, head); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := writer.Exec(`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES ('released-schema-step', ?, 'test', ?, 'running')`, id, types.StepTest.Order()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := writer.Exec(`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, duration_ms, created_at) VALUES ('released-schema-round', 'released-schema-step', 1, 'initial', 1, 1)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES ('released-schema-document', ?, 'document', ?, 'completed')`, id, types.StepDocument.Order()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(`INSERT INTO agent_invocations (id, run_id, step_name, round, purpose, agent, session_mode, started_at, completed_at, duration_ms, exit_status) VALUES ('released-schema-invocation', ?, 'document', 1, 'housekeeping', 'fake', 'cold', 1, 2, 1, 'success')`, id); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.MkdirAll(p.RunLogDir(id), 0o755); err != nil {
@@ -185,11 +202,69 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			if _, err := tx.Exec("UPDATE runs SET updated_at = updated_at + 1 WHERE id = ?", id); err != nil {
 				t.Fatal(err)
 			}
+			assertAnnotations := func(args ...string) {
+				t.Helper()
+				out, err := query(t, dir, args...)
+				if err != nil {
+					t.Fatalf("legacy annotations: %v\n%s", err, out)
+				}
+				var doc struct {
+					Run struct {
+						Shared []struct {
+							Step  string `toon:"attributed_to"`
+							Scope string `toon:"scope"`
+						} `toon:"shared_work"`
+						Active []struct {
+							Step  string `toon:"step"`
+							Round string `toon:"round"`
+						} `toon:"active_steps"`
+					} `toon:"run"`
+				}
+				if err := toon.UnmarshalString(out, &doc); err != nil {
+					t.Fatal(err)
+				}
+				var housekeeping bool
+				for _, work := range doc.Run.Shared {
+					housekeeping = housekeeping || (work.Step == "document" && work.Scope == "document+lint housekeeping")
+				}
+				if !housekeeping || len(doc.Run.Active) != 1 || doc.Run.Active[0].Step != "test" || doc.Run.Active[0].Round != "round 1" {
+					t.Fatalf("legacy reads lost round or invocation evidence:\n%s", out)
+				}
+			}
+			assertBranch := func(status string) {
+				t.Helper()
+				out, err := query(t, dir, "--branch", "feature/released-schema")
+				if err != nil {
+					t.Fatalf("legacy branch snapshot: %v\n%s", err, out)
+				}
+				var doc struct {
+					Schema string `toon:"schema"`
+					Run    struct {
+						ID    string `toon:"id"`
+						Steps []struct {
+							Step     string `toon:"step"`
+							Recorded bool   `toon:"recorded"`
+							Status   any    `toon:"status"`
+						} `toon:"steps"`
+					} `toon:"run"`
+				}
+				if err := toon.UnmarshalString(out, &doc); err != nil {
+					t.Fatal(err)
+				}
+				for _, step := range doc.Run.Steps {
+					if doc.Schema == "branch-publication.v1" && doc.Run.ID == id && step.Step == "test" && step.Recorded && step.Status == status {
+						return
+					}
+				}
+				t.Fatalf("legacy snapshot lost Test state:\n%s", out)
+			}
 			for range 3 {
 				for _, args := range [][]string{nil, {"--run", id}} {
 					assertRun(t, dir, id, "test", "running", args...)
 					assertLogs(t, dir, id, args...)
+					assertAnnotations(args...)
 				}
+				assertBranch("running")
 			}
 			if err := tx.Rollback(); err != nil {
 				t.Fatal(err)
@@ -201,6 +276,7 @@ func TestAxiStatusReadOnly(t *testing.T) {
 				assertRun(t, dir, id, "test", "completed", args...)
 				assertLogs(t, dir, id, args...)
 			}
+			assertBranch("completed")
 			var after int
 			if err := writer.QueryRow("PRAGMA schema_version").Scan(&after); err != nil || after != before {
 				t.Fatalf("queries changed the released schema: before=%d after=%d err=%v", before, after, err)
