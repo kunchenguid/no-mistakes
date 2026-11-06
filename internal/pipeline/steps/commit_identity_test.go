@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
@@ -64,7 +65,7 @@ func TestAgentCommitRewritePreservesAuthorAndBindsCommitter(t *testing.T) {
 }
 
 func TestCommitIdentitySubprocessesPreserveRepositoryIdentity(t *testing.T) {
-	for _, entry := range []string{"command", "shell", "repository command", "configured test"} {
+	for _, entry := range []string{"shell", "repository command", "configured test"} {
 		t.Run(entry, func(t *testing.T) {
 			sctx, dir, _ := agentCommitContext(t, nil)
 			identity := git.CommitIdentity{AuthorName: "Submitting Author", AuthorEmail: "author@example.test", CommitterName: "Submitting Committer", CommitterEmail: "committer@example.test"}
@@ -101,26 +102,19 @@ func TestCommitIdentitySubprocessesPreserveRepositoryIdentity(t *testing.T) {
 					"GIT_CONFIG_KEY_1=author.email", "GIT_CONFIG_VALUE_1=step-config@example.test",
 					"GIT_CONFIG_PARAMETERS='committer.name=Step Config Committer' 'committer.email'='step-config@example.test'",
 				)
-				if entry == "command" {
-					cmd := stepCmd(sctx, "git", "-C", target, "commit", "--allow-empty", "-m", "subprocess")
-					if out, err := cmd.CombinedOutput(); err != nil {
-						t.Fatalf("command: %v: %s", err, out)
-					}
+				command := "git -C " + target + " commit --allow-empty -m subprocess"
+				var out string
+				var code int
+				var err error
+				if entry == "shell" {
+					out, code, err = runStepShellCommand(sctx, command)
+				} else if entry == "configured test" {
+					out, code, err = runRepositoryCommand(sctx, "test", command)
 				} else {
-					command := "git -C " + target + " commit --allow-empty -m subprocess"
-					var out string
-					var code int
-					var err error
-					if entry == "shell" {
-						out, code, err = runStepShellCommand(sctx, command)
-					} else if entry == "configured test" {
-						out, code, err = runRepositoryCommand(sctx, "test", command)
-					} else {
-						out, code, err = executeRepositoryCommand(sctx, "identity", command)
-					}
-					if err != nil || code != 0 {
-						t.Fatalf("%s: exit=%d err=%v: %s", entry, code, err, out)
-					}
+					out, code, err = executeRepositoryCommand(sctx, "identity", command)
+				}
+				if err != nil || code != 0 {
+					t.Fatalf("%s: exit=%d err=%v: %s", entry, code, err, out)
 				}
 			}
 			for target, want := range map[string]string{
@@ -132,6 +126,67 @@ func TestCommitIdentitySubprocessesPreserveRepositoryIdentity(t *testing.T) {
 				}
 				if got := gitCmd(t, target, "show", "-s", "--format=%at %ct"); got == "946684800 946684800" {
 					t.Error("subprocess inherited daemon commit dates")
+				}
+			}
+		})
+	}
+}
+
+func TestCommandScopeGitConfigIsLimitedToPipelineOperations(t *testing.T) {
+	sctx, _, head := agentCommitContext(t, nil)
+	identity := git.CommitIdentity{AuthorName: "Submitter", AuthorEmail: "submitter@example.test", CommitterName: "Submitter", CommitterEmail: "submitter@example.test"}
+	sctx.Ctx = git.WithCommitIdentity(sctx.Ctx, identity)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "http.extraHeader")
+	t.Setenv("GIT_CONFIG_VALUE_0", "X-Synthetic: operator")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'http.proxy=http://synthetic.invalid:3128'")
+	sctx.Env, _ = fakeGH(t, "https://example.test/owner/repo/pull/1")
+	sctx.Env = append(sctx.Env, "FAKE_CLI_MODE=git-passthrough")
+	sctx.ForgeContext = &forgecontext.Context{Environment: runenv.Overlay{Set: map[string]string{
+		"GIT_CONFIG_KEY_99": "http.extraHeader", "GIT_CONFIG_VALUE_99": "Orphan Forge",
+	}}}
+	for _, entry := range []string{"git", "git tree", "git env", "provider"} {
+		t.Run(entry, func(t *testing.T) {
+			for key, want := range map[string]string{
+				"http.extraHeader": "X-Synthetic: operator",
+				"http.proxy":       "http://synthetic.invalid:3128",
+			} {
+				var got string
+				var err error
+				switch entry {
+				case "git":
+					got, err = stepGitRun(sctx, "config", "--get", key)
+				case "git tree":
+					got, err = stepGitRunTree(sctx, "config", "--get", key)
+				case "git env":
+					got, err = stepGitRunEnv(sctx, []string{"GIT_AUTHOR_NAME=Contributor"}, "config", "--get", key)
+				case "provider":
+					out, runErr := stepCmd(sctx, "gh", "config", "--get", key).CombinedOutput()
+					got, err = strings.TrimSpace(string(out)), runErr
+				}
+				if err != nil || got != want {
+					t.Fatalf("%s config %s = %q, %v, want %q", entry, key, got, err, want)
+				}
+			}
+		})
+	}
+	for _, entry := range []string{"configured test", "shell", "base test"} {
+		t.Run(entry, func(t *testing.T) {
+			for _, key := range []string{"http.extraHeader", "http.proxy"} {
+				command := "git config --get " + key
+				var out string
+				var code int
+				var err error
+				switch entry {
+				case "configured test":
+					out, code, err = runRepositoryCommand(sctx, "test", command)
+				case "shell":
+					out, code, err = runStepShellCommand(sctx, command)
+				case "base test":
+					out, code, err = runTestCommandOnBase(sctx, command, head)
+				}
+				if err != nil || code != 1 || strings.TrimSpace(out) != "" {
+					t.Fatalf("%s inherited %s: %q, exit=%d, err=%v", entry, key, out, code, err)
 				}
 			}
 		})
