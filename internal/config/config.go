@@ -461,6 +461,9 @@ type RepoConfig struct {
 	// pushed branch cannot opt its own integration out of the shape the
 	// maintainer chose.
 	Rebase RebaseRaw `yaml:"rebase"`
+	// Push reserves publication for an external publisher when declared paths
+	// match. It is trusted-only, regardless of allow_repo_commands.
+	Push   Push      `yaml:"push"`
 	Commit CommitRaw `yaml:"commit"`
 	Intent IntentRaw `yaml:"intent"`
 	Test   TestRaw   `yaml:"test"`
@@ -1021,6 +1024,7 @@ type Config struct {
 	AutoFix        AutoFix
 	CI             CI
 	Rebase         Rebase
+	Push           Push
 	Commit         Commit
 	Intent         Intent
 	Test           Test
@@ -3601,6 +3605,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// in either direction, so it is trusted-only regardless of
 		// allow_repo_commands.
 		effective.Rebase = trusted.Rebase
+		effective.Push = copyPush(trusted.Push)
 		// test.evidence.branch names the git ref evidence commits are pushed
 		// to with the maintainer's credentials. It is trusted-only so a pushed
 		// branch cannot aim them at another branch of the repository; the rest
@@ -3652,6 +3657,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.NoCI = false
 		effective.CI = CIRaw{}
 		effective.Rebase = RebaseRaw{}
+		effective.Push = Push{}
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
 		effective.Test.Prepare = false
@@ -4384,6 +4390,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		AutoFix:        af,
 		CI:             ci,
 		Rebase:         rebase,
+		Push:           copyPush(repo.Push),
 		Commit:         commit,
 		Intent:         intent,
 		Test:           test,

@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const externalPublisherYAML = `push:
@@ -87,7 +88,8 @@ func TestPublication_ExternalPublisher(t *testing.T) {
 				gitCmd(t, dir, "commit", "-m", "pipeline correction")
 				validated := gitCmd(t, dir, "rev-parse", "HEAD")
 				env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
-				sctx.Env = env
+				traceFile := filepath.Join(t.TempDir(), "git-trace.txt")
+				sctx.Env = append(env, "GIT_TRACE="+traceFile)
 				if repair {
 					_, err = (&CIStep{}).publishRepair(sctx, validated)
 				} else {
@@ -109,11 +111,18 @@ func TestPublication_ExternalPublisher(t *testing.T) {
 						t.Fatalf("validated head changed: %s", got)
 					}
 					calls, readErr := os.ReadFile(logFile)
-					if readErr != nil {
+					if readErr != nil && !os.IsNotExist(readErr) {
 						t.Fatal(readErr)
 					}
 					if len(calls) != 0 {
 						t.Fatalf("forge called before refusal: %s", calls)
+					}
+					trace, traceErr := os.ReadFile(traceFile)
+					if traceErr != nil {
+						t.Fatal(traceErr)
+					}
+					if strings.Contains(string(trace), "built-in: git push ") || strings.Contains(string(trace), "built-in: git ls-remote ") {
+						t.Fatalf("remote publication consulted before refusal: %s", trace)
 					}
 					return
 				}
@@ -129,6 +138,11 @@ func TestPublication_ExternalPublisher(t *testing.T) {
 }
 
 func TestPublication_ExternalPublisherRecovery(t *testing.T) {
+	t.Run("push", func(t *testing.T) { testExternalPublisherRecovery(t, false) })
+	t.Run("repair", func(t *testing.T) { testExternalPublisherRecovery(t, true) })
+}
+
+func testExternalPublisherRecovery(t *testing.T, repair bool) {
 	dir, base, submitted := setupGitRepo(t)
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -167,7 +181,14 @@ func TestPublication_ExternalPublisherRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Merge(global, config.EffectiveRepoConfig(nil, trusted, false))
-	exec := pipeline.NewExecutor(sctx.DB, app, cfg, sctx.Agent, []pipeline.Step{&PushStep{}}, nil)
+	var publication pipeline.Step = &PushStep{}
+	if repair {
+		publication = &transitionStep{name: types.StepCI, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			_, err := (&CIStep{}).publishRepair(sctx, validated)
+			return nil, err
+		}}
+	}
+	exec := pipeline.NewExecutor(sctx.DB, app, cfg, sctx.Agent, []pipeline.Step{publication}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, work); err == nil || !strings.Contains(err.Error(), "external publisher") {
 		t.Fatalf("expected policy refusal, got %v", err)
 	}
@@ -175,10 +196,47 @@ func TestPublication_ExternalPublisherRecovery(t *testing.T) {
 	gitCmd(t, gate, "worktree", "remove", work)
 	service := &branchsync.Service{DB: sctx.DB, Repo: sctx.Repo, WorkDir: dir, GateDir: gate}
 	state := service.Recover(context.Background(), false)
+	if !state.Recovered {
+		t.Fatalf("normal custody recovery refused: %+v", state)
+	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != validated {
 		t.Fatalf("normal recovery did not restore %s: got %s, state=%+v", validated, got, state)
 	}
 	if got := gitCmd(t, dir, "show", "HEAD:correction.txt"); got != "pipeline correction" {
 		t.Fatalf("recovered correction = %q", got)
+	}
+}
+
+func TestPublication_ExternalPublisherUsesCommitTree(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	global, err := config.LoadGlobalFromBytes([]byte("{}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The brackets are literal filename characters, not a glob expression.
+	trusted, err := config.LoadRepoFromBytes([]byte(strings.Replace(externalPublisherYAML, ".shipping-gate.json", "literal[gate].json", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Config = config.Merge(global, config.EffectiveRepoConfig(nil, trusted, false))
+	marker := filepath.Join(dir, "literal[gate].json")
+	if err := os.WriteFile(marker, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertExternalPublisherPolicy(sctx, head); err != nil {
+		t.Fatalf("untracked marker matched the commit: %v", err)
+	}
+	gitCmd(t, dir, "add", "literal[gate].json")
+	gitCmd(t, dir, "commit", "-m", "install external gate")
+	installed := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertExternalPublisherPolicy(sctx, installed); err == nil {
+		t.Fatal("worktree deletion disabled a committed declaration")
+	}
+	if err := assertExternalPublisherPolicy(sctx, strings.Repeat("f", 40)); err == nil {
+		t.Fatal("unreadable proposed tree permitted publication")
 	}
 }
