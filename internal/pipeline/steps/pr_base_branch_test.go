@@ -69,7 +69,7 @@ func TestPRStep_UsesPerRunBaseBranch(t *testing.T) {
 	ensureLocalBranch(t, dir, "epic/feature", baseSHA)
 	env, logFile := fakeGH(t, "")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.BaseBranch = "develop"
 	runBase := "epic/feature"
@@ -94,7 +94,7 @@ func TestPRStep_PerRunBaseBranchOverridesRepoConfig(t *testing.T) {
 	ensureLocalBranch(t, dir, "epic/feature", baseSHA)
 	env, logFile := fakeGH(t, "")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.BaseBranch = "develop"
 	runBase := "epic/feature"
@@ -119,7 +119,7 @@ func TestPRStep_RetargetsExistingPRWhenPerRunBaseDiffers(t *testing.T) {
 	ensureLocalBranch(t, dir, "epic/feature", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	runBase := "epic/feature"
 	sctx.Run.PRBaseBranch = &runBase
@@ -151,7 +151,7 @@ func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.BaseBranch = "main"
 
@@ -238,7 +238,7 @@ func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 	ensureLocalBranch(t, dir, "epic/feature", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/99", "develop")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	runBase := "epic/feature"
 	sctx.Run.PRBaseBranch = &runBase
@@ -393,7 +393,7 @@ func TestPRStep_SkipsWhenBranchEqualsPerRunBase(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	env, _ := fakeGH(t, "")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.Branch = "epic/feature"
 	runBase := "epic/feature"
@@ -424,7 +424,7 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 	developTip := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "develop")
 
-	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	sctx.Run.Branch = "refs/heads/feature"
 	runBase := "epic/feature"
@@ -486,7 +486,7 @@ func TestRebaseStep_UsesPerRunPRBaseBranch(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "task")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, epicSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, epicSHA, headSHA, config.Commands{})
 	sctx.Run.Branch = "refs/heads/task"
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Config.PR.BaseBranch = "main"

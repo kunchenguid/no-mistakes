@@ -1,6 +1,17 @@
 package pipeline
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
+)
+
+type PublishedPush struct {
+	RunID           string
+	RepoID          string
+	Binding         db.PushBinding
+	PreviousHeadSHA string
+}
 
 // HousekeepingLintResult is the lint assessment produced by the combined
 // document+lint housekeeping pass: the document step performs both duties in
@@ -22,6 +33,28 @@ type RunShared struct {
 	mu               sync.Mutex
 	prepared         bool
 	housekeepingLint *HousekeepingLintResult
+	publishedPush    *PublishedPush
+}
+
+func (s *RunShared) SetPublishedPush(result PublishedPush) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.publishedPush = &result
+}
+
+func (s *RunShared) PublishedPush() (PublishedPush, bool) {
+	if s == nil {
+		return PublishedPush{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.publishedPush == nil {
+		return PublishedPush{}, false
+	}
+	return *s.publishedPush, true
 }
 
 // EnsurePrepared runs prepare once successfully for this executor lifetime.

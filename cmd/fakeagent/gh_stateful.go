@@ -65,6 +65,17 @@ func runGhStatefulPRStub(args []string) int {
 		// the call the GitHub provider uses instead of `gh pr edit`.
 		return state.patchPR(statePath, args, stdin)
 	}
+	if len(args) > 0 && args[0] == "api" {
+		if target, number, ok := ghPullEndpoint(args); ok {
+			for _, pr := range state.PRs {
+				if pr.Number == number {
+					return writeGhPullProof(target, target, pr.Head, ghStatefulHeadOID(target, pr.Head), pr.Number, pr.URL, pr.State)
+				}
+			}
+			fmt.Fprintln(os.Stderr, "no pull request for proof read")
+			return 1
+		}
+	}
 	if len(args) >= 1 && args[0] == "api" && slices.Contains(args, "graphql") {
 		// The forge has no checks, workflow runs or review threads: answer the commit
 		// check rollup and review-thread queries with empty results.
@@ -189,6 +200,32 @@ func runGhStatefulPRStub(args []string) int {
 	}
 	data, _ := json.Marshal(out)
 	fmt.Println(string(data))
+	return 0
+}
+
+func ghPullEndpoint(args []string) (string, int, bool) {
+	for _, arg := range args {
+		parts := strings.Split(arg, "/")
+		if len(parts) != 5 || parts[0] != "repos" || parts[3] != "pulls" {
+			continue
+		}
+		number, err := strconv.Atoi(parts[4])
+		if err == nil && number > 0 {
+			return parts[1] + "/" + parts[2], number, true
+		}
+	}
+	return "", 0, false
+}
+
+func writeGhPullProof(repo, source, branch, head string, number int, url, state string) int {
+	err := json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"number": number, "html_url": url, "state": strings.ToLower(state), "merged": state == "MERGED",
+		"base": map[string]any{"repo": map[string]string{"full_name": repo}},
+		"head": map[string]any{"ref": branch, "sha": head, "repo": map[string]any{"full_name": source, "owner": map[string]string{"login": strings.Split(source, "/")[0]}}},
+	})
+	if err != nil {
+		return 1
+	}
 	return 0
 }
 
