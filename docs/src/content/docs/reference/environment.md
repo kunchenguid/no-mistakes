@@ -196,6 +196,32 @@ Disable background update checks.
 
 Update checks run on every CLI invocation except `update` itself and version queries (`--version` / `-v`, which stay side-effect-free), fetch the GitHub release-asset channel manifest, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) and binaries that resolve into `/nix/store` suppress the check automatically.
 
+## `CLAUDE_CONFIG_DIR`
+
+Claude Code account directory used for intent transcript discovery.
+
+|         |             |
+| ------- | ----------- |
+| Type    | `string`    |
+| Default | `~/.claude` |
+
+no-mistakes reads Claude Code transcripts from `$CLAUDE_CONFIG_DIR/projects`.
+
+For both `CLAUDE_CONFIG_DIR` and [`CODEX_HOME`](#codex_home), CLI launches, push-hook notifications, and TUI reruns capture the caller's values, using the caller's home directory for defaults when a variable is unset or empty. The selected roots are stored with the run and survive daemon recovery, independently of the daemon's environment. A rerun captures the current caller's selection. A retry continuation retains the failed run's selection. Historical runs without recorded roots retain default-path discovery.
+
+Each selected root must be an absolute path. Relative paths, literal unexpanded `~` paths, and unresolved defaults disable only that provider's discovery and log the rejection in the Intent step. They do not prevent the run from starting or disable discovery for the other provider. Missing or unreadable selected homes never fall back to another account. These settings select transcripts and do not change pipeline-agent authentication.
+
+## `CODEX_HOME`
+
+Codex account directory used for intent transcript discovery.
+
+|         |            |
+| ------- | ---------- |
+| Type    | `string`   |
+| Default | `~/.codex` |
+
+no-mistakes reads Codex metadata from `$CODEX_HOME/state_*.sqlite` and transcripts from the referenced rollout files. Relative rollout paths resolve against the selected Codex home. The [caller-selection, persistence, and failure rules](#claude_config_dir) also apply to this variable.
+
 ## `XDG_DATA_HOME`
 
 Data directory used to discover OpenCode transcripts for intent extraction.
@@ -337,4 +363,4 @@ On macOS and Linux, set this variable before `no-mistakes init` to include it in
 
 When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), the macOS and Linux service definitions include a default `PATH` with common user and system binary directories. They also bake in any proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`) that were set when you installed or refreshed the service, so the daemon and the agents it spawns can reach the network through your proxy even when the login-shell probe is unavailable. Once baked in, the values are preserved across later service refreshes and restarts even when the proxy variables are not exported in that shell, so a routine `daemon restart` or a binary upgrade will not strip them; export the variables again only when you need to change or remove them. Both the upper- and lower-case spellings are forwarded exactly as you set them, because tooling is inconsistent about which it reads (curl, for example, honors only the lower-case `http_proxy` for plain-HTTP requests). Because a proxy URL can embed credentials (for example `http://user:pass@host`), the generated service file is restricted to owner-only `0600` permissions whenever proxy or telemetry values are forwarded into it. When neither is forwarded, the generated definition keeps the conventional `0644` mode. Windows Task Scheduler inherits your logon environment and needs no forwarding. At daemon startup, the daemon resolves environment once from your login shell on macOS and Linux (`$SHELL -l -i -c 'env -0'` for bash and zsh, run in its own session so an interactive shell never waits on a terminal), preserves your shell `PATH` order, and appends any missing well-known directories such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`. When the login shell binary itself does not exist yet, which happens on macOS with nix-darwin when the daemon starts at login before `/run/current-system` has been recreated, startup waits for it with backoff for up to a minute before giving up. If login-shell resolution still fails or returns no entries, the daemon logs a warning and uses an augmented process-environment fallback that may omit version-manager directories such as nvm, fnm, or volta. Restart the daemon to pick up a login shell that appeared or changed after startup. On Windows it reuses the current process environment.
 
-Apart from the proxy variables and `NO_MISTAKES_TELEMETRY` forwarded on macOS and Linux, the daemon needs your env vars in the login shell's rc files (`.zprofile`, `.zshrc`, `.profile`, `.bash_profile`, `.bashrc`, PowerShell profile) or, on Windows, in the logon environment. Put them somewhere the daemon will inherit or load, then restart it to pick them up.
+For variables inherited by the daemon and its child processes, apart from the proxy variables and `NO_MISTAKES_TELEMETRY` forwarded on macOS and Linux, use the login shell's rc files (`.zprofile`, `.zshrc`, `.profile`, `.bash_profile`, `.bashrc`, PowerShell profile) or, on Windows, the logon environment. Put them somewhere the daemon will inherit or load, then restart it to pick them up. Caller-selected [transcript homes](#claude_config_dir) follow their own capture rules above.
