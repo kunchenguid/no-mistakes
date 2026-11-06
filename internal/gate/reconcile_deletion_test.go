@@ -12,7 +12,7 @@ import (
 )
 
 func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
-	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream", "selected_restores", "selected_deletes", "missing_base", "unknown_base"} {
+	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream", "selected_restores", "selected_deletes", "missing_base", "unknown_base", "missing_upstream", "stale_origin"} {
 		t.Run(change, func(t *testing.T) {
 			work := initReconcileRepo(t)
 			reconcileGit(t, work, "branch", "-M", "main")
@@ -130,15 +130,23 @@ done
 				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			}
 			if change == "upstream_failure" {
-				reconcileGit(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+				upstream = filepath.Join(t.TempDir(), "missing.git")
+				reconcileGit(t, work, "remote", "set-url", "origin", upstream)
 			}
 			if change == "missing_base" {
 				selectedBase = ""
 			} else if change == "unknown_base" {
 				selectedBase = "missing"
 			}
-			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", selectedBase)
-			publicationPlan, publicationErr := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, selectedBase)
+			proofUpstream := ReconciliationUpstream{URL: upstream, BaseBranch: selectedBase}
+			if change == "missing_upstream" {
+				proofUpstream.URL = ""
+			}
+			if change == "stale_origin" {
+				reconcileGit(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+			}
+			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", proofUpstream)
+			publicationPlan, publicationErr := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, proofUpstream)
 			if (err == nil) != (publicationErr == nil) || plan.Reconcile != publicationPlan.Reconcile {
 				t.Fatalf("submission/publication differ: plan=%+v err=%v; publication=%+v err=%v", plan, err, publicationPlan, publicationErr)
 			}
@@ -148,7 +156,7 @@ done
 			if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
 				t.Fatalf("planning created archive %s", tags)
 			}
-			if change != "kept" && change != "later_edit" && change != "selected_deletes" {
+			if change != "kept" && change != "later_edit" && change != "selected_deletes" && change != "stale_origin" {
 				if err == nil || plan.Reconcile {
 					t.Fatalf("lost content accepted: plan=%+v err=%v", plan, err)
 				}

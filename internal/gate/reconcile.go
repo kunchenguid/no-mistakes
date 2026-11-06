@@ -18,6 +18,13 @@ type StaleBranchReconciliation struct {
 	ArchivedTag  string
 }
 
+// ReconciliationUpstream binds the upstream URL and integration branch selected
+// by the caller. An empty field gives no base-deletion credit.
+type ReconciliationUpstream struct {
+	URL        string
+	BaseBranch string
+}
+
 // StaleBranchPlan is the verdict of a non-mutating stale-branch inspection.
 // Planning checks containment, recovery-anchor preservation, or the exact
 // run-owned-head policy exception without touching any ref, so a caller can
@@ -42,8 +49,8 @@ type StaleBranchPlan struct {
 // contains all of its content or a recovery anchor preserves each private-only
 // commit that proof misses, or under the exact run-owned-head exception
 // described in docs/src/content/docs/concepts/gate-model.md.
-func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead, selectedBase string) (StaleBranchReconciliation, error) {
-	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, selectedBase)
+func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, upstream ReconciliationUpstream) (StaleBranchReconciliation, error) {
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, upstream)
 	if err != nil || !plan.Reconcile {
 		return StaleBranchReconciliation{}, err
 	}
@@ -63,8 +70,8 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // PlanMirrorPublicationReconciliation instead. The contract and rationale are
 // owned by docs/src/content/docs/concepts/gate-model.md (Private mirror
 // reconciliation).
-func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead, selectedBase string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, selectedBase, false, runOwnedHead)
+func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, upstream ReconciliationUpstream) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, upstream, false, runOwnedHead)
 }
 
 // PlanMirrorPublicationReconciliation is the pipeline-publication variant of
@@ -75,11 +82,11 @@ func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 // agent-created head nor any other recorded head is eligible; every other
 // mirror head still needs the full preservation proof or the recovery-anchor
 // preservation credit.
-func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, selectedBase string, runOwnedHeads ...string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, selectedBase, true, runOwnedHeads...)
+func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, upstream ReconciliationUpstream, runOwnedHeads ...string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, upstream, true, runOwnedHeads...)
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, selectedBase string, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, upstream ReconciliationUpstream, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
@@ -165,7 +172,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 			}
 		}
 		if len(remaining) > 0 {
-			if contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, workDir, liveHead, gateHead, selectedBase); contained && err == nil {
+			if contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, liveHead, gateHead, upstream); contained && err == nil {
 				remaining = nil
 			}
 		}
@@ -516,31 +523,21 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 // from live may be removed from the private tree for this proof. All remaining
 // content must pass the ordinary whole-tree survival proof. In particular, a
 // deletion made only on the branch earns no credit.
-func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, liveHead, privateHead, selectedBase string) (bool, error) {
-	selectedBase = strings.TrimSpace(selectedBase)
-	if selectedBase == "" {
+func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, liveHead, privateHead string, upstream ReconciliationUpstream) (bool, error) {
+	selectedBase := strings.TrimSpace(upstream.BaseBranch)
+	upstreamURL := strings.TrimSpace(upstream.URL)
+	if selectedBase == "" || upstreamURL == "" {
 		return false, nil
 	}
-	if _, err := git.Run(ctx, workDir, "check-ref-format", "refs/heads/"+selectedBase); err != nil {
+	if _, err := git.Run(ctx, repoDir, "check-ref-format", "refs/heads/"+selectedBase); err != nil {
 		return false, err
-	}
-	hasOrigin, err := git.HasRemote(ctx, workDir, "origin")
-	if err != nil || !hasOrigin {
-		return false, err
-	}
-	urls, err := git.GetConfiguredRemoteURLs(ctx, workDir, "origin")
-	if err != nil {
-		return false, err
-	}
-	if len(urls) != 1 {
-		return false, fmt.Errorf("origin must have exactly one upstream URL")
 	}
 	upstreamRef := "refs/heads/" + selectedBase
-	upstreamHead, err := git.LsRemote(ctx, workDir, urls[0], upstreamRef)
+	upstreamHead, err := git.LsRemote(ctx, repoDir, upstreamURL, upstreamRef)
 	if err != nil || upstreamHead == "" {
 		return false, err
 	}
-	if err := git.FetchRemoteRef(ctx, repoDir, urls[0], upstreamRef, upstreamHead); err != nil {
+	if err := git.FetchRemoteRef(ctx, repoDir, upstreamURL, upstreamRef, upstreamHead); err != nil {
 		return false, err
 	}
 	base, err := git.Run(ctx, repoDir, "merge-base", "--all", liveHead, upstreamHead)

@@ -122,7 +122,11 @@ When a rebase accepted a file deletion from the selected integration base,
 private edits to that file cause a modify/delete conflict even with
 live-favoring resolution. If the ordinary proofs leave content at risk,
 the deletion-aware proof reads and fetches the exact live selected base head
-from `origin`. The caller supplies the integration branch selected under the
+from the upstream URL supplied by its caller. The URL and integration branch
+travel together; the proof never rediscovers a gate worktree's `origin` or
+default branch. Publication supplies the same resolved upstream URL used by
+rebase and push, including a refreshed checkout registration. The caller
+supplies the integration branch selected under the
 [`pr.base_branch` rules](/no-mistakes/reference/repo-config/#prbase_branch).
 AXI submission without a run override also fetches the default branch to
 resolve trusted configuration before checking whether reconciliation is needed.

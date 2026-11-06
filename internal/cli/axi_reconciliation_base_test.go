@@ -52,8 +52,12 @@ func TestSubmissionReconciliationBase(t *testing.T) {
 			}
 			t.Chdir(work)
 			env := &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}
-			if got := submissionReconciliationBase(context.Background(), env, head, tc.requested); got != tc.want {
-				t.Fatalf("selected base = %q, want %q", got, tc.want)
+			got := submissionReconciliationUpstream(context.Background(), env, head, tc.requested)
+			if got.BaseBranch != tc.want {
+				t.Fatalf("selected base = %q, want %q", got.BaseBranch, tc.want)
+			}
+			if tc.want != "" && got.URL != upstream {
+				t.Fatalf("selected upstream = %q, want %q", got.URL, upstream)
 			}
 		})
 	}

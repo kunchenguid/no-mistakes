@@ -873,7 +873,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, submissionHead); err != nil {
 		return "", err
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "", submissionReconciliationBase(ctx, env, submissionHead, baseBranch))
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "", submissionReconciliationUpstream(ctx, env, submissionHead, baseBranch))
 	if err != nil {
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
 	}
@@ -941,21 +941,25 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	return rr.RunID, nil
 }
 
-func submissionReconciliationBase(ctx context.Context, env *axiEnv, head, requested string) string {
+func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, requested string) gate.ReconciliationUpstream {
+	upstreamURL, err := git.GetRemoteURL(ctx, ".", "origin")
+	if err != nil || strings.TrimSpace(upstreamURL) == "" {
+		return gate.ReconciliationUpstream{}
+	}
 	if requested = strings.TrimSpace(requested); requested != "" {
-		return requested
+		return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: requested}
 	}
 	base := strings.TrimSpace(env.repo.DefaultBranch)
 	if base == "" {
-		return ""
+		return gate.ReconciliationUpstream{}
 	}
 	ref := "refs/heads/" + base
-	sha, err := git.LsRemote(ctx, ".", "origin", ref)
+	sha, err := git.LsRemote(ctx, ".", upstreamURL, ref)
 	if err != nil || sha == "" {
-		return ""
+		return gate.ReconciliationUpstream{}
 	}
-	if err := git.FetchRemoteRef(ctx, ".", "origin", ref, sha); err != nil {
-		return ""
+	if err := git.FetchRemoteRef(ctx, ".", upstreamURL, ref, sha); err != nil {
+		return gate.ReconciliationUpstream{}
 	}
 	readConfig := func(commit string) (*config.RepoConfig, error) {
 		entry, err := git.Run(ctx, ".", "ls-tree", commit, "--", ".no-mistakes.yaml")
@@ -973,17 +977,17 @@ func submissionReconciliationBase(ctx context.Context, env *axiEnv, head, reques
 	}
 	trusted, err := readConfig(sha)
 	if err != nil {
-		return ""
+		return gate.ReconciliationUpstream{}
 	}
 	pushed, err := readConfig(head)
 	if err != nil {
-		return ""
+		return gate.ReconciliationUpstream{}
 	}
 	effective := config.EffectiveRepoConfig(pushed, trusted, trusted.AllowRepoCommands)
 	if selected := strings.TrimSpace(effective.PR.BaseBranch); selected != "" {
-		return selected
+		return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: selected}
 	}
-	return base
+	return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: base}
 }
 
 func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
