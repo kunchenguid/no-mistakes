@@ -198,9 +198,57 @@ func isBareGitDir(dir string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// InitBare creates a new bare git repository at the given path.
+// bareRepositoryIdentity proves that path names the bare repository itself,
+// rather than a worktree or a stale directory that discovers an ancestor. The
+// returned absolute path also keeps explicit --git-dir calls correct when the
+// caller supplied a relative path. Compare canonical paths to allow symlinks.
+func bareRepositoryIdentity(ctx context.Context, path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("intended bare repository is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid intended bare repository %q: %w", path, err)
+	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("bare repository identity: intended %q, resolved %q: %w", path, "unavailable", err)
+	}
+	resolved, err := Run(ctx, canonical, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", fmt.Errorf("bare repository identity: intended %q, resolved %q: %w", path, "unavailable", err)
+	}
+	resolvedCanonical, err := filepath.EvalSymlinks(resolved)
+	if err != nil || resolvedCanonical != canonical {
+		return "", fmt.Errorf("bare repository identity mismatch: intended %q, resolved %q", path, resolved)
+	}
+	if err := ValidateBareRepository(ctx, canonical); err != nil {
+		return "", fmt.Errorf("bare repository identity: intended %q, resolved %q: %w", path, resolved, err)
+	}
+	return abs, nil
+}
+
+// InitBare creates a bare repository, or reinitializes a verified bare target.
 func InitBare(ctx context.Context, path string) error {
-	cmd := exec.CommandContext(ctx, "git", "init", "--bare", path)
+	if path == "" {
+		return fmt.Errorf("intended bare repository is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid intended bare repository %q: %w", path, err)
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect intended bare repository %q: %w", path, err)
+	}
+	if len(entries) > 0 {
+		if _, err := bareRepositoryIdentity(ctx, path); err != nil {
+			return err
+		}
+	}
+	// Pin even a new target explicitly. Never let cwd or GIT_DIR choose which
+	// repository receives init's config writes.
+	cmd := exec.CommandContext(ctx, "git", "--git-dir="+abs, "init", "--bare", abs)
 	cmd.Env = nonInteractiveEnvForContext(ctx, "")
 	winproc.Harden(cmd)
 	out, err := cmd.CombinedOutput()
