@@ -1525,12 +1525,13 @@ func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Ru
 	return "", fmt.Errorf("refusing rerun from stale gate head %s: terminal run %s recorded unpublished head %s, but that head is unavailable; inspect with `no-mistakes axi status` and reconcile custody first", gateHead, latest.ID, latest.HeadSHA)
 }
 
-// fetchRunDefaultBranch fetches the trusted branch from the refreshed
-// registration when it differs from the gate worktree's inherited origin. It
-// updates only the run worktree's existing origin tracking ref and never
-// rewrites clone or gate remote configuration. When the values agree after
-// redaction, origin remains authoritative so embedded credentials retained in
-// the gate can still authenticate without ever entering the database.
+// fetchRunDefaultBranch uses a selected destination's private ref when pinned.
+// Otherwise it fetches the trusted branch from the refreshed registration when
+// it differs from the gate worktree's inherited origin, updating origin's
+// tracking ref. Neither path rewrites clone or gate remote configuration.
+// Without a pin, when the values agree after redaction, origin remains
+// authoritative so embedded credentials retained in the gate can still
+// authenticate without ever entering the database.
 func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) error {
 	if repo.Integration != nil {
 		remote, err := repo.Integration.RuntimeURL(ctx, repo.WorkingPath)

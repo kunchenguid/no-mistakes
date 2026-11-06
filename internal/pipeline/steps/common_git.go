@@ -189,7 +189,9 @@ func normalizedBranchRef(ref string) string {
 	return ref
 }
 
-// resolveUpstreamURL returns the upstream URL to push or query. Ordinarily it
+// resolveUpstreamURL resolves a pinned destination from the invoking clone and
+// returns an empty URL if verification fails, never an origin fallback.
+// For runs without a pin it returns the upstream URL to push or query. It
 // prefers the worktree's configured "origin" remote, which inherits any
 // embedded credentials from the gate's bare repo. When run-start discovery
 // verified a different current clone URL, it prefers that refreshed repo value

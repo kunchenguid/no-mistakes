@@ -25,7 +25,7 @@ The only valid `--skip` step names are `intent`, `rebase`, `review`, `test`, `do
 
 Initialize or refresh the gate for the current repository.
 
-`init` requires an `origin` remote to identify the upstream repository: later pipeline steps push validated branches to the configured target and open pull requests against that upstream. If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
+`init` requires an `origin` remote to identify the default upstream repository. For per-run integration routing, see [`--base-remote`](#other-run-options). If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
 
 ```sh
 no-mistakes init
@@ -36,7 +36,7 @@ no-mistakes init --skip-user-skill
 
 | Flag                | Type     | Default | Description                                                                                      |
 | ------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`        | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--fork-url`        | `string` | (none)  | GitHub fork remote URL for branch pushes; see [integration routing](#other-run-options) for the PR destination |
 | `--worktree-root`   | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 | `--skip-user-skill` | `bool`   | `false` | Do not install or refresh the `/no-mistakes` agent skill at user level                           |
 
@@ -229,8 +229,8 @@ no-mistakes axi run --intent "Fix the customer release" --base-remote custom --b
 An explicit selection pins the remote name, URL and default branch on the run.
 Base lookup, fresh fetches, change scoping and forge routing use that destination,
 including after daemon recovery. Fetches use private refs and leave `origin`'s
-configuration and tracking refs unchanged. The selected destination's default
-branch supplies trusted repository settings. A configured GitHub fork still
+configuration and tracking refs unchanged. See the [repository configuration
+trust boundary](/no-mistakes/reference/repo-config/) for trusted settings. A configured GitHub fork still
 receives the head branch, while the PR targets the selected integration project.
 Other providers retain their existing restrictions on fork routing.
 
@@ -534,7 +534,7 @@ Genuine divergence still reports `safety: blocked_diverged` and changes nothing 
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
 A terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) is verified by recovery itself only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
-Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
+Synchronization verifies the run's push target and exact feature ref. The [Push step](/no-mistakes/reference/pipeline-steps/#push) owns target routing.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
 
