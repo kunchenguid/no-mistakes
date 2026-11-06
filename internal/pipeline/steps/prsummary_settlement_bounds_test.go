@@ -32,8 +32,10 @@ func TestBuildPipelineSummary_SettlementCountsAreLowerBounds(t *testing.T) {
 						{Round: 3, Trigger: "external", FindingsJSON: &empty},
 					}
 					if source == db.RoundSelectionSourceExternal {
-						rounds[0].UserFindingsJSON = &first
-						rounds[1].UserFindingsJSON = &second
+						firstSettlement := `{"findings":[{"id":"A","severity":"warning","file":"a.go","line":10,"description":"missing check","user_instructions":"Synthetic verification for the first test settlement."}]}`
+						secondSettlement := fmt.Sprintf(`{"findings":[{"id":"B","severity":"warning","file":"a.go","line":%d,"description":"missing check","user_instructions":"Synthetic verification for the second test settlement."}]}`, tc.line)
+						rounds[0].UserFindingsJSON = &firstSettlement
+						rounds[1].UserFindingsJSON = &secondSettlement
 					}
 					steps := []*db.StepResult{{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted}}
 					md, _ := BuildPipelineSummaryFor(steps, map[string][]*db.StepRound{"review": rounds}, testPipelineHeadSHA, provider)
