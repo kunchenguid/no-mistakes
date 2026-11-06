@@ -142,6 +142,9 @@ func TestMain(m *testing.M) {
 	globalConfig := filepath.Join(globalConfigDir, "gitconfig")
 	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	code := m.Run()
+	if integrationCLI.dir != "" {
+		os.RemoveAll(integrationCLI.dir)
+	}
 	os.RemoveAll(globalConfigDir)
 	os.Exit(code)
 }
