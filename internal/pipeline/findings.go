@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"strconv"
 	"strings"
@@ -77,6 +78,19 @@ func findingKey(item types.Finding) types.Finding {
 // ID, action, source, and operator instructions a later round may restate.
 func SameFinding(a, b types.Finding) bool {
 	return findingKey(a) == findingKey(b)
+}
+
+// FilteredReviewSummary is the review summary a filter substitutes when it
+// stopped reporting part of the reviewer's payload, so the operator reads a
+// sentence that counts what the payload still lists.
+func FilteredReviewSummary(items []types.Finding) string {
+	if len(items) == 0 {
+		return "no review findings remain"
+	}
+	if len(items) == 1 {
+		return "1 review finding remains"
+	}
+	return fmt.Sprintf("%d review findings remain", len(items))
 }
 
 func findingFingerprint(item types.Finding) types.Finding {

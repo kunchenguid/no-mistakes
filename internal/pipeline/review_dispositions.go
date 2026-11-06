@@ -26,14 +26,12 @@ func settleableReviewFinding(item types.Finding) bool {
 type settlementIdentities struct {
 	exact  map[types.Finding]bool
 	unique map[types.Finding]int
-	widest map[types.Finding]int
 }
 
 func newSettlementIdentities() *settlementIdentities {
 	return &settlementIdentities{
 		exact:  map[types.Finding]bool{},
 		unique: map[types.Finding]int{},
-		widest: map[types.Finding]int{},
 	}
 }
 
@@ -41,23 +39,26 @@ func newSettlementIdentities() *settlementIdentities {
 // instance, and additionally as content-matchable when that content identified
 // one finding in the payload the decision was taken from.
 func (s *settlementIdentities) record(items []types.Finding, counts map[types.Finding]int) {
-	round := make(map[types.Finding]int, len(items))
 	for _, item := range items {
-		fingerprint := findingFingerprint(item)
-		round[fingerprint]++
 		if s.exact[findingKey(item)] {
 			continue
 		}
 		s.exact[findingKey(item)] = true
+		fingerprint := findingFingerprint(item)
 		if counts[fingerprint] == 1 {
 			s.unique[fingerprint]++
 		}
 	}
-	for fingerprint, instances := range round {
-		if instances > s.widest[fingerprint] {
-			s.widest[fingerprint] = instances
-		}
+}
+
+// contents reports the distinct finding contents this set recorded, so one
+// content decided at several lines or in several rounds counts once.
+func (s *settlementIdentities) contents() map[types.Finding]bool {
+	out := make(map[types.Finding]bool, len(s.exact))
+	for key := range s.exact {
+		out[findingFingerprint(key)] = true
 	}
+	return out
 }
 
 // matches reports whether item is the finding a recorded decision named. It is
@@ -131,45 +132,35 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 		return raw, nil
 	}
 	// The reviewer's summary describes the payload it produced, and this is the
-	// code that stopped reporting part of it, so keeping the sentence would
-	// show the operator a count of findings the gate no longer lists.
-	filtered.Summary = ""
+	// code that stopped reporting part of it, so the sentence is replaced by
+	// one that counts what the gate still lists. Clearing it instead left every
+	// later round of the step with no summary at all, because each round's
+	// outstanding set is the next round's carried envelope.
+	filtered.Summary = FilteredReviewSummary(filtered.Items)
 	return types.MarshalFindingsJSON(filtered)
 }
 
-// SettledReviewFindingCount reports how many distinct findings a human
+// SettledReviewFindingCount reports how many distinct finding contents a human
 // disposition settled without a fix across this step's rounds. It reads the
 // same two sets filterSettledReviewFindings suppresses from, so a finding the
 // operator chose to fix is never published as settled. Unreadable rounds count
 // nothing: the filter fails the step on them, so a completed step's rounds
 // always parse.
 //
-// The instances are counted per content, taking the most any single round
-// settled, so one finding settled again after the reviewer moved it counts
-// once. A round's stored findings are the filtered ones, so a settled instance
-// the reviewer kept in place is already absent from the next round's payload -
-// the same shape a moved instance leaves behind. One content settled at two
-// places in two different rounds is therefore indistinguishable from one
-// settled twice, and this rule reports the lower of the two readings rather
-// than crediting the operator with a decision they may not have made.
+// The count is a lower bound: one content settled at two lines, or settled
+// again after the reviewer moved it, counts once, which is why the published
+// wording reads "at least". Its consumers need no more - the forced verdict
+// asks only whether anything was settled.
 func SettledReviewFindingCount(rounds []*db.StepRound) int {
 	ignored, external, err := settledReviewDispositions(rounds)
 	if err != nil {
 		return 0
 	}
-	settled := 0
-	for fingerprint, instances := range ignored.widest {
-		if other := external.widest[fingerprint]; other > instances {
-			instances = other
-		}
-		settled += instances
+	settled := ignored.contents()
+	for fingerprint := range external.contents() {
+		settled[fingerprint] = true
 	}
-	for fingerprint, instances := range external.widest {
-		if _, counted := ignored.widest[fingerprint]; !counted {
-			settled += instances
-		}
-	}
-	return settled
+	return len(settled)
 }
 
 // settledReviewDispositions reads this step's recorded human dispositions into

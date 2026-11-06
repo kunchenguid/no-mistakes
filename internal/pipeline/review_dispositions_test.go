@@ -537,9 +537,10 @@ func TestFilterSettledReviewFindings_TwinFindingsSettleOneInstance(t *testing.T)
 	}
 }
 
-// The PR body reports how many findings the operator settled without a fix.
-// One finding settled, moved by a later round, and settled again is one such
-// decision, so the published count follows the findings, not the instances.
+// The PR body reports the settlement count as "at least N", so the count is a
+// lower bound on the distinct contents the operator settled: two records of one
+// content, and one settled again after the reviewer moved it, are each credited
+// once rather than twice.
 func TestSettledReviewFindingCount_AResettledMovedFindingCountsOnce(t *testing.T) {
 	twin := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
 	first, second := twin, twin
@@ -556,18 +557,22 @@ func TestSettledReviewFindingCount_AResettledMovedFindingCountsOnce(t *testing.T
 	rounds := []*db.StepRound{
 		{FindingsJSON: &pair, SelectionSource: &source, SelectedFindingIDs: &empty},
 	}
-	if got := SettledReviewFindingCount(rounds); got != 2 {
-		t.Fatalf("settled count = %d, want 2: the operator declined two findings", got)
+	if got := SettledReviewFindingCount(rounds); got != 1 {
+		t.Fatalf("settled count = %d, want 1: both records state one settled content", got)
 	}
 	rounds = append(rounds, &db.StepRound{FindingsJSON: &moved, SelectionSource: &source, SelectedFindingIDs: &empty})
-	if got := SettledReviewFindingCount(rounds); got != 2 {
-		t.Fatalf("settled count = %d, want 2: declining the moved survivor again settles no new finding", got)
+	if got := SettledReviewFindingCount(rounds); got != 1 {
+		t.Fatalf("settled count = %d, want 1: declining the moved survivor again settles no new content", got)
 	}
 }
 
 // axi renders the reviewer's summary beside the gate's findings, so the filter
-// that stopped reporting one of them cannot leave a sentence counting it.
-func TestFilterSettledReviewFindings_ASuppressedGateDropsTheStaleSummary(t *testing.T) {
+// that stopped reporting one of them replaces the stale sentence with one that
+// counts what the gate still lists. It cannot clear the field: the filtered
+// payload is the envelope every later round of the step carries forward, so a
+// cleared summary leaves `axi status` and `axi rounds` with none for the rest
+// of the Review.
+func TestFilterSettledReviewFindings_ASuppressedGateReplacesTheStaleSummary(t *testing.T) {
 	settledItem := types.Finding{ID: "grant", File: "first.go", Line: 3, Severity: types.FindingSeverityWarning, Description: "private grant not visible", Action: types.ActionAskUser}
 	live := types.Finding{ID: "bug", File: "second.go", Line: 9, Severity: types.FindingSeverityError, Description: "off-by-one", Action: types.ActionAskUser}
 	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{settledItem, live}})
@@ -588,8 +593,26 @@ func TestFilterSettledReviewFindings_ASuppressedGateDropsTheStaleSummary(t *test
 	if err != nil || len(parsed.Items) != 1 || parsed.Items[0].ID != "bug" {
 		t.Fatalf("findings = %+v %v, want only the unsettled one", parsed.Items, err)
 	}
-	if parsed.Summary != "" {
-		t.Fatalf("summary = %q, want none: it counted a finding the gate no longer lists", parsed.Summary)
+	if parsed.Summary != "1 review finding remains" {
+		t.Fatalf("summary = %q, want the count of what the gate still lists", parsed.Summary)
+	}
+
+	next := types.Finding{ID: "later", File: "second.go", Line: 21, Severity: types.FindingSeverityWarning, Description: "missing nil check", Action: types.ActionAskUser}
+	nextRaw, _ := types.MarshalFindingsJSON(types.Findings{
+		Items:               []types.Finding{next},
+		Summary:             "1 finding",
+		ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}},
+	})
+	carried, err := filterSettledReviewFindings(mergeOutstandingFindingsJSON(filtered, nextRaw, []string{"first.go", "second.go"}), rounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := types.ParseFindingsJSON(carried)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Summary == "" {
+		t.Fatalf("a later round of the step carries no summary at all: %+v", merged)
 	}
 }
 
