@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -16,6 +17,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// bindFixtureCommitIdentity supplies the submission metadata a normal launch
+// writes for fixtures that create current-version runs directly in the DB.
+func bindFixtureCommitIdentity(t *testing.T, d *db.DB, runID string) {
+	t.Helper()
+	identity := git.CommitIdentity{AuthorName: "Test", AuthorEmail: "test@test.com", CommitterName: "Test", CommitterEmail: "test@test.com"}
+	if err := d.BindRunCommitIdentity(runID, identity); err != nil {
+		t.Fatal(err)
+	}
+}
 
 type identityCorrectionStep struct{ commits chan string }
 

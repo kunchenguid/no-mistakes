@@ -240,6 +240,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindFixtureCommitIdentity(t, d, source.ID)
 	for _, name := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest} {
 		sr, err := d.InsertStepResult(source.ID, name)
 		if err != nil {
@@ -302,6 +303,13 @@ func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 	}
 	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := f.d.RunCommitIdentity(source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.BindRunCommitIdentity(next.ID, identity); err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range sourceRows {
