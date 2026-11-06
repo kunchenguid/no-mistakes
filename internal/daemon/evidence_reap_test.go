@@ -396,3 +396,182 @@ func TestRecoveredRunCleanupRemovesItsEmptyEvidenceDir(t *testing.T) {
 		t.Error("a resumed run left its empty evidence directory behind")
 	}
 }
+
+func TestEvidenceCleanupRevisitsPreviousPinnedRoots(t *testing.T) {
+	for _, completion := range []bool{false, true} {
+		t.Run(map[bool]string{false: "startup", true: "completion"}[completion], func(t *testing.T) {
+			f := newEvidenceFixture(t)
+			oldRoot := t.TempDir()
+			currentRoot := t.TempDir()
+			f.root = oldRoot
+			id := f.seed("old-evidence", types.RunCompleted, 48*time.Hour, map[string]string{"shot.png": "image"})
+			if err := f.db.SetRunEvidenceDir(id, filepath.Join(oldRoot, id)); err != nil {
+				t.Fatal(err)
+			}
+			global := &config.GlobalConfig{EvidenceDir: currentRoot}
+			if completion {
+				f.root = currentRoot
+				currentID := f.seed("current-evidence", types.RunCompleted, 0, map[string]string{"shot.png": "image"})
+				if err := f.db.SetRunEvidenceDir(currentID, filepath.Join(currentRoot, currentID)); err != nil {
+					t.Fatal(err)
+				}
+				cfg := config.Merge(global, &config.RepoConfig{})
+				cfg.Test.Evidence.Retention = 24 * time.Hour
+				m := &RunManager{db: f.db, paths: f.p}
+				m.cleanupRunEvidence(cfg, currentID)
+				if !f.exists(currentID) {
+					t.Fatal("removed current evidence")
+				}
+			} else {
+				roots := evidenceRootsFor(f.p, global, f.db)
+				reapLegacyEvidence(f.db, roots[0], evidenceReapPolicy{Retention: 24 * time.Hour}, time.Now(), roots[1:]...)
+			}
+			if _, err := os.Stat(filepath.Join(oldRoot, id)); !os.IsNotExist(err) {
+				t.Fatalf("historical evidence survived retention: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscardRefusedRetryRemovesPinnedEvidence(t *testing.T) {
+	f := newEvidenceFixture(t)
+	f.root = t.TempDir()
+	id := f.seed("refused-retry", types.RunPending, 0, map[string]string{"questions.ndjson": "partial copy"})
+	if err := f.db.SetRunEvidenceDir(id, filepath.Join(f.root, id)); err != nil {
+		t.Fatal(err)
+	}
+	m := &RunManager{db: f.db, paths: f.p}
+	m.discardRefusedRetryRun(id, nil)
+	run, err := f.db.GetRun(id)
+	if err != nil || run != nil {
+		t.Fatalf("refused retry still recorded: %v %v", run, err)
+	}
+	if f.exists(id) {
+		t.Fatal("pinned evidence survived deletion of its run")
+	}
+}
+
+func TestPinRunEvidenceDirAvoidsEveryWorktreePlacement(t *testing.T) {
+	for _, source := range []string{"configured", "recorded"} {
+		for _, relation := range []string{"equal", "inside", "parent", "symlink", "separate"} {
+			t.Run(source+"/"+relation, func(t *testing.T) {
+				f := newEvidenceFixture(t)
+				placement := filepath.Join(t.TempDir(), "worktrees")
+				evidence := placement
+				switch relation {
+				case "inside":
+					evidence = filepath.Join(placement, "evidence")
+				case "parent":
+					evidence = filepath.Dir(placement)
+				case "separate":
+					evidence = t.TempDir()
+				}
+				if err := os.MkdirAll(placement, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(evidence, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if relation == "symlink" {
+					evidence = filepath.Join(t.TempDir(), "alias")
+					if err := os.Symlink(placement, evidence); err != nil {
+						t.Skipf("symlink unavailable: %v", err)
+					}
+				}
+				global := &config.GlobalConfig{EvidenceDir: evidence}
+				if source == "configured" {
+					global.WorktreeRoots = map[string]string{f.repo.WorkingPath: placement}
+				} else {
+					previous, err := f.db.InsertRun(f.repo.ID, "previous", "head", "base")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.db.SetRunWorktreeDir(previous.ID, placement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				run, err := f.db.InsertRun(f.repo.ID, "new", "head", "base")
+				if err != nil {
+					t.Fatal(err)
+				}
+				m := &RunManager{db: f.db, paths: f.p}
+				if err := m.pinRunEvidenceDir(run, global); err != nil {
+					t.Fatal(err)
+				}
+				want := filepath.Join(f.p.EvidenceDir(), run.ID)
+				if relation == "separate" {
+					canonical, err := filepath.EvalSymlinks(evidence)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want = filepath.Join(canonical, run.ID)
+				}
+				stored, err := f.db.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.EvidencePath() != want || stored.EvidencePath() != want {
+					t.Fatalf("evidence pin = %q, stored %q, want %q", run.EvidencePath(), stored.EvidencePath(), want)
+				}
+				global.EvidenceDir = t.TempDir()
+				if err := m.pinRunEvidenceDir(run, global); err != nil {
+					t.Fatal(err)
+				}
+				if run.EvidencePath() != want {
+					t.Fatal("existing evidence pin moved")
+				}
+			})
+		}
+	}
+}
+
+func TestEvidenceCleanupSharesCountBudgetAcrossRoots(t *testing.T) {
+	for _, completion := range []bool{false, true} {
+		t.Run(map[bool]string{false: "startup", true: "completion"}[completion], func(t *testing.T) {
+			f := newEvidenceFixture(t)
+			fakeTemp := t.TempDir()
+			t.Setenv("TMPDIR", fakeTemp)
+			t.Setenv("TMP", fakeTemp)
+			t.Setenv("TEMP", fakeTemp)
+			oldRoot, currentRoot := t.TempDir(), t.TempDir()
+			legacy := filepath.Join(os.TempDir(), legacyEvidenceDirName)
+			artifact := map[string]string{"shot.png": "image"}
+			f.root = oldRoot
+			oldest := f.seed("oldest", types.RunCompleted, 5*time.Hour, artifact)
+			keepOld := f.seed("keep-old", types.RunCompleted, 2*time.Hour, artifact)
+			active := f.seed("active", types.RunRunning, 10*time.Hour, artifact)
+			f.root = legacy
+			legacyID := f.seed("legacy", types.RunCompleted, 4*time.Hour, artifact)
+			f.root = currentRoot
+			middle := f.seed("middle", types.RunCompleted, 3*time.Hour, artifact)
+			newest := f.seed("newest", types.RunCompleted, time.Hour, artifact)
+			for id, root := range map[string]string{oldest: oldRoot, keepOld: oldRoot, active: oldRoot, middle: currentRoot, newest: currentRoot} {
+				if err := f.db.SetRunEvidenceDir(id, filepath.Join(root, id)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			global := &config.GlobalConfig{EvidenceDir: currentRoot}
+			policy := evidenceReapPolicy{MaxRuns: 2}
+			if completion {
+				cfg := config.Merge(global, &config.RepoConfig{})
+				cfg.Test.Evidence.Retention = 0
+				cfg.Test.Evidence.MaxRuns = 2
+				m := &RunManager{db: f.db, paths: f.p}
+				m.cleanupRunEvidence(cfg, newest)
+			} else {
+				roots := evidenceRootsFor(f.p, global, f.db)
+				reapLegacyEvidence(f.db, roots[0], policy, time.Now(), roots[1:]...)
+			}
+			for id, root := range map[string]string{oldest: oldRoot, middle: currentRoot, legacyID: legacy} {
+				if _, err := os.Stat(filepath.Join(root, id)); !os.IsNotExist(err) {
+					t.Fatalf("old evidence %s survived global count budget: %v", id, err)
+				}
+			}
+			for id, root := range map[string]string{keepOld: oldRoot, newest: currentRoot, active: oldRoot} {
+				if _, err := os.Stat(filepath.Join(root, id, "shot.png")); err != nil {
+					t.Fatalf("kept evidence %s lost: %v", id, err)
+				}
+			}
+		})
+	}
+}

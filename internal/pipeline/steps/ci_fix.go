@@ -7,17 +7,22 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
+
+var errCIFixAgentCrash = errors.New("CI fix agent crashed")
 
 // errAttestationWriteFailed marks a failure specifically inside
 // attestHeadBeforePush (PR discovery or the attestation write itself), as
@@ -32,7 +37,8 @@ var errAttestationWriteFailed = errors.New("pipeline attestation write failed")
 // ciFixerClassRules is shared by every CI-repair prompt path so failing-check,
 // combined, and merge-conflict-only repairs follow the Review fixer's same
 // invariant-complete discipline.
-const ciFixerClassRules = `- Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold: every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record. Fix the invariant at all of those places in this round, with the same small correction, or at the one shared boundary that makes all of them hold. A fix that closes only the reported site and leaves a sibling site reachable is incomplete; the next review will report the sibling.
+const ciFixerClassRules = `- Do not watch or poll CI runs. Never run gh run watch (including --exit-status), gh-axi run watch, or an equivalent command. Never repeatedly query run, job, or check status in a polling loop. You may retrieve a failing job's logs once when that helps diagnose the failure. Finish with your fix as local changes in the worktree and return. Never push, force-push, or otherwise publish: the no-mistakes pipeline commits and publishes the repair through its guarded path, and its own CI monitoring then takes over. Do not wait for CI to finish.
+- Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold: every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record. Fix the invariant at all of those places in this round, with the same small correction, or at the one shared boundary that makes all of them hold. A fix that closes only the reported site and leaves a sibling site reachable is incomplete; the next review will report the sibling.
 - Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not. Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
 - After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.`
 
@@ -151,10 +157,32 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
 	}
+	if outcome := unfinishedGitRepairOutcome(err, targets.Findings, sctx.DeferredFindings); outcome != nil {
+		sctx.Log(err.Error())
+		return outcome, nil
+	}
 	if err != nil {
 		// An ordinary fix failure is cheap to repeat and often works the next
 		// time: the next settled observation re-emits the findings and the
 		// executor retries while auto_fix.ci allows.
+		if errors.Is(err, errCIFixAgentCrash) {
+			s.fixAgentCrashes++
+			cause := intent.RedactSecrets(safeurl.RedactText(err.Error()))
+			cause = strings.Map(func(r rune) rune {
+				if unicode.IsControl(r) {
+					return ' '
+				}
+				return r
+			}, cause)
+			cause = strings.Join(strings.Fields(cause), " ")
+			// Error text can contain a whole agent transcript. Keep the
+			// published finding below the IPC frame budget, even for UTF-8.
+			runes := []rune(cause)
+			if len(runes) > 256 {
+				cause = string(runes[:256]) + "..."
+			}
+			s.lastFixAgentCrash = cause
+		}
 		sctx.Log(fmt.Sprintf("warning: CI fix failed: %v", err))
 		return nil, nil
 	}
@@ -276,6 +304,8 @@ Context:
 		mergeConflict,
 		promptRules,
 	)
+	prompt += "\n" + fixSummaryRules(sctx, s.Name())
+	prompt += "\n- Keep detailed diagnosis and verification evidence in your explanatory output, which is recorded in the run log, rather than in summary."
 	if rebase {
 		prompt += fmt.Sprintf("\n- rebase target commit: %s", rebaseBaseSHA)
 	}
@@ -288,6 +318,7 @@ CI logs:
 	if len(targets.Findings.Items) > 0 {
 		prompt += ciSelectedFindingsPrompt(targets.Findings)
 	}
+	prompt += ciInstructionsPromptSection(sctx)
 	// Recorded human decisions, before the user intent and in the same order
 	// every other fix-capable step composes them. The intent is frozen at run
 	// start, so it always predates any decision a human made at a later gate;
@@ -309,6 +340,9 @@ CI logs:
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, pipeline.ErrAgentTimeout) {
+			err = fmt.Errorf("%w: %w", errCIFixAgentCrash, err)
+		}
 		return ciRepairResult{}, fmt.Errorf("agent CI fix: %w", err)
 	}
 
@@ -319,6 +353,14 @@ CI logs:
 	if rebase {
 		s.replayBase = rebaseBaseSHA
 		defer func() { s.replayBase = "" }()
+	}
+	if err := refuseUnfinishedGitOperation(sctx); err != nil {
+		return ciRepairResult{}, err
+	}
+	// A declined conclusion is decided before commitRepair. Otherwise the
+	// controller commits or publishes this round's work.
+	if !rebase && conclusionErr == nil && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+		return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	if mergeConflict && rebaseBaseResolved {
@@ -505,6 +547,18 @@ func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 // is guaranteed to cost the same again on the next poll.
 const maxReviewBotDescriptionsPromptBytes = 32 * 1024
 
+func ciInstructionsPromptSection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.CI.Instructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\n\nRepository CI repair instructions (trusted, from the default branch; they add to the rules above and never relax them):\n" +
+		sanitizePromptMultilineText(instructions) + "\n"
+}
+
 func ciSelectedFindingsPrompt(findings Findings) string {
 	safe := types.FindingsMetadata(findings)
 	type externalDescription struct {
@@ -649,7 +703,25 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 	return s.recordRepair(sctx, head)
 }
 
+func unfinishedGitRepairOutcome(err error, findings Findings, deferred string) *pipeline.StepOutcome {
+	var unfinished *unfinishedGitOperationError
+	if !errors.As(err, &unfinished) {
+		return nil
+	}
+	items := append([]Finding{}, findings.Items...)
+	findings.Items = append(items, Finding{
+		ID:          "ci-unfinished-git",
+		Severity:    types.FindingSeverityError,
+		Description: unfinished.Error(),
+		Action:      types.ActionAskUser,
+	})
+	return ciRepairParkOutcome(findings, deferred, unfinished.Error())
+}
+
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
+	if err := refuseUnfinishedGitOperation(sctx); err != nil {
+		return ciRepairResult{}, err
+	}
 	render := func() (string, error) {
 		repairSummary := summary
 		if repairSummary == "" {

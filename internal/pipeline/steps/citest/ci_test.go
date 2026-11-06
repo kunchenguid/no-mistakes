@@ -549,8 +549,8 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 	if findings.Items[0].Action != types.ActionAskUser || findings.Items[1].ID != "ci-bot" {
 		t.Fatalf("findings = %+v, want the deferred finding preserved", findings.Items)
 	}
-	if !strings.Contains(findings.Items[0].Description, "pr checks --json") || !strings.Contains(findings.Items[0].Description, "2.50") {
-		t.Fatalf("finding %q must explain the gh version/flag cause", findings.Items[0].Description)
+	if strings.Contains(findings.Items[0].Description, "2.50") {
+		t.Fatalf("finding %q must not blame the gh version for a non-version read failure", findings.Items[0].Description)
 	}
 	parked := 0
 	for _, l := range logs {

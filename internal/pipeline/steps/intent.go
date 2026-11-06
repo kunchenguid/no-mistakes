@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
@@ -22,11 +23,12 @@ const intentExtractTimeout = 300 * time.Second
 
 // IntentStep is a best-effort pipeline step that infers the user's intent
 // from local agent transcripts and attaches it to the run so downstream
-// steps can surface it in their prompts. Failures are intentionally
-// swallowed and surface as a "skipped" outcome rather than a run failure:
-// missing transcripts, slow summarizers, or DB hiccups must not block
-// the pipeline. Disambiguator cleanup failures are fatal because they may leave
-// worktree side effects that could affect later steps.
+// steps can surface it in their prompts. Extraction failures are intentionally
+// swallowed and surface as a "skipped" outcome: missing transcripts, slow
+// summarizers, or DB hiccups must not block the pipeline. A configured reject
+// policy is different; it fails the step before a matched summary is stored.
+// Disambiguator cleanup failures are fatal because they may leave worktree side
+// effects that could affect later steps.
 type IntentStep struct {
 	// runIntent computes the intent for a step context. It is overridden
 	// in tests; the zero value falls back to defaultRunIntent which wires
@@ -126,6 +128,18 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
+	if matches := sctx.Config.Intent.Check.Match(result.Summary); len(matches) > 0 {
+		switch sctx.Config.Intent.Check.Mode {
+		case config.IntentCheckReject:
+			outcomeLabel = "rejected"
+			err := fmt.Errorf("inferred intent rejected by configured rules: %s", strings.Join(matches, ", "))
+			sctx.Log(err.Error())
+			return nil, err
+		case config.IntentCheckWarn:
+			slog.Warn("inferred run intent matched configured rules", "run_id", sctx.Run.ID, "rules", strings.Join(matches, ", "))
+		}
+	}
+
 	matchedAgent = result.AgentName
 	score = result.Score
 	outcomeLabel = "matched"
@@ -178,7 +192,14 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
+	gitContext := *sctx
+	gitContext.WorkDir = gitWorkDir
+	baseBranch := effectivePRBaseBranch(&gitContext)
+	fallbackBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, baseBranch)
+	resolvedBaseSHA, err := resolveBranchBaseSHA(ctx, &gitContext, fallbackBaseSHA, baseBranch)
+	if err != nil {
+		return nil, err
+	}
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
@@ -186,8 +207,16 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	if len(diffFiles) == 0 {
 		return nil, errIntentEmptyDiff
 	}
+	// Use the submitted range, never HEAD or the live working tree. Disable
+	// external diff/textconv helpers and leave binary data as Git's notices.
+	diff, err := git.Run(ctx, gitWorkDir, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch", resolvedBaseSHA+".."+run.HeadSHA, "--")
+	if err != nil {
+		return nil, fmt.Errorf("intent change context: %w", err)
+	}
 
-	baseTime, err := git.CommitTime(ctx, gitWorkDir, resolvedBaseSHA)
+	// Preserve session discovery's push-time window independently of the
+	// branch range used to describe the change. A merge-base can move on rebase.
+	baseTime, err := git.CommitTime(ctx, gitWorkDir, fallbackBaseSHA)
 	if err != nil || git.IsZeroSHA(run.BaseSHA) {
 		baseTime = time.Now().Add(-7 * 24 * time.Hour)
 	}
@@ -208,16 +237,18 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	}
 
 	return intent.Extract(ctx, intent.ExtractParams{
-		OriginCWD:     repo.WorkingPath,
-		DiffFiles:     diffFiles,
-		BaseTime:      baseTime,
-		HeadTime:      headTime,
-		SlackDays:     cfg.Intent.SlackDays,
-		Threshold:     cfg.Intent.Threshold,
-		Readers:       intent.AllReaders(cfg.Intent.DisabledReaders),
-		Cache:         intent.NewDBCache(sctx.DB),
-		Summarizer:    intent.NewAgentSummarizer(sctx.Agent, gitWorkDir),
-		Disambiguator: intent.NewAgentDisambiguator(sctx.Agent, gitWorkDir),
+		TranscriptHomes: run.TranscriptHomes,
+		OriginCWD:       repo.WorkingPath,
+		DiffFiles:       diffFiles,
+		Change:          intent.ChangeContext{Base: resolvedBaseSHA, Head: run.HeadSHA, Diff: diff},
+		BaseTime:        baseTime,
+		HeadTime:        headTime,
+		SlackDays:       cfg.Intent.SlackDays,
+		Threshold:       cfg.Intent.Threshold,
+		Readers:         intent.AllReaders(cfg.Intent.DisabledReaders),
+		Cache:           intent.NewDBCache(sctx.DB),
+		Summarizer:      intent.NewAgentSummarizer(sctx.Agent, gitWorkDir),
+		Disambiguator:   intent.NewAgentDisambiguator(sctx.Agent, gitWorkDir),
 		Logf: func(format string, args ...any) {
 			sctx.Log(fmt.Sprintf("intent "+format, args...))
 		},

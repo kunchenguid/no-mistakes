@@ -28,7 +28,7 @@ type fixedSummarizer struct {
 	calls   int
 }
 
-func (f *fixedSummarizer) Summarize(_ context.Context, _ *Session) (string, error) {
+func (f *fixedSummarizer) Summarize(_ context.Context, _ *Session, _ SummaryContext) (string, error) {
 	f.calls++
 	return f.summary, nil
 }
@@ -152,13 +152,14 @@ func TestExtract_CacheHitSkipsSummarizer(t *testing.T) {
 	// Pre-populate cache with the key the extractor will compute. Note we need
 	// to set AgentName first because Discover does it inside Extract; mimic.
 	sess.AgentName = "claude"
-	cache.Put(cacheKeyFor(sess), "cached", "claude", "s1")
+	base, head := time.Now().Add(-time.Hour), time.Now()
+	cache.Put(summaryCacheKeyFor(sess, SummaryContext{WindowStart: base, WindowEnd: head}), "cached", "claude", "s1")
 
 	got, err := Extract(context.Background(), ExtractParams{
 		OriginCWD:  "/tmp/repo",
 		DiffFiles:  []string{"foo.go"},
-		HeadTime:   time.Now(),
-		BaseTime:   time.Now().Add(-time.Hour),
+		HeadTime:   head,
+		BaseTime:   base,
 		Threshold:  0.1,
 		Readers:    []Reader{r},
 		Cache:      cache,

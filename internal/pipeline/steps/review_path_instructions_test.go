@@ -576,6 +576,37 @@ func TestPathInstructionRenderingAgreesWithConfigValidation(t *testing.T) {
 	}
 }
 
+func TestReviewPathsAndInstructions_SettlesEverySourceBeforeIgnoring(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"trusted", "global", "repository"} {
+		t.Run(source, func(t *testing.T) {
+			rules := []config.PathInstruction{{Path: "*", Instructions: "Inspect the listed files."}}
+			cfg := &config.Config{
+				IgnorePatterns:        []string{"*"},
+				TrustedIgnorePatterns: []string{"vendor/**"},
+			}
+			switch source {
+			case "trusted":
+				cfg.Review.PathInstructions = rules
+			case "global":
+				cfg.Review.GlobalPathInstructions = rules
+			case "repository":
+				cfg.Review.RepositoryPathInstructions = rules
+			}
+			paths, prompt := reviewPathsAndInstructions([]string{"vendor/dep.go", "app.go"}, cfg, nil)
+			if len(paths) != 1 || paths[0] != "app.go" {
+				t.Fatalf("reviewable=%v, want [app.go]", paths)
+			}
+			if !strings.Contains(prompt, "Inspect the listed files.") || !strings.Contains(prompt, "app.go") {
+				t.Fatalf("required instruction or file missing: %s", prompt)
+			}
+			if strings.Contains(prompt, "vendor/dep.go") {
+				t.Fatalf("trusted-ignored path leaked into instruction scope: %s", prompt)
+			}
+		})
+	}
+}
+
 func TestLogPathInstructions(t *testing.T) {
 	t.Parallel()
 

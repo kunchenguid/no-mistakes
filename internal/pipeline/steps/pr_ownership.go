@@ -3,9 +3,11 @@ package steps
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -37,6 +39,8 @@ type prOwnedBody struct {
 	managed                 bool
 }
 
+var errUnownedLegacyAttestation = errors.New("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
+
 // The digest is an accidental-edit/ownership guard, NOT authentication. PR
 // authors can edit every byte, including the attestation. We never infer
 // ownership from headings: only an intact, unchanged, explicitly delimited
@@ -44,7 +48,7 @@ type prOwnedBody struct {
 func parsePROwnedBody(body string) (prOwnedBody, error) {
 	if !hasPRAppendixMarkers(body) {
 		if strings.Contains(body, pipelineAttestationCommentPrefix) {
-			return prOwnedBody{}, fmt.Errorf("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
+			return prOwnedBody{}, errUnownedLegacyAttestation
 		}
 		return prOwnedBody{before: body}, nil
 	}
@@ -154,8 +158,9 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 
 // updateOwnedPR re-reads before the full-body write and verifies afterwards.
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
-// pre-write edits are merged from their latest version (bounded); a write error
-// or post-write divergence fails without replaying a potentially applied write.
+// pre-write edits are merged from their latest version (bounded). Readback may
+// briefly retain that exact pre-write body; any other divergence or a write error
+// fails without replaying a potentially applied write.
 func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
@@ -189,18 +194,29 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 			continue
 		}
 		if content.Body != current.Body || content.Title != "" {
-			if _, err := host.UpdatePR(sctx.Ctx, pr, scm.PRContent(content)); err != nil {
+			if _, err := host.UpdatePR(sctx.Ctx, pr, scm.PRContent{Title: content.Title, Body: content.Body}); err != nil {
 				return fmt.Errorf("update templated PR: %w", err)
 			}
 		}
-		verified, err := reader.GetPRContent(sctx.Ctx, pr)
-		if err != nil {
-			return fmt.Errorf("verify templated PR update: %w", err)
+		for verification := 0; ; verification++ {
+			verified, err := reader.GetPRContent(sctx.Ctx, pr)
+			if err != nil {
+				return fmt.Errorf("verify templated PR update: %w", err)
+			}
+			if verified.Body == content.Body {
+				return nil
+			}
+			// Only the exact pre-write snapshot is known to be stale. Never
+			// retry a foreign body, normalize URLs, or repeat the write.
+			if verified.Body != current.Body || verification >= 2 {
+				return fmt.Errorf("PR body changed or update did not settle; refusing to report successful publication")
+			}
+			select {
+			case <-sctx.Ctx.Done():
+				return fmt.Errorf("verify templated PR update: %w", sctx.Ctx.Err())
+			case <-time.After(250 * time.Millisecond):
+			}
 		}
-		if verified.Body != content.Body {
-			return fmt.Errorf("PR body changed or update did not settle; refusing to report successful publication")
-		}
-		return nil
 	}
 	return fmt.Errorf("PR body kept changing before template update; no write performed")
 }

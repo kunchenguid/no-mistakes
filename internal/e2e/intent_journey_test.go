@@ -80,7 +80,7 @@ func TestIntentJourney(t *testing.T) {
 	}
 
 	// 2. Fake agent received the summarizer prompt.
-	if !anyInvocationContains(invocations, "transcript of a developer's recent conversation") {
+	if !anyInvocationContains(invocations, "Git change under validation") {
 		t.Errorf("expected fakeagent to receive the summarizer prompt, got prompts:\n%s", dumpPrompts(invocations))
 	}
 
@@ -196,7 +196,8 @@ func seedClaudeTranscript(t *testing.T, homeDir, repoCWD, touchedFile string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir claude projects: %v", err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Keep the transcript before the commit independently of test speed.
+	now := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
 	lines := []string{
 		`{"type":"user","cwd":` + testJSONString(t, repoCWD) + `,"timestamp":"` + now + `","uuid":"u1","sessionId":"e2e-session","message":{"role":"user","content":"please add a Bar() helper to ` + touchedFile + `"}}`,
 		`{"type":"assistant","cwd":` + testJSONString(t, repoCWD) + `,"timestamp":"` + now + `","uuid":"u2","sessionId":"e2e-session","message":{"role":"assistant","content":[{"type":"text","text":"on it - editing ` + touchedFile + `"},{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoCWD, touchedFile)) + `,"old_string":"x","new_string":"Bar()"}}]}}`,
@@ -232,7 +233,7 @@ func writeIntentScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "intent_scenario.yaml")
 	content := `actions:
-  - match: "transcript of a developer's recent conversation with a coding agent"
+  - match: "Git change under validation"
     text: "summarized"
     structured:
       summary: "user wanted Bar() helper added"

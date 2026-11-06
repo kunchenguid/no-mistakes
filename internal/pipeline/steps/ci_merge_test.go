@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,8 +12,156 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+func TestCIStep_HandoffWakeRechecksGreenReadiness(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+	sctx.Config.CITimeout = time.Minute
+	wake := make(chan struct{}, 1)
+	sctx.CIWake = wake
+	firstReady := make(chan struct{})
+	readyCalls := 0
+	sctx.SetCIReadiness = func(ready, _ bool) error {
+		if !ready {
+			return nil
+		}
+		readyCalls++
+		if readyCalls == 1 {
+			close(firstReady)
+			return nil
+		}
+		return pipeline.ErrHandoff
+	}
+
+	done := make(chan struct {
+		err error
+	}, 1)
+	go func() {
+		_, err := (&CIStep{pollIntervalOverride: 30 * time.Second}).Execute(sctx)
+		done <- struct{ err error }{err: err}
+	}()
+	<-firstReady
+	wake <- struct{}{}
+
+	select {
+	case result := <-done:
+		if !errors.Is(result.err, pipeline.ErrHandoff) {
+			t.Fatalf("handoff result error = %v, want ErrHandoff", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handoff wake did not interrupt the CI poll wait")
+	}
+}
+
+func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
+	for _, tc := range []struct {
+		name, checks, warning string
+	}{
+		{"persist", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "could not persist CI readiness"},
+		{"clear", `invalid check response`, "could not clear CI readiness"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx.Run.PRURL = &prURL
+			sctx.Env = fakeCIGH(t, "OPEN", tc.checks)
+			sctx.Config.CITimeout = time.Minute
+			writeErr := errors.New("readiness write failed")
+			sctx.SetCIReadiness = func(bool, bool) error { return writeErr }
+			var logs []string
+			sctx.Log = func(message string) { logs = append(logs, message) }
+			stop := errors.New("monitor reached next poll")
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return stop }}
+			if _, err := step.Execute(sctx); !errors.Is(err, stop) {
+				t.Fatalf("monitor error = %v, want next poll", err)
+			}
+			if !strings.Contains(strings.Join(logs, "\n"), "warning: "+tc.warning+": "+writeErr.Error()) {
+				t.Fatalf("logs = %v, want readiness warning", logs)
+			}
+		})
+	}
+}
+
+func TestCIStep_ReadinessClearFailureWithPendingHandoffKeepsIssueObservation(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"build","state":"FAILURE","bucket":"fail"}]`)
+	sctx.HandoffPending = func() bool { return true }
+	sctx.Config.CITimeout = time.Minute
+	writeErr := errors.New("readiness write failed")
+	sctx.SetCIReadiness = func(bool, bool) error { return writeErr }
+	var logs []string
+	sctx.Log = func(message string) { logs = append(logs, message) }
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("monitor error = %v, want issue observation despite readiness failure", err)
+	}
+	if outcome == nil {
+		t.Fatal("monitor outcome = nil, want issue observation")
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "warning: could not clear CI readiness: "+writeErr.Error()) {
+		t.Fatalf("logs = %v, want readiness warning", logs)
+	}
+}
+
+func TestCIStep_ReadinessWriteFailureRetriesOnNextPoll(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	green := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	sctx.Env = fakeCIGHSequence(t, "OPEN", []string{green, green})
+	sctx.Config.CITimeout = time.Minute
+	writeErr := errors.New("readiness write failed")
+	var readinessWrites int
+	sctx.SetCIReadiness = func(ready, declaredNoCI bool) error {
+		readinessWrites++
+		if readinessWrites <= 3 {
+			if !ready || declaredNoCI {
+				t.Fatalf("first readiness write = (%t, %t), want green readiness", ready, declaredNoCI)
+			}
+			return writeErr
+		}
+		if !ready || declaredNoCI {
+			t.Fatalf("recovered readiness write = (%t, %t), want green readiness", ready, declaredNoCI)
+		}
+		return nil
+	}
+	polls := 0
+	stop := errors.New("monitor reached next poll")
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		polls++
+		if polls < 4 {
+			return nil
+		}
+		return stop
+	}}
+
+	var logs []string
+	sctx.Log = func(message string) { logs = append(logs, message) }
+	if _, err := step.Execute(sctx); !errors.Is(err, stop) {
+		t.Fatalf("monitor error = %v, want next poll", err)
+	}
+	if readinessWrites != 4 {
+		t.Fatalf("readiness writes = %d, want three failed writes plus recovery", readinessWrites)
+	}
+	if got := strings.Count(strings.Join(logs, "\n"), "warning: could not persist CI readiness:"); got != 1 {
+		t.Fatalf("warning count = %d, want 1; logs: %v", got, logs)
+	}
+	if got := strings.Count(strings.Join(logs, "\n"), ciChecksPassedMsg); got != 1 {
+		t.Fatalf("status count = %d, want 1; logs: %v", got, logs)
+	}
+}
 
 func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
 	t.Parallel()

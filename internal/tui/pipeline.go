@@ -68,7 +68,7 @@ func runStatusStyled(status types.RunStatus) string {
 	switch status {
 	case types.RunRunning:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiBlue))
-	case types.RunCompleted, types.RunChecksPassed:
+	case types.RunCompleted, types.RunChecksPassed, types.RunHandedOff:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 	case types.RunFailed, types.RunCancelled:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
@@ -353,6 +353,13 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 			return style.Render("✗ "+failedLabel+" failed") + elapsed
 		}
 		return style.Render("✗ Pipeline failed") + elapsed
+	case types.RunHandedOff:
+		if reason := singleLineReason(run.TestOverrideReason + "\n" + run.CIOverrideReason); reason != "" {
+			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
+			return style.Render("⚠ PR handed off with override: "+reason) + elapsed
+		}
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
+		return style.Render("✓ Green PR handed off for human review") + elapsed
 	case types.RunCancelled:
 		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
 		return style.Render("✗ Pipeline cancelled") + elapsed

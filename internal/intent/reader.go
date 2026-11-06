@@ -3,6 +3,8 @@ package intent
 import (
 	"context"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 // Role identifies who produced a transcript message.
@@ -53,6 +55,9 @@ type Session struct {
 // DiscoverOpts narrows the search down to relevant sessions before any
 // expensive body parsing happens.
 type DiscoverOpts struct {
+	// TranscriptHomes is the caller's pinned account selection. Nil retains
+	// legacy default discovery; readers never consult the daemon's environment.
+	TranscriptHomes *runenv.TranscriptHomes
 	// HomeDir overrides the user's home directory. Empty means use os.UserHomeDir.
 	HomeDir string
 	// OriginCWD is the user's actual repo directory (NOT the worktree the

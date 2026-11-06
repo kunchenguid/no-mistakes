@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A rejected frame must not even attempt a write to the daemon.
@@ -26,7 +27,7 @@ func TestClientFrameSizeBoundary(t *testing.T) {
 		t.Run(fmt.Sprintf("extra_%d", extra), func(t *testing.T) {
 			// Predict the next ID's encoded width without consuming it.
 			params := &RespondParams{Instructions: map[string]string{"R1": ""}}
-			req := &Request{JSONRPC: "2.0", Method: MethodRespond, ID: reqID.Load() + 1}
+			req := &Request{JSONRPC: "2.0", Method: MethodRespond, ID: reqID.Load() + 1, DeadlineUnixNano: time.Now().UnixNano()}
 			raw, err := json.Marshal(params)
 			if err != nil {
 				t.Fatal(err)

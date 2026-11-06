@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
@@ -94,6 +96,115 @@ func TestRunAttemptsOldExecutableCleanupBeforeEarlyRoutes(t *testing.T) {
 			t.Fatal("cleanup was not attempted before interactive routing")
 		}
 	})
+}
+
+// Issue #1653: `daemon run` must release a console of its own and repoint
+// unusable standard output before the daemon spawns or writes anything, and
+// against the root it was given, since the fallback writes to that root's
+// bootstrap log.
+func TestRunPreparesDaemonStdioBeforeTheDaemonRuns(t *testing.T) {
+	originalArgs := os.Args
+	originalPrepare := prepareDaemonRunStdio
+	originalRunDaemon := runDaemon
+	t.Cleanup(func() {
+		os.Args = originalArgs
+		prepareDaemonRunStdio = originalPrepare
+		runDaemon = originalRunDaemon
+	})
+	root := t.TempDir()
+	t.Setenv("NM_HOME", os.Getenv("NM_HOME"))
+
+	var calls []string
+	prepareDaemonRunStdio = func() error {
+		calls = append(calls, "prepare NM_HOME="+os.Getenv("NM_HOME"))
+		return fmt.Errorf("no usable bootstrap log")
+	}
+	runDaemon = func() error {
+		calls = append(calls, "run")
+		return nil
+	}
+	os.Args = []string{"no-mistakes", "daemon", "run", "--root", root}
+	if code := run(); code != 0 {
+		t.Fatalf("run code = %d, want 0 even when the best-effort preparation fails", code)
+	}
+	want := []string{"prepare NM_HOME=" + root, "run"}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+// The console release and the stdio fallback belong to `daemon run` alone:
+// every other invocation, including the daemon's own log-sink child and a CLI
+// sharing its console with a git hook, terminal, or agent, must keep its
+// console and standard handles untouched.
+func TestOnlyDaemonRunPreparesDaemonStdio(t *testing.T) {
+	originalArgs := os.Args
+	originalPrepare := prepareDaemonRunStdio
+	originalRunDaemon := runDaemon
+	originalBackground := maybeHandleBackgroundCheck
+	t.Cleanup(func() {
+		os.Args = originalArgs
+		prepareDaemonRunStdio = originalPrepare
+		runDaemon = originalRunDaemon
+		maybeHandleBackgroundCheck = originalBackground
+	})
+	prepareDaemonRunStdio = func() error {
+		t.Errorf("%q prepared daemon stdio", os.Args[1:])
+		return nil
+	}
+	runDaemon = func() error {
+		t.Errorf("%q ran the daemon", os.Args[1:])
+		return nil
+	}
+	maybeHandleBackgroundCheck = func(args []string) (bool, error) {
+		return len(args) > 0 && args[0] == "--update-check", nil
+	}
+
+	for _, args := range [][]string{
+		{"--version"},
+		{"daemon", "run", "--help"},
+		{"daemon", "run", "--root"},
+		{"daemon", "log-sink", "--root", ""},
+		{"--update-check", "v1.2.3"},
+	} {
+		os.Args = append([]string{"no-mistakes"}, args...)
+		_ = run()
+	}
+
+	// A real log-sink run: it reports ready on stdout and drains stdin to EOF.
+	originalStdin, originalStdout := os.Stdin, os.Stdout
+	t.Cleanup(func() {
+		os.Stdin, os.Stdout = originalStdin, originalStdout
+		signal.Reset(os.Interrupt, syscall.SIGTERM)
+	})
+	t.Setenv("NM_HOME", os.Getenv("NM_HOME"))
+	stdin, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	os.Stdin, os.Stdout = stdin, stdout
+	os.Args = []string{"no-mistakes", "daemon", "log-sink", "--root", t.TempDir()}
+	code := run()
+	os.Stdin, os.Stdout = originalStdin, originalStdout
+	if code != 0 {
+		t.Fatalf("log-sink run code = %d, want 0", code)
+	}
+	got, err := os.ReadFile(stdout.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "ready" {
+		t.Fatalf("log-sink stdout = %q, want its ready line", got)
+	}
 }
 
 func TestCLILogWriterReturnsDiscardWhenLogsDirMissing(t *testing.T) {

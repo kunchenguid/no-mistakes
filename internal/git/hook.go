@@ -333,8 +333,10 @@ func gateConfigStampContent() string {
 // be run in a work tree". It also prevents provider CLIs such as gh from
 // resolving the repo from a CI step worktree cwd.
 //
-// Best-effort only: if the installed Git does not support
-// `git config --worktree`, this returns nil without changing config.
+// Identity validation precedes the best-effort capability check, so an invalid
+// target is refused even if Git does not support `git config --worktree`.
+// For a verified target without that support, this returns nil without changing
+// config.
 //
 // Idempotent: safe to call on an already-configured bare repo to
 // migrate older installs when per-worktree config is available.
@@ -344,6 +346,11 @@ func IsolateHooksPath(ctx context.Context, bareDir string) error {
 }
 
 func EnsureHooksPathIsolation(ctx context.Context, bareDir string) (bool, error) {
+	verifiedDir, err := bareRepositoryIdentity(ctx, bareDir)
+	if err != nil {
+		return false, err
+	}
+	bareDir = verifiedDir
 	if _, err := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath"); err != nil {
 		if isWorktreeConfigUnsupported(err) {
 			return false, nil

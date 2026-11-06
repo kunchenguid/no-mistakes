@@ -263,3 +263,36 @@ func TestEffectiveRepoConfig_EvidenceBranchTrustedOnly(t *testing.T) {
 		t.Errorf("without a trusted copy the branch must fall back to the default, got %q", *withoutTrusted.Test.Evidence.Branch)
 	}
 }
+
+// The evidence-upload contract keeps GitHub on by default and requires an
+// explicit attach_media opt-in on GitLab, with repository settings taking precedence.
+func TestTestEvidenceMerge_ProviderAttachmentDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		globalYAML string
+		repoYAML   string
+		github     bool
+		gitlab     bool
+	}{
+		{"empty", "{}", "{}", true, false},
+		{"global enable", "test: {evidence: {attach_media: true}}", "{}", true, true},
+		{"global disable", "test: {evidence: {attach_media: false}}", "{}", false, false},
+		{"repo enable", "test: {evidence: {attach_media: false}}", "test: {evidence: {attach_media: true}}", true, true},
+		{"repo disable", "test: {evidence: {attach_media: true}}", "test: {evidence: {attach_media: false}}", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			global, err := LoadGlobalFromBytes([]byte(tc.globalYAML))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := LoadRepoFromBytes([]byte(tc.repoYAML))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := Merge(global, repo).Test.Evidence
+			if got.AttachMedia != tc.github || got.GitLabAttachMedia != tc.gitlab {
+				t.Fatalf("attachment gates = GitHub %v, GitLab %v; want %v, %v", got.AttachMedia, got.GitLabAttachMedia, tc.github, tc.gitlab)
+			}
+		})
+	}
+}

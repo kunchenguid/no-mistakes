@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     worktree_dir            TEXT,
+    evidence_dir            TEXT,
+	transcript_homes        TEXT,
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
@@ -47,6 +49,7 @@ CREATE TABLE IF NOT EXISTS runs (
     pr_base_branch       TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
+	 reviewer_profile     TEXT,
     verification_plan    TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
@@ -70,6 +73,7 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
+    review_max_fix_rounds        INTEGER,
     ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
     override_reason             TEXT,
     response_origin             TEXT NOT NULL DEFAULT 'unknown'
@@ -184,6 +188,17 @@ CREATE TABLE IF NOT EXISTS run_media_attachments (
     PRIMARY KEY (run_id, path)
 );
 
+-- GitLab project uploads already sent for an evidence file's contents.
+-- Keyed by project and digest, not by run, so a later PR rewrite of the same
+-- bytes reuses the markdown instead of posting another upload.
+CREATE TABLE IF NOT EXISTS gitlab_evidence_uploads (
+    project_path TEXT NOT NULL,
+    digest       TEXT NOT NULL,
+    markdown     TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (project_path, digest)
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,
@@ -259,6 +274,8 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,
+	`ALTER TABLE runs ADD COLUMN reviewer_profile TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_reviewer_profile_immutable BEFORE UPDATE OF reviewer_profile ON runs WHEN NEW.reviewer_profile IS NOT OLD.reviewer_profile BEGIN SELECT RAISE(ABORT, 'run reviewer profile is immutable'); END`,
 	// quota_routing records one run's quota-aware agent ordering (the
 	// quotarouting.Record JSON). Unlike pi_profile it is intentionally
 	// mutable: a mid-run quota switch appends to the record's switch list.
@@ -281,6 +298,11 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	// Immutable admission policy snapshot: inferred intent may be extracted
+	// after launch or after recovery, so it must use the policy admitted before
+	// this run superseded any earlier one.
+	`ALTER TABLE runs ADD COLUMN intent_check_json TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_intent_check_immutable BEFORE UPDATE OF intent_check_json ON runs WHEN OLD.intent_check_json IS NOT NULL AND NEW.intent_check_json IS NOT OLD.intent_check_json BEGIN SELECT RAISE(ABORT, 'run intent check is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	// The CI step's per-check rerun budget. It is durable because a run
@@ -302,6 +324,7 @@ var migrationStatements = []string{
 	// since this column shipped with the setting that moves it
 	// (worktrees.RecordedDir).
 	`ALTER TABLE runs ADD COLUMN worktree_dir TEXT`,
+	`ALTER TABLE runs ADD COLUMN evidence_dir TEXT`,
 	// Build identity is nullable for historical records. New runs record the
 	// version and embedded build SHA used by the running binary.
 	`ALTER TABLE runs ADD COLUMN no_mistakes_version TEXT`,
@@ -419,4 +442,31 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	// Pin the opt-in total Review fix budget across recovery and restarts.
+	// NULL identifies a step started before this policy existed (unbounded).
+	`ALTER TABLE step_results ADD COLUMN review_max_fix_rounds INTEGER`,
+	// Caller-supplied PR title and description (axi run --pr-title /
+	// --pr-body-file). Written once, with the row, and NULL when not
+	// supplied; the PR step publishes them only when the run creates the PR.
+	`ALTER TABLE runs ADD COLUMN pr_title TEXT`,
+	`ALTER TABLE runs ADD COLUMN pr_body TEXT`,
+	// Run-history lookup indexes. Without them every run snapshot scans the
+	// whole step_results and step_rounds history once per step, and the branch
+	// joins (previous review, branch decisions) start from a full child-table
+	// walk. On the daemon's single connection that cost grows with history and
+	// queues every other request behind it. Column order follows the readers'
+	// WHERE and ORDER BY (GetStepsByRun with its id tie-break, GetRoundsByStep,
+	// and the repo/branch and status run lookups), so the step and round
+	// lookups need no temporary sort. TestHistoryLookupsUseHistoryIndexes
+	// plans the real queries against these. The four run in one transaction so
+	// a fresh database pays one commit for them instead of four.
+	`BEGIN;
+CREATE INDEX IF NOT EXISTS idx_step_results_run_order_id ON step_results (run_id, step_order, id);
+CREATE INDEX IF NOT EXISTS idx_step_rounds_step_round ON step_rounds (step_result_id, round);
+CREATE INDEX IF NOT EXISTS idx_runs_repo_branch_created_id ON runs (repo_id, branch, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_status_created_id ON runs (status, created_at DESC, id DESC);
+COMMIT;`,
+	// Caller transcript roots are immutable launch context. Historical runs
+	// retain NULL and the pre-existing default discovery paths.
+	`ALTER TABLE runs ADD COLUMN transcript_homes TEXT`,
 }

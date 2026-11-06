@@ -291,7 +291,14 @@ data: {"type":"session.text.ended","data":{"sessionID":"ses_fixture","assistantM
 }
 
 func TestOpencodeV2_ReportsActivityWhileBufferingDeltas(t *testing.T) {
-	f := &opencodeV2Fixture{pages: []string{v2Page("hello world")}, events: `data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":"hello"}}
+	activity := make(chan struct{}, 1)
+	f := &opencodeV2Fixture{pages: []string{v2Page("hello world")}, wait: func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case <-activity:
+		case <-time.After(time.Second):
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}, events: `data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":"hello"}}
 
 data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":" world"}}
 
@@ -301,7 +308,12 @@ data: {"type":"session.text.ended","data":{"sessionID":"ses_fixture","assistantM
 	a := v2Agent(f.server(t))
 	var chunks strings.Builder
 	var lifecycle []LifecycleEvent
-	_, err := a.Run(context.Background(), RunOpts{CWD: t.TempDir(), Prompt: "work", OnChunk: func(text string) { chunks.WriteString(text) }, OnLifecycle: func(event LifecycleEvent) { lifecycle = append(lifecycle, event) }})
+	_, err := a.Run(context.Background(), RunOpts{CWD: t.TempDir(), Prompt: "work", OnChunk: func(text string) { chunks.WriteString(text) }, OnLifecycle: func(event LifecycleEvent) {
+		if event.Phase == LifecyclePhaseActivity {
+			activity <- struct{}{}
+		}
+		lifecycle = append(lifecycle, event)
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

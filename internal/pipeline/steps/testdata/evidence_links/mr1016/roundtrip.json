@@ -1,0 +1,4 @@
+{"phase":"exclude","checked":false,"feedback":"Táto fotka sa neodošle do HU. Ak je kópia už v obchode, odstráňte ju v Shoptete. ERP ju nehľadá.","unchanged":true,"timeOrigin":1793865776789.6,"responses":[{"url":"http://127.0.0.1:32872/admin/products/019ef500-0000-7000-8000-00000000eeee/images/01a1aab9-fa2d-7213-8ebb-571c4b21e11f/shops/HU","status":200,"payload":{"ok":true,"included":false,"level":"warning","message":"Táto fotka sa neodošle do HU. Ak je kópia už v obchode, odstráňte ju v Shoptete. ERP ju nehľadá."}}]}
+{"phase":"after real reload","HU":false,"CZ":false,"SK":true,"RO":true,"timeOrigin":1793865807979.8}
+{"phase":"restore","checked":true,"feedback":"HU dostane túto fotku pri ďalšom odoslaní galérie.","unchanged":true,"timeOrigin":1793865807979.8}
+{"phase":"restored after real reload","HU":true,"timeOrigin":1793865819002.4}

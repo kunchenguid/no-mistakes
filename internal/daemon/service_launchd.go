@@ -33,9 +33,9 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create launch agents directory: %w", err)
 	}
-	// writeServiceFile resolves the proxy environment once and feeds it to the
+	// writeServiceFile resolves the forwarded environment once and feeds it to the
 	// renderer, so the plist content and its permission mode stay in sync
-	// (see serviceProxyEnv / writeServiceFile).
+	// (see serviceEnv / writeServiceFile).
 	render := func(proxyEnv [][2]string) string {
 		return renderLaunchAgentWithProxyEnv(exe, p, home, proxyEnv)
 	}
@@ -179,18 +179,15 @@ func launchdDomainTarget() (string, error) {
 	return "gui/" + u.Uid, nil
 }
 
-// renderLaunchAgent renders the launchd plist, resolving the proxy environment
-// from the current process environment itself. It is a convenience wrapper used
-// only by tests; production callers use renderLaunchAgentWithProxyEnv, because
-// both the install path and drift detection resolve the proxy environment once
-// (preferring the on-disk definition when the live environment has none) and
-// pass it in.
+// renderLaunchAgent is a test convenience wrapper using serviceEnv(nil).
+// Production callers use renderLaunchAgentWithProxyEnv with the environment
+// resolved by serviceEnv from the process and existing definition.
 func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
-	return renderLaunchAgentWithProxyEnv(exe, p, home, serviceProxyEnv())
+	return renderLaunchAgentWithProxyEnv(exe, p, home, serviceEnv(nil))
 }
 
-// renderLaunchAgentWithProxyEnv renders the launchd plist using a proxy
-// environment supplied by the caller (see serviceProxyEnv).
+// renderLaunchAgentWithProxyEnv renders the launchd plist using the forwarded
+// proxy and telemetry environment supplied by the caller (see serviceEnv).
 func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, proxyEnv [][2]string) string {
 	values := []string{exe, "daemon", "run", "--root", p.Root()}
 	var args strings.Builder
@@ -200,7 +197,7 @@ func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, prox
 		args.WriteString("</string>\n")
 	}
 	// Build the entire EnvironmentVariables <dict> as one self-contained block:
-	// the fixed HOME/PATH entries plus the forwarded proxy variables, closed by
+	// the fixed HOME/PATH entries plus the forwarded environment, closed by
 	// its own </dict>. Assembling the complete dict here avoids splicing a
 	// proxy fragment into the template via "%s  </dict>", which depended on the
 	// fragment's trailing newline and indentation lining up. Proxy variables are

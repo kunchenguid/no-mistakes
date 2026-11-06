@@ -19,6 +19,7 @@ var _ scm.ReviewCommentsHost = (*Host)(nil)
 
 // gitlabUser is the author object GitLab attaches to a note.
 type gitlabUser struct {
+	ID       int64  `json:"id"`
 	Username string `json:"username"`
 }
 
@@ -30,6 +31,7 @@ type gitlabNotePosition struct {
 	NewLine *int   `json:"new_line"`
 	OldPath string `json:"old_path"`
 	OldLine *int   `json:"old_line"`
+	HeadSHA string `json:"head_sha"`
 }
 
 // gitlabNote is one note of a merge request discussion.
@@ -133,7 +135,7 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 			if !note.Resolvable || note.Resolved || note.System {
 				continue
 			}
-			if note.Author == nil || !scm.IsReviewBotLogin(scm.ProviderGitLab, note.Author.Username) {
+			if note.Author == nil || (!scm.IsReviewBotLogin(scm.ProviderGitLab, note.Author.Username) && (h.requiredReviewBotID == "" || strconv.FormatInt(note.Author.ID, 10) != h.requiredReviewBotID)) {
 				continue
 			}
 			path, line := note.positionPathLine()
@@ -141,14 +143,20 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 			if note.ID != 0 {
 				id = strconv.Itoa(note.ID)
 			}
+			author, authorID := note.Author.Username, note.Author.ID
+			if h.requiredReviewBotID != "" && strconv.FormatInt(note.Author.ID, 10) == h.requiredReviewBotID {
+				author = "coderabbitai" // ID was verified at the provider boundary; preserve the instance-local ID.
+			}
 			comments = append(comments, scm.ReviewComment{
-				ID:        id,
-				Author:    note.Author.Username,
-				Path:      path,
-				Line:      line,
-				Body:      note.Body,
-				CreatedAt: note.CreatedAt,
-				URL:       reviewCommentURL(pr, note.ID),
+				VerifiedAuthor: h.requiredReviewBotID != "" && strconv.FormatInt(note.Author.ID, 10) == h.requiredReviewBotID,
+				ID:             id,
+				AuthorID:       authorID,
+				Author:         author,
+				Path:           path,
+				Line:           line,
+				Body:           note.Body,
+				CreatedAt:      note.CreatedAt,
+				URL:            reviewCommentURL(pr, note.ID),
 			})
 		}
 	}
@@ -206,6 +214,114 @@ func (h *Host) reviewCommentTarget(ctx context.Context, pr *scm.PR) (string, int
 		return "", 0, fmt.Errorf("%w: cannot determine the GitLab project path for review comments", scm.ErrUnsupported)
 	}
 	return project, number, nil
+}
+
+func (h *Host) codeRabbitReviewCheck(ctx context.Context, pr *scm.PR) (scm.Check, bool, error) {
+	if !containsReviewer(h.requiredReviews, "coderabbit") {
+		return scm.Check{}, false, nil
+	}
+	accountID, _ := strconv.ParseInt(h.requiredReviewBotID, 10, 64)
+	check := scm.Check{Name: "External review: coderabbit", ProviderID: "external-review:coderabbit", ExternalReview: "coderabbit", HeadSHA: strings.TrimSpace(pr.HeadSHA), AppHost: h.host, App: "coderabbitai", AppID: accountID, Bucket: scm.CheckBucketPending, State: "Review incomplete"}
+	if h.requiredReviewBotID == "" || h.projectPath == "" {
+		check.Bucket = scm.CheckBucketFail
+		check.State = "UNSUPPORTED ON GITLAB; configure trusted ci.required_review_bot_id and GitLab project"
+		return check, true, nil
+	}
+	if check.AppHost == "" {
+		check.AppHost = "gitlab"
+	}
+	if check.HeadSHA == "" {
+		return check, true, nil
+	}
+	args := []string{"api", "--paginate", fmt.Sprintf("projects/%s/merge_requests/%s/versions?per_page=100", encodeProjectPath(h.projectPath), pr.Number)}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	out, err := h.cmd(ctx, "glab", args...).CombinedOutput()
+	if err != nil {
+		return scm.Check{}, false, fmt.Errorf("read GitLab merge request versions: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	versions, err := decodeGitlabMRVersions(out)
+	if err != nil {
+		return scm.Check{}, false, err
+	}
+	var pushedAt time.Time
+	for _, version := range versions {
+		if version.HeadSHA == check.HeadSHA && version.CreatedAt.After(pushedAt) {
+			pushedAt = version.CreatedAt
+		}
+	}
+	if pushedAt.IsZero() {
+		return check, true, nil
+	}
+	discussionArgs := []string{"api", "--paginate", fmt.Sprintf("projects/%s/merge_requests/%s/discussions?per_page=100", encodeProjectPath(h.projectPath), pr.Number)}
+	if h.host != "" {
+		discussionArgs = append(discussionArgs, "--hostname", h.host)
+	}
+	discussionsOut, err := h.cmd(ctx, "glab", discussionArgs...).CombinedOutput()
+	if err != nil {
+		return scm.Check{}, false, fmt.Errorf("read GitLab discussions for required review: %s: %w", strings.TrimSpace(string(discussionsOut)), err)
+	}
+	discussions, err := decodeGitlabDiscussions(discussionsOut)
+	if err != nil {
+		return scm.Check{}, false, err
+	}
+	completed := false
+	for _, discussion := range discussions {
+		for _, note := range discussion.Notes {
+			if note.Author == nil || strconv.FormatInt(note.Author.ID, 10) != h.requiredReviewBotID {
+				continue
+			}
+			if note.Resolvable && !note.Resolved && !note.System {
+				check.Bucket, check.State = scm.CheckBucketFail, "Unresolved review finding"
+				return check, true, nil
+			}
+			if note.CreatedAt.After(pushedAt) && (note.Position == nil || note.Position.HeadSHA == "" || note.Position.HeadSHA == check.HeadSHA) {
+				completed = true
+			}
+		}
+	}
+	if completed {
+		check.Bucket, check.State = scm.CheckBucketPass, "Review completed"
+	}
+	return check, true, nil
+}
+
+type gitlabMRVersion struct {
+	HeadSHA   string    `json:"head_commit_sha"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func decodeGitlabMRVersions(out []byte) ([]gitlabMRVersion, error) {
+	dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(out)))
+	var versions []gitlabMRVersion
+	for {
+		var raw json.RawMessage
+		err := dec.Decode(&raw)
+		if errors.Is(err, io.EOF) {
+			return versions, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("decode GitLab merge request versions: %w", err)
+		}
+		var page []gitlabMRVersion
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("decode GitLab merge request versions: %w", err)
+		}
+		if page == nil {
+			return nil, errors.New("decode GitLab merge request versions: expected an array")
+		}
+		versions = append(versions, page...)
+	}
+}
+
+func containsReviewer(reviewers []string, want string) bool {
+	for _, reviewer := range reviewers {
+		if strings.EqualFold(strings.TrimSpace(reviewer), want) {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeGitlabDiscussions reads every discussion from glab output. The payload

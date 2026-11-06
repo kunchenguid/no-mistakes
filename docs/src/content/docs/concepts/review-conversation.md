@@ -512,14 +512,13 @@ certifies its range and leaves `UncertifiedSourceRunID` empty, so the skip in
 `BindPreviousRunReviewRounds` does not fire and the fixer's commits are inside
 this run's own `base..head` scope.
 
-## No round cap
+## No default round cap
 
-There is none, and none may be added. The captain's ruling of 2026-09-15:
-"there is no round cap we have introduced here". The pipeline enforces no limit
-on review fix rounds - neither user-driven nor answer-driven - and there is no
-`review.max_fix_rounds` setting. A worker-side convention about filing
-follow-ups after a couple of rounds is a convention; it is not a pipeline limit
-and must not become one.
+The conversation introduces no round cap. By default the pipeline enforces no
+total limit on review fix rounds. A repository can opt into one with trusted
+[`review.max_fix_rounds`](/no-mistakes/reference/repo-config/#reviewmax_fix_rounds),
+which owns its semantics. An answer round is not a fix round, so answering
+questions never spends that budget.
 
 ## The PR body
 

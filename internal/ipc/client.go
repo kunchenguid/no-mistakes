@@ -164,6 +164,21 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 	return c.CallWithTimeout(method, params, result, defaultCallTimeout)
 }
 
+// RequireTranscriptHomes must succeed before a caller launches a run with
+// selected transcript homes, including before a push can trigger its hook.
+// The probe uses this connection so it confirms the daemon receiving the run.
+func (c *Client) RequireTranscriptHomes() error {
+	var result ProbeTranscriptHomesResult
+	err := c.Call(MethodProbeTranscriptHomes, nil, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the transcript-home capability")
+	}
+	if err != nil {
+		return fmt.Errorf("cannot confirm that the running daemon honors transcript-home selection (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
 // CallWithTimeout is Call with a caller-selected read deadline.
 func (c *Client) CallWithTimeout(method string, params interface{}, result interface{}, timeout time.Duration) error {
 	return c.CallWithContext(context.Background(), method, params, result, timeout)
@@ -177,10 +192,19 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 		return err
 	}
 
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
 	req, err := NewRequest(method, params)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
+	req.DeadlineUnixNano = deadline.UnixNano()
 
 	// Count the actual JSON encoding, including its newline delimiter: Scanner
 	// needs that delimiter inside MaxFrameBytes, and escaping/duplicated guidance
@@ -196,10 +220,7 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 		return fmt.Errorf("send request: %w", err)
 	}
 
-	if timeout <= 0 {
-		timeout = defaultCallTimeout
-	}
-	c.conn.SetReadDeadline(time.Now().Add(timeout))
+	c.conn.SetReadDeadline(deadline)
 	interruptDone := make(chan struct{})
 	stopInterrupt := context.AfterFunc(ctx, func() {
 		c.conn.SetReadDeadline(time.Now())

@@ -171,42 +171,63 @@ func serviceProxyEnv() [][2]string {
 	return out
 }
 
+// serviceEnv resolves the forwarded proxy and telemetry environment for both
+// installation and drift detection. Proxies retain their existing group override
+// semantics. Telemetry is resolved independently so a proxy change cannot discard
+// a stored opt-out, and changing telemetry cannot discard the stored proxies.
+func serviceEnv(inherited [][2]string) [][2]string {
+	out := serviceProxyEnv()
+	if len(out) == 0 {
+		for _, kv := range inherited {
+			if isProxyEnvKey(kv[0]) {
+				out = append(out, kv)
+			}
+		}
+	}
+	const telemetryKey = "NO_MISTAKES_TELEMETRY"
+	if value := os.Getenv(telemetryKey); strings.TrimSpace(value) != "" {
+		return append(out, [2]string{telemetryKey, value})
+	}
+	for _, kv := range inherited {
+		if kv[0] == telemetryKey {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // writeServiceFile renders a generated service definition (systemd unit or
 // launchd plist) via render and writes it with a permission mode that depends
-// on whether proxy values were forwarded into it. When proxy variables are
-// present the file may carry sensitive data (a proxy URL can embed credentials,
-// e.g. http://user:pass@host), so it is restricted to owner-only 0600;
-// otherwise the conventional 0644 is kept so non-proxy installs are
-// byte-for-byte and mode-for-mode unchanged.
+// on whether proxy or telemetry values were forwarded into it. Any forwarded
+// values select owner-only 0600, protecting proxy URLs that may embed credentials
+// (e.g. http://user:pass@host). With no forwarded values, the mode is 0644.
 //
-// The proxy environment is resolved here, exactly once, and handed to render so
+// The forwarded environment is resolved here, exactly once, and handed to render so
 // that the rendered content and the permission mode are derived from the same
 // value and cannot disagree. Taking a render callback rather than a finished
 // (content, proxyEnv) pair makes it structurally impossible for a caller to
 // bake proxy credentials into the content yet have it written under the
 // world-readable 0644 mode.
 //
-// When the current environment has no proxy variables set but a proxy was
-// already baked into the existing on-disk definition, the proxy is inherited
-// from that file via parseExistingProxyEnv rather than stripped. This mirrors
-// how reinstallManagedServiceIfChanged inherits the existing executable, and
-// keeps an env-less reinstall (e.g. a binary upgrade) from dropping the proxy
-// the daemon relies on. parseExistingProxyEnv may be nil for callers that never
-// forward a proxy.
+// Existing proxy and telemetry values are inherited via parseExistingProxyEnv
+// when absent from the current environment, using the same serviceEnv resolver
+// as drift detection. An env-less binary upgrade therefore retains the opt-out
+// as well as the proxies. The parser may be nil when there is no existing file.
 //
-// When proxy values are present the content is written to a sibling temp file
+// When forwarded values are present the content is written to a sibling temp file
 // created at 0600 and atomically renamed over the target, so credential-bearing
 // content is owner-only from the instant it first exists on disk. A plain
 // os.WriteFile only applies its mode on create, so re-installing over a
 // pre-existing 0644 file (the no-proxy -> proxy transition) would leave the
 // credentials world-readable until a follow-up Chmod tightened the mode.
 func writeServiceFile(path string, parseExistingProxyEnv func([]byte) [][2]string, render func(proxyEnv [][2]string) string) error {
-	proxyEnv := serviceProxyEnv()
-	if len(proxyEnv) == 0 && parseExistingProxyEnv != nil {
+	var inherited [][2]string
+	if parseExistingProxyEnv != nil {
 		if existing, err := os.ReadFile(path); err == nil {
-			proxyEnv = parseExistingProxyEnv(existing)
+			inherited = parseExistingProxyEnv(existing)
 		}
 	}
+	proxyEnv := serviceEnv(inherited)
 	content := []byte(render(proxyEnv))
 	if len(proxyEnv) == 0 {
 		mode := os.FileMode(0o644)

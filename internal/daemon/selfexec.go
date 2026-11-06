@@ -175,7 +175,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths, beforeRestart func() error
 	}
 
 	existing, readErr := os.ReadFile(installPath)
-	// Inherit any proxy already baked into the existing definition so an
+	// Inherit proxy and telemetry values already baked into the definition so an
 	// env-less `daemon start` does not render a no-proxy target, falsely detect
 	// drift, and reinstall - which would strip the proxy and re-break the daemon
 	// with "403 Request not allowed". This mirrors the executable inheritance
@@ -195,10 +195,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths, beforeRestart func() error
 			inheritedProxyEnv = systemdUnitProxyEnv(existing)
 		}
 	}
-	proxyEnv := serviceProxyEnv()
-	if len(proxyEnv) == 0 {
-		proxyEnv = inheritedProxyEnv
-	}
+	proxyEnv := serviceEnv(inheritedProxyEnv)
 	switch runtimeGOOS {
 	case "darwin":
 		wanted = renderLaunchAgentWithProxyEnv(renderedExecutable, p, home, proxyEnv)
@@ -343,14 +340,21 @@ func startDetachedDaemon(p *paths.Paths) error {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
 
+	cmd := exec.Command(exe, "daemon", "run", "--root", p.Root())
+	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
+	return launchDetachedDaemon(p, cmd)
+}
+
+// launchDetachedDaemon starts cmd as a daemon detached from this process, its
+// output appended to the bootstrap log, and waits until that exact child
+// answers on the daemon socket.
+func launchDetachedDaemon(p *paths.Paths, cmd *exec.Cmd) error {
 	logFile, err := os.OpenFile(p.DaemonBootstrapLog(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open daemon bootstrap log: %w", err)
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(exe, "daemon", "run", "--root", p.Root())
-	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Detach from parent process group so daemon survives CLI exit.

@@ -201,6 +201,7 @@ type retryFixture struct {
 type retryFixtureOptions struct {
 	beforeSource func(t *testing.T, f *retryFixture)
 	profile      *agentcfg.PiProfile
+	reviewer     *agentcfg.ReviewerProfile
 	plan         *verificationplan.Snapshot
 	failInTest   bool
 	twoHop       bool
@@ -211,6 +212,8 @@ type retryFixtureOptions struct {
 	invocation db.AgentInvocation
 	// findings is the findings JSON the carried review round recorded.
 	findings *string
+	// prText is the caller-supplied PR text the failed source run carried.
+	prText db.RunPRText
 }
 
 func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
@@ -224,12 +227,16 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	f := &retryFixture{p: p, d: d, repo: repo, submitted: submitted, callerHead: submitted, executions: &executions}
 	if opts.beforeSource != nil {
 		opts.beforeSource(t, f)
+		submitted = f.submitted
 	}
-	var profiles []*agentcfg.PiProfile
+	var profiles []agentcfg.RunSelection
 	if opts.profile != nil {
 		profiles = append(profiles, opts.profile)
 	}
-	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
+	if opts.reviewer != nil {
+		profiles = append(profiles, opts.reviewer)
+	}
+	source, err := d.InsertRunWithPRText(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,6 +379,25 @@ func (f *retryFixture) stepRow(t *testing.T, name types.StepName) *db.StepResult
 	}
 	t.Fatalf("source run has no %s step", name)
 	return nil
+}
+
+func TestRetryRejectsTrustedRepoIntentBeforeAdmission(t *testing.T) {
+	f := newRetryFixture(t, retryFixtureOptions{beforeSource: func(t *testing.T, f *retryFixture) {
+		f.submitted = commitTrustedRepoConfig(t, f.repo, "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nintent:\n  check:\n    mode: reject\n    terms: [\"keep it\"]\n")
+		f.callerHead = f.submitted
+	}})
+
+	_, err := f.retry(t, f.source.ID)
+	if err == nil || !strings.Contains(err.Error(), "intent rejected by configured rules: terms[0]") || strings.Contains(err.Error(), "keep it") {
+		t.Fatalf("retry rejection = %v, want trusted rule index without inherited intent", err)
+	}
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("rejected retry created a run: count=%d err=%v", len(runs), err)
+	}
+	if f.executions.Load() != 0 {
+		t.Fatalf("rejected retry executed %d pipeline steps", f.executions.Load())
+	}
 }
 
 func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {
@@ -649,6 +675,19 @@ func TestRetryStartsWhenEveryProofHolds(t *testing.T) {
 	}
 	if got := f.executions.Load(); got != 2 {
 		t.Fatalf("executed %d steps, want review and test only", got)
+	}
+}
+
+func TestRetryInheritsTheSuppliedPRText(t *testing.T) {
+	text := db.RunPRText{Title: "Add widget", Body: "Our words.\n"}
+	f := newRetryFixture(t, retryFixtureOptions{prText: text})
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	run := waitForRunTerminalState(t, f.d, result.RunID)
+	if run.PRTitle == nil || *run.PRTitle != text.Title || run.PRBody == nil || *run.PRBody != text.Body {
+		t.Fatalf("retried run PR text = %v / %v", run.PRTitle, run.PRBody)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 func logLifecycleInvocation(command string, force bool) {
@@ -45,7 +46,9 @@ func parentCommandLine(ppid int) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-o", "command=", "-p", fmt.Sprint(ppid)).Output()
+	cmd := exec.CommandContext(ctx, "ps", "-o", "command=", "-p", fmt.Sprint(ppid))
+	winproc.Harden(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

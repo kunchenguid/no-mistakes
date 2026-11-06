@@ -1616,10 +1616,9 @@ func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testin
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			// The branch adds app.go and ignores *.txt, so the reviewable set
-			// is app.go alone; the canned clean review covers it in one turn.
+			// Trusted instructions keep feature.txt in scope despite pushed ignores.
 			findings := cleanReviewFindings()
-			findings.ReviewedPaths = []string{"app.go"}
+			findings.ReviewedPaths = []string{"app.go", "feature.txt"}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},

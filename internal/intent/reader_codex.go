@@ -22,7 +22,7 @@ import (
 const CodexReaderName = "codex"
 
 // codexReader reads Codex CLI sessions. Session metadata (cwd, timestamps,
-// rollout path) lives in ~/.codex/state_*.sqlite; the actual transcript is
+// rollout path) lives in the selected account's state_*.sqlite; the transcript is
 // a JSONL rollout file referenced by threads.rollout_path. We use the
 // SQLite to filter candidates fast, then parse the rollout to recover the
 // full user/assistant turn-by-turn text needed for intent inference.
@@ -34,11 +34,19 @@ func NewCodexReader() Reader { return &codexReader{} }
 func (r *codexReader) Name() string { return CodexReaderName }
 
 func (r *codexReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
-	home, err := resolveHome(opts.HomeDir)
-	if err != nil {
+	if err := opts.TranscriptHomes.ValidateCodex(); err != nil {
 		return nil, err
 	}
-	codexHome := filepath.Join(home, ".codex")
+	var codexHome string
+	if opts.TranscriptHomes != nil {
+		codexHome = opts.TranscriptHomes.CodexHome
+	} else {
+		home, err := resolveHome(opts.HomeDir)
+		if err != nil {
+			return nil, err
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
 	dbPath, err := resolveCodexStateDB(codexHome)
 	if err != nil {
 		return nil, err
@@ -82,7 +90,7 @@ func (r *codexReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sessi
 		if !matcher.matches(ctx, cwd) {
 			continue
 		}
-		// Resolve relative rollout paths against ~/.codex.
+		// Resolve relative rollout paths against the selected account home.
 		if rolloutPath != "" && !filepath.IsAbs(rolloutPath) {
 			rolloutPath = filepath.Join(codexHome, rolloutPath)
 		}

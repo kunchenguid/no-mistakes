@@ -240,6 +240,7 @@ func TestNewModel_DoneRoutesThroughTerminal(t *testing.T) {
 		{types.RunFailed, true},
 		{types.RunCancelled, true},
 		{types.RunCIMonitorInterrupted, true},
+		{types.RunHandedOff, true},
 	}
 	for _, tc := range cases {
 		run := testRun()

@@ -126,7 +126,7 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 
 	// Expanded rendering previews the same committed image without losing
 	// either artifact's commit-pinned source link.
-	md = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, evidenceDir, links, scm.ProviderGitHub, nil, false)
+	md = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, evidenceDir, links, scm.ProviderGitHub, nil, false, "")
 	for _, want := range []string{
 		"![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.png)",
 		"- Evidence: [Checkout screenshot](" + wantLink + ")",

@@ -8,9 +8,40 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
+// unfinishedGitOperationError refuses staging and CI repair commits while a
+// merge or rebase is still in progress. git add -A would mark conflicted
+// paths resolved, and the following commit would conclude the merge.
+type unfinishedGitOperationError struct {
+	rebase bool
+	merge  bool
+}
+
+func (e *unfinishedGitOperationError) Error() string {
+	switch {
+	case e.rebase && e.merge:
+		return "a merge and a rebase are in progress; abort the rebase with `git rebase --abort` and finish or abort the merge before selecting fix"
+	case e.rebase:
+		return "a rebase is in progress; abort it with `git rebase --abort` before selecting fix"
+	default:
+		return "a merge is in progress; finish or abort it before selecting fix"
+	}
+}
+
+func refuseUnfinishedGitOperation(sctx *pipeline.StepContext) error {
+	rebase := rebaseInProgress(sctx.Ctx, sctx.WorkDir)
+	merge := mergeInProgress(sctx.Ctx, sctx.WorkDir)
+	if !rebase && !merge {
+		return nil
+	}
+	return &unfinishedGitOperationError{rebase: rebase, merge: merge}
+}
+
 // stagePipelineChanges guards every pipeline-owned catch-all staging path,
 // including Push's leftover commit. Refusal preserves the index and worktree.
 func stagePipelineChanges(sctx *pipeline.StepContext) error {
+	if err := refuseUnfinishedGitOperation(sctx); err != nil {
+		return err
+	}
 	if len(sctx.Config.ProtectedPaths) > 0 {
 		// Disable renames so both source and destination are checked, and list
 		// individual untracked files so a protected path inside a new directory
