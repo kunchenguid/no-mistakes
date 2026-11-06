@@ -1716,13 +1716,6 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // the repository/branch lock. Proof fields are empty for ordinary launches,
 // and retry is nil for every run that does not continue a failed one.
 func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
-	identity, identityErr := submissionIdentity(ctx, repo.WorkingPath)
-	if retry != nil {
-		identity, identityErr = m.db.RunCommitIdentity(retry.source.ID)
-	}
-	if identityErr != nil {
-		return "", identityErr
-	}
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
@@ -1882,6 +1875,18 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 	}
 
+	// Resolve provenance before superseding a healthy run. A retry keeps the
+	// original binding even when the checkout or caller environment changed.
+	var identity git.CommitIdentity
+	var identityErr error
+	if retry != nil {
+		identity, identityErr = m.db.RunCommitIdentity(retry.source.ID)
+	} else {
+		identity, identityErr = submissionIdentity(ctx, repo.WorkingPath)
+	}
+	if identityErr != nil {
+		return "", identityErr
+	}
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
