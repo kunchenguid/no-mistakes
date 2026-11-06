@@ -86,6 +86,9 @@ func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string,
 // run by id: status carries --run, and a reattach command without a --run form
 // is named as one that must run in the clone of that run.
 func emitAxiWaitElapsedForRun(cmd *cobra.Command, wait time.Duration, runID, reattach string, lead ...toon.Field) error {
+	if wait != defaultAxiWait {
+		reattach += " --wait " + wait.String()
+	}
 	reattachLine := fmt.Sprintf("Re-run `%s` to reattach for another %s", reattach, wait)
 	if runID != "" && !strings.Contains(reattach, "--run") {
 		reattachLine = fmt.Sprintf("Re-run `%s` in the clone of run %s to reattach for another %s", reattach, runID, wait)

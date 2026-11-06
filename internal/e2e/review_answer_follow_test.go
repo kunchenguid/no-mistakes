@@ -280,7 +280,7 @@ func TestAxiAnswerWaitElapsedReattachesWithAxiRun(t *testing.T) {
 	if !strings.Contains(out, "wait of 3s elapsed while driving the run") {
 		t.Fatalf("the elapsed wait was not reported as one:\n%s", out)
 	}
-	if !strings.Contains(out, "Re-run `no-mistakes axi run`") {
+	if !strings.Contains(out, "Re-run `no-mistakes axi run --wait 3s`") {
 		t.Fatalf("the elapsed wait does not reattach with the non-mutating command:\n%s", out)
 	}
 	if strings.Contains(out, "Re-run `no-mistakes axi answer") {
