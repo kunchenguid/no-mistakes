@@ -139,7 +139,7 @@ func decodeRoundDecision(round *db.StepRound) error {
 // same rule the executor applies to an unreadable round history). The gate
 // stays parked, and the refusal names the problem and points at the state to
 // inspect.
-func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingIDs, ignoreFindingIDs []string) (RespondDispositions, error) {
+func splitFixResponse(step types.StepName, gateFindingsJSON string, rounds []*db.StepRound, findingIDs, ignoreFindingIDs []string) (RespondDispositions, error) {
 	gate, gateParsed := parseGateFindingIDs(gateFindingsJSON)
 	inGate := make(map[string]bool, len(gate))
 	for _, id := range gate {
@@ -194,7 +194,7 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 		}
 	}
 
-	chosenToFix := earlierChosenToFixIDs(rounds, gateFindingsJSON)
+	chosenToFix := earlierChosenToFixIDs(step, rounds, gateFindingsJSON)
 	var reversals []string
 	for _, id := range gate {
 		if ignoreSet[id] && chosenToFix[id] {
@@ -282,11 +282,26 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 }
 
 // earlierChosenToFixIDs names the gate's findings an earlier round already
-// chose to fix. It asks the same settlement identity the filter does, so a
-// response is refused exactly when the disposition it asks for could never be
-// credited, and a finding the selection never named - a twin at another line,
-// or an instance a payload showed twice - stays declinable on its own.
-func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
+// chose to fix.
+//
+// Only Review carries a decision forward by content, so only there does the
+// reversal refusal ask the settlement identity the filter does - a finding the
+// selection never named, a twin at another line or an instance a payload showed
+// twice, stays declinable on its own. Every other step re-derives its findings
+// each round and settles nothing, so it keeps the exact identity
+// earlierUserDecisionIDs reads: the two halves of a response's accounting have
+// to agree about which finding is the same finding, or a re-derived finding at
+// a new line is neither already decided nor declinable.
+func earlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate string) map[string]bool {
+	if step != types.StepReview {
+		keys := make(map[string]bool)
+		for _, round := range rounds {
+			for key := range ChosenFindingKeys(round) {
+				keys[key] = true
+			}
+		}
+		return decisionIDsInGate(keys, gate)
+	}
 	chosen := chosenToFixSettlements(rounds)
 	findings, _ := types.ParseFindingsJSON(gate)
 	counts := countFindingFingerprints(findings.Items)

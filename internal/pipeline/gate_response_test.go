@@ -40,7 +40,7 @@ func userDecisionRound(t *testing.T, findings string, selected ...string) *db.St
 }
 
 func TestSplitFixResponse_RefusesAFindingTheResponseNeverAccountsFor(t *testing.T) {
-	_, err := splitFixResponse(gateFindingsThree, nil, []string{"R1"}, nil)
+	_, err := splitFixResponse(types.StepReview, gateFindingsThree, nil, []string{"R1"}, nil)
 
 	var refusal *RespondRefusal
 	if !errors.As(err, &refusal) {
@@ -72,7 +72,7 @@ func TestSplitFixResponse_RefusesUnknownAndDoubleListedIDs(t *testing.T) {
 		{name: "id in both lists", findings: []string{"R1", "R2", "R3"}, ignore: []string{"R2"}, want: "R2 listed in both --findings and --ignore"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := splitFixResponse(gateFindingsThree, nil, tc.findings, tc.ignore)
+			_, err := splitFixResponse(types.StepReview, gateFindingsThree, nil, tc.findings, tc.ignore)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
 			}
@@ -83,7 +83,7 @@ func TestSplitFixResponse_RefusesUnknownAndDoubleListedIDs(t *testing.T) {
 func TestSplitFixResponse_KeepsAnEarlierDecisionOnOmission(t *testing.T) {
 	rounds := []*db.StepRound{userDecisionRound(t, gateFindingsThree, "R1")}
 
-	got, err := splitFixResponse(gateFindingsThree, rounds, []string{"R2"}, []string{"R3"})
+	got, err := splitFixResponse(types.StepReview, gateFindingsThree, rounds, []string{"R2"}, []string{"R3"})
 	if err != nil {
 		t.Fatalf("omitting a finding an earlier round decided must be allowed: %v", err)
 	}
@@ -104,12 +104,32 @@ func TestSplitFixResponse_AllowsDecliningATwinTheSelectionNeverNamed(t *testing.
 		`{"id":"survivor","severity":"warning","file":"a.go","line":54,"description":"missing nil check","action":"ask-user"}]}`
 	rounds := []*db.StepRound{userDecisionRound(t, twins, "twin-a")}
 
-	got, err := splitFixResponse(moved, rounds, nil, []string{"survivor"})
+	got, err := splitFixResponse(types.StepReview, moved, rounds, nil, []string{"survivor"})
 	if err != nil {
 		t.Fatalf("declining a twin the selection never named was refused: %v", err)
 	}
 	if strings.Join(got.Ignored, ",") != "survivor" {
 		t.Fatalf("ignored = %v, want [survivor]", got.Ignored)
+	}
+}
+
+// Only Review carries a decision forward by content. A step that re-derives its
+// findings every round settles nothing, so a finding at a new line is a new
+// finding there: the response may decline it, exactly as it could before the
+// Review-only content identity existed.
+func TestSplitFixResponse_ANonReviewStepKeepsExactFixIdentity(t *testing.T) {
+	one := `{"findings":[` +
+		`{"id":"only","severity":"warning","file":"a.go","line":10,"description":"unused import","action":"ask-user"}]}`
+	moved := `{"findings":[` +
+		`{"id":"rederived","severity":"warning","file":"a.go","line":14,"description":"unused import","action":"ask-user"}]}`
+	rounds := []*db.StepRound{userDecisionRound(t, one, "only")}
+
+	got, err := splitFixResponse(types.StepLint, moved, rounds, nil, []string{"rederived"})
+	if err != nil {
+		t.Fatalf("declining a re-derived Lint finding was refused as a fix reversal: %v", err)
+	}
+	if strings.Join(got.Ignored, ",") != "rederived" {
+		t.Fatalf("ignored = %v, want [rederived]", got.Ignored)
 	}
 }
 
@@ -122,7 +142,7 @@ func TestSplitFixResponse_RefusesDecliningAUniqueEarlierFixAtANewLine(t *testing
 		`{"id":"reissued","severity":"warning","file":"a.go","line":14,"description":"missing nil check","action":"ask-user"}]}`
 	rounds := []*db.StepRound{userDecisionRound(t, one, "only")}
 
-	_, err := splitFixResponse(moved, rounds, nil, []string{"reissued"})
+	_, err := splitFixResponse(types.StepReview, moved, rounds, nil, []string{"reissued"})
 
 	var refusal *RespondRefusal
 	if !errors.As(err, &refusal) || strings.Join(refusal.DeclinedEarlierFix, ",") != "reissued" {
@@ -136,7 +156,7 @@ func TestSplitFixResponse_RefusesDecliningAUniqueEarlierFixAtANewLine(t *testing
 func TestSplitFixResponse_RefusesDecliningAFindingChosenToFixEarlier(t *testing.T) {
 	rounds := []*db.StepRound{userDecisionRound(t, gateFindingsThree, "R1")}
 
-	_, err := splitFixResponse(gateFindingsThree, rounds, []string{"R2"}, []string{"R1", "R3"})
+	_, err := splitFixResponse(types.StepReview, gateFindingsThree, rounds, []string{"R2"}, []string{"R1", "R3"})
 
 	var refusal *RespondRefusal
 	if !errors.As(err, &refusal) {
@@ -161,7 +181,7 @@ func TestSplitFixResponse_RefusesDecliningAFindingChosenToFixEarlier(t *testing.
 func TestSplitFixResponse_AnAutoFixSelectionDecidesNothing(t *testing.T) {
 	rounds := []*db.StepRound{selectionRound(t, db.RoundSelectionSourceAutoFix, gateFindingsThree, "R2")}
 
-	_, err := splitFixResponse(gateFindingsThree, rounds, []string{"R1"}, nil)
+	_, err := splitFixResponse(types.StepReview, gateFindingsThree, rounds, []string{"R1"}, nil)
 	var refusal *RespondRefusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("err = %v, want a refusal: an auto-fix complement is not a human decision", err)
@@ -175,7 +195,7 @@ func TestSplitFixResponse_AnApprovalDecidesEveryFindingItShowed(t *testing.T) {
 	shown := `{"findings":[{"id":"R2","severity":"error","file":"a.go","description":"second","action":"auto-fix"}]}`
 	rounds := []*db.StepRound{selectionRound(t, db.RoundSelectionSourceUserDeclined, shown, nil...)}
 
-	got, err := splitFixResponse(gateFindingsThree, rounds, []string{"R1"}, []string{"R3"})
+	got, err := splitFixResponse(types.StepReview, gateFindingsThree, rounds, []string{"R1"}, []string{"R3"})
 	if err != nil {
 		t.Fatalf("a finding an earlier approve declined must not need restating: %v", err)
 	}
@@ -187,7 +207,7 @@ func TestSplitFixResponse_AnApprovalDecidesEveryFindingItShowed(t *testing.T) {
 // The shape `--yes` and the auto-driver send: every finding the gate shows,
 // with no declines.
 func TestSplitFixResponse_EveryFindingSelectedWithNoDeclinesPasses(t *testing.T) {
-	got, err := splitFixResponse(gateFindingsThree, nil, []string{"R1", "R2", "R3"}, nil)
+	got, err := splitFixResponse(types.StepReview, gateFindingsThree, nil, []string{"R1", "R2", "R3"}, nil)
 	if err != nil {
 		t.Fatalf("selecting every finding must never be refused: %v", err)
 	}
@@ -197,7 +217,7 @@ func TestSplitFixResponse_EveryFindingSelectedWithNoDeclinesPasses(t *testing.T)
 }
 
 func TestSplitFixResponse_DispositionsAreInGateOrder(t *testing.T) {
-	got, err := splitFixResponse(gateFindingsThree, nil, []string{"R3", "R1"}, []string{"R2"})
+	got, err := splitFixResponse(types.StepReview, gateFindingsThree, nil, []string{"R3", "R1"}, []string{"R2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +233,7 @@ func TestSplitFixResponse_DispositionsAreInGateOrder(t *testing.T) {
 // fix response is validated against, so a payload this cannot read refuses the
 // response (fail closed) rather than passing as a gate that showed nothing.
 func TestSplitFixResponse_UnreadableGateRefusesTheResponse(t *testing.T) {
-	_, err := splitFixResponse("{not json", nil, []string{"R1"}, nil)
+	_, err := splitFixResponse(types.StepReview, "{not json", nil, []string{"R1"}, nil)
 
 	var refusal *RespondRefusal
 	if !errors.As(err, &refusal) {
@@ -771,10 +791,10 @@ func selectionIDsOf(t *testing.T, raw *string) []string {
 func TestSplitFixResponse_ReusedIDNeedsItsOwnDecision(t *testing.T) {
 	old := userDecisionRound(t, gateFindingsThree, "R1")
 	current := strings.ReplaceAll(gateFindingsThree, `"first"`, `"unrelated defect"`)
-	if _, err := splitFixResponse(current, []*db.StepRound{old}, []string{"R2", "R3"}, nil); err == nil {
+	if _, err := splitFixResponse(types.StepReview, current, []*db.StepRound{old}, []string{"R2", "R3"}, nil); err == nil {
 		t.Fatal("an unrelated finding inherited the old decision")
 	}
-	got, err := splitFixResponse(current, []*db.StepRound{old}, []string{"R2", "R3"}, []string{"R1"})
+	got, err := splitFixResponse(types.StepReview, current, []*db.StepRound{old}, []string{"R2", "R3"}, []string{"R1"})
 	if err != nil || strings.Join(got.Ignored, ",") != "R1" {
 		t.Fatalf("new finding cannot be declined: %+v, %v", got, err)
 	}
@@ -784,7 +804,7 @@ func TestSplitFixResponse_SelectedAdditionKeepsItsDecision(t *testing.T) {
 	round := userDecisionRound(t, `{"findings":[]}`, "user-1")
 	added := `{"findings":[{"id":"user-1","description":"repair logger"}]}`
 	round.UserFindingsJSON = &added
-	got, err := splitFixResponse(added, []*db.StepRound{round}, nil, nil)
+	got, err := splitFixResponse(types.StepReview, added, []*db.StepRound{round}, nil, nil)
 	if err != nil || strings.Join(got.Kept, ",") != "user-1" {
 		t.Fatalf("added finding lost its selection: %+v, %v", got, err)
 	}
@@ -958,10 +978,10 @@ func TestSplitFixResponse_PaddedGateIDIsSelectableByItsTrimmedID(t *testing.T) {
 		t.Fatalf("gate json = %s, want the normalized id", gate)
 	}
 	for _, spelling := range []string{"R1", " R1 ", "\tR1\n"} {
-		if _, err := splitFixResponse(gate, nil, []string{spelling}, nil); err != nil {
+		if _, err := splitFixResponse(types.StepReview, gate, nil, []string{spelling}, nil); err != nil {
 			t.Fatalf("selecting with %q was refused: %v", spelling, err)
 		}
-		if _, err := splitFixResponse(gate, nil, nil, []string{spelling}); err != nil {
+		if _, err := splitFixResponse(types.StepReview, gate, nil, nil, []string{spelling}); err != nil {
 			t.Fatalf("declining with %q was refused: %v", spelling, err)
 		}
 	}
@@ -1026,7 +1046,7 @@ func TestSplitFixResponse_AnExternalRoundDecidesOnlyTheFindingsItNamed(t *testin
 	round.SelectedFindingIDs = &empty
 	round.UserFindingsJSON = &settled
 
-	_, err := splitFixResponse(gateFindingsThree, []*db.StepRound{round}, []string{"R2"}, nil)
+	_, err := splitFixResponse(types.StepReview, gateFindingsThree, []*db.StepRound{round}, []string{"R2"}, nil)
 
 	var refusal *RespondRefusal
 	if !errors.As(err, &refusal) {

@@ -414,7 +414,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		// of this step chose to fix, exactly as --ignore can only decline one.
 		// Accepting it here and silently never applying it would report a
 		// decision the run never acted on.
-		chosenToFix := earlierChosenToFixIDs(rounds, e.waitingFindings)
+		chosenToFix := earlierChosenToFixIDs(step, rounds, e.waitingFindings)
 		var reversals []string
 		for _, id := range gate {
 			if named[id] && chosenToFix[id] {
@@ -527,7 +527,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 				return RespondDispositions{}, refusal
 			}
 		}
-		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
+		split, err := splitFixResponse(step, e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
 		if err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err

@@ -123,7 +123,7 @@ func earlierChosenToFix(exec *Executor, stepResultID, gate string) map[string]bo
 	if err != nil {
 		return nil
 	}
-	return earlierChosenToFixIDs(rounds, gate)
+	return earlierChosenToFixIDs(types.StepReview, rounds, gate)
 }
 
 func setupTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.Repo) {

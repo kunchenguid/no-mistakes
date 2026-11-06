@@ -128,11 +128,18 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 // SettledReviewFindingCount reports how many distinct findings a human
 // disposition settled without a fix across this step's rounds. It reads the
 // same two sets filterSettledReviewFindings suppresses from, so a finding the
-// operator chose to fix is never published as settled. The instances are
-// counted per content, taking the most any single round settled, because the
-// same finding settled again after the reviewer moved it is one finding the
-// operator decided, not two. Unreadable rounds count nothing: the filter fails
-// the step on them, so a completed step's rounds always parse.
+// operator chose to fix is never published as settled. Unreadable rounds count
+// nothing: the filter fails the step on them, so a completed step's rounds
+// always parse.
+//
+// The instances are counted per content, taking the most any single round
+// settled, so one finding settled again after the reviewer moved it counts
+// once. A round's stored findings are the filtered ones, so a settled instance
+// the reviewer kept in place is already absent from the next round's payload -
+// the same shape a moved instance leaves behind. One content settled at two
+// places in two different rounds is therefore indistinguishable from one
+// settled twice, and this rule reports the lower of the two readings rather
+// than crediting the operator with a decision they may not have made.
 func SettledReviewFindingCount(rounds []*db.StepRound) int {
 	ignored, external, err := settledReviewDispositions(rounds)
 	if err != nil {
