@@ -725,6 +725,10 @@ func extractTrailingNumber(rawURL string) int {
 
 func fakeCIGHReconcileHandler(args []string) {
 	joined := strings.Join(args, " ")
+	if len(args) > 0 && args[0] == "api" && !strings.Contains(joined, "graphql") {
+		fakeGHHandler(args)
+		return
+	}
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}

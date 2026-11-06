@@ -294,6 +294,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
 				return nil, err
 			}
+			if err := verifyPRHeadProofDisclosure(content.Body, s.headProofUnavailable, bodyLimit); err != nil {
+				return nil, err
+			}
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
@@ -344,6 +347,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
+		return nil, err
+	}
+	if err := verifyPRHeadProofDisclosure(content.Body, s.headProofUnavailable, bodyLimit); err != nil {
 		return nil, err
 	}
 	sctx.Log("creating pull request...")

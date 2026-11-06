@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -118,15 +119,20 @@ func narrativeWithIntent(sctx *pipeline.StepContext, whatChanged string) string 
 }
 
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
+	var body string
 	switch appendixMode(sctx) {
 	case config.PRAppendixMinimal:
-		return assembleMinimalPRBody(sctx, whatChanged, riskLine, pipelineMD, bodyLimit, provider)
+		body = assembleMinimalPRBody(sctx, whatChanged, riskLine, pipelineMD, bodyLimit, provider)
 	case config.PRAppendixCollapsed:
 		if prBodyFlavorFor(provider) == prBodyHTML {
-			return assembleCollapsedPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+			body = assembleCollapsedPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+		} else {
+			body = assemblePRBodyFull(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 		}
+	default:
+		body = assemblePRBodyFull(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 	}
-	return assemblePRBodyFull(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+	return retainPRHeadProofDisclosure(body, pipelineMD)
 }
 
 func assembleMinimalPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int, provider scm.Provider) string {
@@ -154,15 +160,50 @@ func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.St
 // buildPRBodyWithin is buildPRBody under a byte budget below the default,
 // which the Issues section uses to reserve its own room.
 func buildPRBodyWithin(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, provider scm.Provider, maxBytes int) string {
+	var fitted string
 	switch appendixMode(sctx) {
 	case config.PRAppendixMinimal:
-		return buildMinimalPRBody(body, riskLine, pipelineMD, sctx, maxBytes, provider)
+		fitted = buildMinimalPRBody(body, riskLine, pipelineMD, sctx, maxBytes, provider)
 	case config.PRAppendixCollapsed:
 		if prBodyFlavorFor(provider) == prBodyHTML {
-			return buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
+			fitted = buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
+		} else {
+			fitted = buildPRBodyFull(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
 		}
+	default:
+		fitted = buildPRBodyFull(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
 	}
-	return buildPRBodyFull(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
+	return retainPRHeadProofDisclosure(fitted, pipelineMD)
+}
+
+// The pipeline introduction is generated locally. Its qualification of the
+// attestation is mandatory metadata, so truncation cannot retain just the marker.
+// If even these two facts cannot fit, the publication guard refuses the write.
+func retainPRHeadProofDisclosure(body, pipelineMD string) string {
+	rest, ok := strings.CutPrefix(pipelineMD, "## Pipeline\n\n")
+	if !ok {
+		return body
+	}
+	intro, _, _ := strings.Cut(rest, "\n\n")
+	notice := strings.TrimSpace(strings.TrimPrefix(intro, noMistakesPRSignature))
+	if notice == "" {
+		return body
+	}
+	marker := carriedAttestation(pipelineMD)
+	if strings.Contains(body, notice) && (marker == "" || strings.Contains(body, marker)) {
+		return body
+	}
+	return joinBlocks(notice, marker)
+}
+
+func verifyPRHeadProofDisclosure(body, notice string, bodyLimit int) error {
+	if notice == "" {
+		return nil
+	}
+	if !strings.Contains(body, notice) || len(body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit) {
+		return fmt.Errorf("PR body cannot retain the head-proof disclosure within the publication budget")
+	}
+	return nil
 }
 
 func buildMinimalPRBody(body, riskLine, pipelineMD string, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
