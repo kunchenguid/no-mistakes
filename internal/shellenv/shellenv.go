@@ -50,6 +50,7 @@ const (
 
 var cacheMu sync.Mutex
 var cachedEnv []string
+var cachedUnaugmentedEnv []string
 
 func LoginShell() string {
 	if shell, ok := lookupEnv("SHELL"); ok && strings.TrimSpace(shell) != "" {
@@ -87,12 +88,18 @@ func Resolve() ([]string, error) {
 func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 	cacheMu.Lock()
 	if cachedEnv != nil {
-		defer cacheMu.Unlock()
-		return append([]string(nil), cachedEnv...), nil
+		augmented := append([]string(nil), cachedEnv...)
+		unaugmented := append([]string(nil), cachedUnaugmentedEnv...)
+		cacheMu.Unlock()
+		return selectShellPathPolicy(augmented, unaugmented), nil
 	}
 	cacheMu.Unlock()
 
 	resolved, resolvedFromShell := resolveUncached(window)
+	unaugmented := append([]string(nil), resolved...)
+	if resolvedFromShell && runtimeGOOS != "windows" {
+		resolved = augmentPath(resolved)
+	}
 
 	// Only cache a successful shell resolution. A degraded fallback (the shell
 	// probe failed or returned nothing) must never be cached: one bad daemon
@@ -103,10 +110,34 @@ func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 		cacheMu.Lock()
 		if cachedEnv == nil {
 			cachedEnv = append([]string(nil), resolved...)
+			cachedUnaugmentedEnv = append([]string(nil), unaugmented...)
 		}
 		cacheMu.Unlock()
+		return selectShellPathPolicy(resolved, unaugmented), nil
 	}
 	return append([]string(nil), resolved...), nil
+}
+
+// Keep both successful representations so a policy change never reuses an
+// already augmented PATH as the shell's original value. Failed probes retain
+// their existing augmented fallback and never reach this policy selection.
+func selectShellPathPolicy(augmented, unaugmented []string) []string {
+	if runtimeGOOS == "windows" {
+		return augmented
+	}
+	control, _ := lookupEnv("NO_MISTAKES_PATH_AUGMENT")
+	if control == "" {
+		for _, entry := range unaugmented {
+			if value, ok := strings.CutPrefix(entry, "NO_MISTAKES_PATH_AUGMENT="); ok {
+				control = value
+				break
+			}
+		}
+	}
+	if control == "0" {
+		return unaugmented
+	}
+	return augmented
 }
 
 func ApplyToProcess() error {
@@ -117,6 +148,11 @@ func ApplyToProcessWithShellRetryExcept(window time.Duration, excluded ...string
 	excludedKeys := make(map[string]struct{}, len(excluded))
 	for _, key := range excluded {
 		excludedKeys[key] = struct{}{}
+	}
+	// A service/launcher-supplied policy outranks the login shell's export,
+	// including on subsequent calls after applying the shell environment.
+	if control, _ := lookupEnv("NO_MISTAKES_PATH_AUGMENT"); control != "" {
+		excludedKeys["NO_MISTAKES_PATH_AUGMENT"] = struct{}{}
 	}
 	env, err := ResolveWithShellRetry(window)
 	if err != nil {
@@ -178,7 +214,7 @@ func resolveUncached(window time.Duration) ([]string, bool) {
 		fallback := append([]string(nil), os.Environ()...)
 		return augmentPath(ensureShellEntry(fallback, shell)), false
 	}
-	return augmentPath(ensureShellEntry(resolved, shell)), true
+	return ensureShellEntry(resolved, shell), true
 }
 
 // probeLoginShell runs the login shell once and returns its environment.
@@ -411,4 +447,5 @@ func resetForTests() {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 	cachedEnv = nil
+	cachedUnaugmentedEnv = nil
 }

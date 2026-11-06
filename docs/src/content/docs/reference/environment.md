@@ -38,6 +38,21 @@ Override how long a CLI client waits for an existing daemon socket to accept a c
 
 Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead. The config value is read from the root whose socket is being dialed, not from the root `NM_HOME` names, so a push handled by the root that owns the gate also waits for the timeout that root configured.
 
+## `NO_MISTAKES_PATH_AUGMENT`
+
+Control PATH augmentation after a successful login-shell probe on macOS and Linux.
+
+|         |                                                     |
+| ------- | --------------------------------------------------- |
+| Type    | `0` to disable; any other value leaves it enabled    |
+| Default | unset, augmentation enabled                         |
+
+Export `NO_MISTAKES_PATH_AUGMENT=0` in your login shell's rc file, then restart the daemon. You can also supply it in the environment that launches the daemon, such as `NO_MISTAKES_PATH_AUGMENT=0 no-mistakes daemon run` for a foreground daemon. A nonempty launcher value takes precedence over the login shell's export. The daemon's `daemon environment ready` log records this policy as `shell_path_augmentation` alongside the effective PATH.
+
+With `0`, a successful probe keeps the shell's PATH exactly, including an empty PATH. A successful environment with no PATH does not synthesize one, so applying it leaves the inherited process PATH in place. Tools outside that PATH will not be found. The default still appends missing well-known binary directories.
+
+If the probe fails or prints no environment entries, the process-environment fallback **still appends well-known directories**, even with `0`. This preserves the existing degraded-startup behavior. Windows continues to use the process environment without probing or augmenting it.
+
 ## `FORGEJO_BASE_URL`
 
 Canonical Forgejo web base URL used for provider discovery and forgejo-axi commands.
