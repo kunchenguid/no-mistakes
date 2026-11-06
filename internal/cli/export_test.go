@@ -95,6 +95,37 @@ UPDATE agent_invocations SET failure_category = 'cancelled' WHERE id = 'inv-canc
 		if err := fixture.Close(); err != nil {
 			t.Fatal(err)
 		}
+		records, err := db.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceStep, err := records.GetStepResult("review-a")
+		if err != nil || sourceStep == nil {
+			records.Close()
+			t.Fatalf("source step: %v", err)
+		}
+		var retryRuns []*db.Run
+		var carriedSteps []*db.StepResult
+		// A second retry must still name the original work, whose rounds and
+		// invocations remain on run-a, rather than an intermediate carried row.
+		for _, branch := range []string{"feature/retry", "feature/retry-again"} {
+			retry, err := records.InsertRun("repo-a", branch, "retry-head", "base-a")
+			if err != nil {
+				records.Close()
+				t.Fatal(err)
+			}
+			carried, err := records.InsertCarriedStepResult(retry.ID, sourceStep)
+			if err != nil {
+				records.Close()
+				t.Fatal(err)
+			}
+			retryRuns = append(retryRuns, retry)
+			carriedSteps = append(carriedSteps, carried)
+			sourceStep = carried
+		}
+		if err := records.Close(); err != nil {
+			t.Fatal(err)
+		}
 		before, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -126,6 +157,9 @@ UPDATE agent_invocations SET failure_category = 'cancelled' WHERE id = 'inv-canc
 			t.Fatalf("steps = %v", steps)
 		}
 		review, ci := steps[0].(map[string]any), steps[1].(map[string]any)
+		if review["carried_from"] != nil || ci["carried_from"] != nil {
+			t.Fatal("executed steps must not claim a carried source")
+		}
 		check("review timing", []any{review["id"], review["name"], review["status"], review["started_at"], review["completed_at"], review["duration_ms"], review["response_origin"]}, `["review-a","review","completed",300,500,111,"interactive"]`)
 		check("CI timing", []any{ci["id"], ci["name"], ci["status"], ci["started_at"], ci["completed_at"], ci["duration_ms"], ci["response_origin"], ci["ci_attempt"]}, `["ci-a","ci","awaiting_approval",600,null,222,"auto_yes",null]`)
 		rounds := review["rounds"].([]any)
@@ -164,6 +198,36 @@ UPDATE agent_invocations SET failure_category = 'cancelled' WHERE id = 'inv-canc
 		}
 		if stdout, _, err := invoke(home, "export", "--run", "missing", "--json"); err == nil || stdout != "" {
 			t.Fatalf("missing run returned %q, %v", stdout, err)
+		}
+		for i, retry := range retryRuns {
+			retryOut, stderr, err := invoke(home, "export", "--run", retry.ID, "--json")
+			if err != nil {
+				t.Fatalf("export retry: %v\n%s", err, stderr)
+			}
+			var retryDoc map[string]any
+			if err := json.Unmarshal([]byte(retryOut), &retryDoc); err != nil {
+				t.Fatal(err)
+			}
+			if retryDoc["run"].(map[string]any)["id"] != retry.ID {
+				t.Fatal("retry export changed the requested run")
+			}
+			retrySteps := retryDoc["steps"].([]any)
+			if len(retrySteps) != 1 {
+				t.Fatalf("retry steps = %v", retrySteps)
+			}
+			step := retrySteps[0].(map[string]any)
+			if step["id"] != carriedSteps[i].ID {
+				t.Fatalf("carried step ID = %v, want %s", step["id"], carriedSteps[i].ID)
+			}
+			check("carried source", step["carried_from"], `{"run_id":"run-a","step_id":"review-a"}`)
+			check("carried timing", []any{step["status"], step["started_at"], step["completed_at"], step["duration_ms"]}, `["completed",300,500,111]`)
+			check("carried rounds remain on source", step["rounds"], `[]`)
+			check("carried invocations remain on source", retryDoc["invocations"], `[]`)
+			for _, secret := range []string{"SENTINEL", "PRIVATE_SESSION", "OTHER_RUN", "inv-ok", "round-a1", "/private/"} {
+				if strings.Contains(retryOut, secret) {
+					t.Fatalf("retry export leaked source payload %q", secret)
+				}
+			}
 		}
 		// A read-only WAL reader can create -wal/-shm sidecars. Checkpoint
 		// after closing the exporter so any record writes hidden in WAL would
