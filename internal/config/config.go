@@ -743,6 +743,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		AutoFix                AutoFixRaw   `yaml:"auto_fix"`
 		CI                     CIRaw        `yaml:"ci"`
 		Rebase                 RebaseRaw    `yaml:"rebase"`
+		Push                   Push         `yaml:"push"`
 		Commit                 CommitRaw    `yaml:"commit"`
 		Intent                 IntentRaw    `yaml:"intent"`
 		Test                   TestRaw      `yaml:"test"`
@@ -767,6 +768,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.CI = raw.CI
 	c.Rebase = raw.Rebase
+	c.Push = raw.Push
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
