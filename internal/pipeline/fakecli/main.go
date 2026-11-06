@@ -66,6 +66,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "az-empty-pr":
+		fakeAzureEmptyPRHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
@@ -575,6 +577,34 @@ func fakeGitForward(args []string, realGit string) {
 	os.Exit(0)
 }
 
+func fakeAzureEmptyPRHandler(args []string) {
+	if len(args) >= 2 && ((args[0] == "extension" && args[1] == "show") || (args[0] == "devops" && args[1] == "project")) {
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "repos" && args[1] == "pr" {
+		switch args[2] {
+		case "list":
+			fmt.Println("[]")
+			os.Exit(0)
+		case "create":
+			file, ok := fakeCLIFlagValue(args, "--description")
+			if !ok || !strings.HasPrefix(file, "@") {
+				os.Exit(1)
+			}
+			body, err := os.ReadFile(strings.TrimPrefix(file, "@"))
+			if err != nil {
+				os.Exit(1)
+			}
+			if err := os.WriteFile(os.Getenv("FAKE_CLI_PR_BODY_FILE"), body, 0o600); err != nil {
+				os.Exit(1)
+			}
+			fmt.Println(`{"pullRequestId":0}`)
+			os.Exit(0)
+		}
+	}
+	os.Exit(1)
+}
+
 func fakeGlabHandler(args []string) {
 	mrViewJSON := os.Getenv("FAKE_CLI_MR_VIEW_JSON")
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
@@ -589,6 +619,10 @@ func fakeGlabHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "view" {
+		if raw, ok := os.LookupEnv("FAKE_CLI_MR_READBACK_JSON"); ok {
+			fmt.Println(raw)
+			os.Exit(0)
+		}
 		if mrViewJSON != "" {
 			fmt.Println(mrViewJSON)
 			os.Exit(0)
@@ -605,6 +639,10 @@ func fakeGlabHandler(args []string) {
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "create" {
 		fakeGlabRecordMR(args, 99)
+		if raw, ok := os.LookupEnv("FAKE_CLI_MR_CREATE_OUTPUT"); ok {
+			fmt.Println(raw)
+			os.Exit(0)
+		}
 		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
 		os.Exit(0)
 	}

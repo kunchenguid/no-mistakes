@@ -208,11 +208,13 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "bitbucket")
+	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(bitbucketPRDescriptionForTest(t, api.lastUpdateBody))
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
@@ -281,11 +283,13 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 		}
 	})
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "bitbucket")
+	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(bitbucketPRDescriptionForTest(t, api.lastUpdateBody))
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
@@ -828,11 +832,13 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "bitbucket")
+	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(bitbucketPRDescriptionForTest(t, api.lastCreateBody))
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
@@ -908,11 +914,13 @@ func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 		}
 	})
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "bitbucket")
+	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(bitbucketPRDescriptionForTest(t, api.lastCreateBody))
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
@@ -967,11 +975,13 @@ func TestPRStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "bitbucket")
+	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(bitbucketPRDescriptionForTest(t, api.lastCreateBody))
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
@@ -2364,7 +2374,8 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "gitlab")
+	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
@@ -2376,6 +2387,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	if !strings.Contains(ghLog, "mr create") {
 		t.Fatalf("expected glab mr create to be called, got:\n%s", ghLog)
 	}
+	assertNotice(ghLog)
 	if !strings.Contains(ghLog, "--title feat: improve gitlab flow") {
 		t.Fatalf("expected generated title in glab call, got:\n%s", ghLog)
 	}

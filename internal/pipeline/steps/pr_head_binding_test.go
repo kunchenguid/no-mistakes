@@ -41,38 +41,22 @@ func newPRTestContext(t *testing.T, ag agent.Agent, dir, base, head string, cmds
 	return sctx
 }
 
-// These tests exercise existing provider body/transport behavior. Their SCM
-// boundary supplies synthetic head proof; actual provider proof availability
-// and the GitHub wire contract are tested separately, without this injection.
-func newPRStepWithSyntheticProof(t *testing.T, sctx *pipeline.StepContext) *PRStep {
+func capturePRProofNotice(t *testing.T, sctx *pipeline.StepContext, provider string) func(string) {
 	t.Helper()
-	recordPRTestPush(t, sctx)
-	host, reason := buildHost(sctx, resolvedProvider(sctx))
-	if host == nil {
-		t.Fatalf("provider fixture unavailable: %s", reason)
+	var logs []string
+	log := sctx.Log
+	sctx.Log = func(line string) {
+		logs = append(logs, line)
+		log(line)
 	}
-	return &PRStep{host: &prProofFixtureHost{Host: host, head: gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD"), branch: gitCmd(t, sctx.WorkDir, "branch", "--show-current")}}
-}
-
-type prProofFixtureHost struct {
-	scm.Host
-	head, branch string
-}
-
-func (h *prProofFixtureHost) VerifyPRHead(_ context.Context, pr *scm.PR, branch, head string) error {
-	if pr == nil || pr.URL == "" || branch != h.branch || head != h.head {
-		return errors.New("synthetic SCM proof does not match the real fixture commit and branch")
+	return func(body string) {
+		t.Helper()
+		notice := "PR head proof unavailable for provider " + provider + "; the exact pushed head was not verified."
+		if !strings.Contains(strings.Join(logs, "\n"), notice) || !strings.Contains(body, notice) {
+			t.Fatalf("missing provider proof limitation: logs=%v body=%s", logs, body)
+		}
 	}
-	return nil
 }
-
-// Preserve optional provider interfaces used by author-safe updates and
-// closing-reference checks when decorating the underlying transport fixture.
-func (h *prProofFixtureHost) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, error) {
-	return h.Host.(scm.PRContentReader).GetPRContent(ctx, pr)
-}
-
-func (h *prProofFixtureHost) MaxPRBodyChars() int { return scm.HostMaxPRBodyChars(h.Host) }
 
 func TestPRStep_ProviderWithoutProofPublishesWithNotice(t *testing.T) {
 	t.Parallel()

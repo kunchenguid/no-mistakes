@@ -597,7 +597,8 @@ func TestPRStep_GitLabClosesRendersAndVerifiesOnTheMR(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	step := newPRStepWithSyntheticProof(t, sctx)
+	assertNotice := capturePRProofNotice(t, sctx, "gitlab")
+	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
@@ -615,6 +616,7 @@ func TestPRStep_GitLabClosesRendersAndVerifiesOnTheMR(t *testing.T) {
 		t.Fatal("the created merge request carried no description")
 	}
 	body := *published.Description
+	assertNotice(body)
 	if !strings.Contains(body, "## Issues\n\nCloses #95\nCloses other/subgroup/project#7") {
 		t.Fatalf("published body lacks the requested closing references:\n%s", body)
 	}

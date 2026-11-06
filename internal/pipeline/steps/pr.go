@@ -167,7 +167,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if _, err := publishedPRPushBinding(sctx, host); err != nil {
 		return nil, err
 	}
-	if _, ok := host.(scm.PRHeadVerifier); !ok {
+	_, verifiesHead := host.(scm.PRHeadVerifier)
+	if !verifiesHead {
 		s.headProofUnavailable = fmt.Sprintf("PR head proof unavailable for provider %s; the exact pushed head was not verified.", provider)
 		sctx.Log(s.headProofUnavailable)
 	}
@@ -357,7 +358,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if len(sctx.ClosingIssueRefs) > 0 {
 			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
 		}
-		return nil, fmt.Errorf("verify published PR: created pull request identity is unavailable")
+		if verifiesHead {
+			return nil, fmt.Errorf("verify published PR: created pull request identity is unavailable")
+		}
+		return &pipeline.StepOutcome{}, nil
+	}
+	if !verifiesHead {
+		sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
+			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+		}
 	}
 	if template != "" || keepsPRUpdateText(sctx) || suppliedBody {
 		owner := createdOwnedBodyOwner(template, suppliedBody)
@@ -376,13 +386,15 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
 		return nil, err
 	}
-	if err := verifyPublishedPR(sctx, host, created); err != nil {
-		return nil, err
+	if verifiesHead {
+		if err := verifyPublishedPR(sctx, host, created); err != nil {
+			return nil, err
+		}
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
+			return nil, fmt.Errorf("persist verified PR URL: %w", err)
+		}
+		sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	}
-	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
-		return nil, fmt.Errorf("persist verified PR URL: %w", err)
-	}
-	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
 
