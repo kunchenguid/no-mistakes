@@ -134,6 +134,7 @@ func setupCIGateReconcileTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.
 	if err != nil {
 		t.Fatal(err)
 	}
+	recordPRTestPush(t, &pipeline.StepContext{Ctx: context.Background(), WorkDir: dir, DB: database, Repo: repo, Run: run})
 
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
@@ -144,7 +145,7 @@ func setupCIGateReconcileTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.
 	env := fakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":        "ci-gh-reconcile",
 		"FAKE_CLI_STATE_PATH":  statePath,
-		"FAKE_CLI_PR_HEAD_SHA": "deadbeef",
+		"FAKE_CLI_PR_HEAD_SHA": headSHA,
 	})
 	return database, p, run, repo, dir, statePath, env
 }

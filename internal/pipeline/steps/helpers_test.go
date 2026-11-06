@@ -273,6 +273,7 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 		"FAKE_CLI_LOG":          logFile,
 		"FAKE_CLI_PR_URL":       prViewURL,
 		"FAKE_CLI_PR_BODY_FILE": bodyFile,
+		"FAKE_CLI_REAL_GIT":     testGitExecutable,
 	})
 	return env, logFile
 }
@@ -296,6 +297,7 @@ func fakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFi
 		"FAKE_CLI_PR_URL":       prViewURL,
 		"FAKE_CLI_PR_BASE":      prBase,
 		"FAKE_CLI_PR_BODY_FILE": bodyFile,
+		"FAKE_CLI_REAL_GIT":     testGitExecutable,
 	})
 	return env, logFile
 }

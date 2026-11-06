@@ -96,6 +96,33 @@ type ghStubInvocation struct {
 
 func runGhForkPRStub(args []string) int {
 	recordGhStubInvocation(args)
+	if len(args) > 0 && args[0] == "api" {
+		if repo, number, ok := ghPullEndpoint(args); ok {
+			data, err := os.ReadFile(os.Getenv("FAKEAGENT_GH_LOG"))
+			if err != nil {
+				return 1
+			}
+			var creation ghStubInvocation
+			for _, line := range strings.Split(string(data), "\n") {
+				var inv ghStubInvocation
+				if json.Unmarshal([]byte(line), &inv) == nil && len(inv.Args) > 1 && inv.Args[0] == "pr" && inv.Args[1] == "create" {
+					creation = inv
+				}
+			}
+			head := argAfter(creation.Args, "--head")
+			owner, branch, qualified := strings.Cut(head, ":")
+			source := repo
+			if qualified {
+				source = owner + "/" + strings.Split(repo, "/")[1]
+			} else {
+				branch = head
+			}
+			if branch == "" || number != 99 {
+				return 1
+			}
+			return writeGhPullProof(repo, source, branch, ghStatefulHeadOID(source, branch), number, fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), "OPEN")
+		}
+	}
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		return 0

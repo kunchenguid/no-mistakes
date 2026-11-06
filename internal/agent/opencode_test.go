@@ -23,6 +23,7 @@ func TestOpencodeAgent_CloseWithoutServer(t *testing.T) {
 
 // TestOpencodeAgent_FullFlow tests the full session lifecycle using a mock HTTP server.
 func TestOpencodeAgent_FullFlow(t *testing.T) {
+	prompt := ExecutionContextPromptSection(t.TempDir())
 	calledPaths := make(map[string]bool)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calledPaths[r.Method+" "+r.URL.Path] = true
@@ -42,6 +43,19 @@ func TestOpencodeAgent_FullFlow(t *testing.T) {
 			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
 
 		case r.URL.Path == "/session/test-session-456/message" && r.Method == http.MethodPost:
+			var body struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if len(body.Parts) != 1 || !strings.Contains(body.Parts[0].Text, prompt) {
+				t.Error("OpenCode did not receive the complete execution context")
+			} else {
+				assertBackingGitPrompt(t, body.Parts[0].Text)
+			}
 			// Return message response with structured output
 			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","structured":{"success":true,"summary":"all good"},"tokens":{"input":100,"output":50}},"parts":[{"type":"text","text":"{\"success\":true,\"summary\":\"all good\"}"}]}`)
 
@@ -62,7 +76,7 @@ func TestOpencodeAgent_FullFlow(t *testing.T) {
 
 	var chunks []string
 	result, err := a.Run(context.Background(), RunOpts{
-		Prompt:     "review this code",
+		Prompt:     prompt,
 		CWD:        t.TempDir(),
 		JSONSchema: json.RawMessage(`{"type":"object"}`),
 		OnChunk:    func(text string) { chunks = append(chunks, text) },

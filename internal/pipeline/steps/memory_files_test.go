@@ -425,7 +425,7 @@ func TestPRStep_DraftPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 			return &agent.Result{Output: payload}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
@@ -451,7 +451,7 @@ func TestPRStep_ConfiguredTitlePromptKeepsMemoryFilesHandsOff(t *testing.T) {
 			return &agent.Result{Output: data}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(env, "FAKE_CLI_PR_BODY=existing author body", "FAKE_CLI_PR_TITLE=old title")
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
