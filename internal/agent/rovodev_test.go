@@ -421,6 +421,7 @@ func TestRovodevAgent_CloseWithoutServer(t *testing.T) {
 
 // TestRovodevAgent_FullFlow tests the full session lifecycle using a mock HTTP server.
 func TestRovodevAgent_FullFlow(t *testing.T) {
+	prompt := ExecutionContextPromptSection(t.TempDir())
 	step := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -437,6 +438,16 @@ func TestRovodevAgent_FullFlow(t *testing.T) {
 
 		case r.URL.Path == "/v3/set_chat_message" && r.Method == http.MethodPost:
 			step++
+			var body struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body.Message != prompt {
+				t.Error("RovoDev did not receive the complete execution context")
+			}
+			assertBackingGitPrompt(t, body.Message)
 			if r.Header.Get("x-session-id") != "test-session-123" {
 				t.Error("expected x-session-id header")
 			}
@@ -478,7 +489,7 @@ func TestRovodevAgent_FullFlow(t *testing.T) {
 
 	var chunks []string
 	result, err := a.Run(context.Background(), RunOpts{
-		Prompt:     "review this code",
+		Prompt:     prompt,
 		CWD:        t.TempDir(),
 		JSONSchema: json.RawMessage(`{"type":"object"}`),
 		OnChunk:    func(text string) { chunks = append(chunks, text) },
