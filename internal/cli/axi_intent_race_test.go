@@ -39,6 +39,7 @@ func TestAxiRunIntentLateRunRequiresMatchingIntent(t *testing.T) {
 				return &ipc.RunInfo{ID: run.ID, RepoID: run.RepoID, Branch: run.Branch, HeadSHA: run.HeadSHA, Status: run.Status}
 			}
 			launched := olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+				serveTranscriptHomesProbe(srv)
 				srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
 					<-ready
 					// The initial lookup sees no run. Register the delayed hook's
