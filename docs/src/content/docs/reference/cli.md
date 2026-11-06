@@ -898,7 +898,7 @@ The JSON document has `schema_version: 1` and these fields:
 | Field | Stored facts |
 | ----- | ------------ |
 | `run` | `id`, `repo_id`, `branch`, `head_sha`, `base_sha`, `submitted_head_sha`, `pr_url`, `status`, `created_at`, `updated_at`, `parked_ms`, `awaiting_agent_since`, `ci_ready_at` |
-| `steps[]` | `id`, `name`, `order`, `status`, `exit_code`, `started_at`, `completed_at`, `duration_ms`, `response_origin`, `ci_attempt`, `rounds[]` |
+| `steps[]` | `id`, `name`, `order`, `status`, `exit_code`, `started_at`, `completed_at`, `duration_ms`, `response_origin`, `ci_attempt`, `carried_from`, `rounds[]` |
 | `steps[].rounds[]` | `id`, `round`, `trigger`, `created_at`, `duration_ms`, `reviewed_head_sha`, `selection_source`, `selected_finding_ids`, `response_origin`, `repair_published`, `gate` |
 | `invocations[]` | `id`, `step_name`, `round`, `purpose`, `agent`, `model`, `model_provider`, `session_mode`, `started_at`, `completed_at`, `duration_ms`, `subprocess_wait_ms`, `exit_status`, `failure_category`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `fresh_input_tokens`, `reasoning_tokens`, `delta_input_tokens`, `delta_output_tokens`, `delta_cache_read_tokens` |
 
@@ -907,6 +907,15 @@ paths are excluded. Steps belong to the enclosing run, rounds to the enclosing
 step, and invocations bind to that run through their stored `step_name` and `round`.
 Steps are ordered by stored order then ID, rounds by round number then ID, and
 invocations by start time then ID. Empty collections are `[]`.
+
+A reused step has `carried_from: {"run_id": "<source-run-id>", "step_id": "<source-step-id>"}`.
+Its completed or skipped status and timing fields describe work performed in that
+source run. Rounds and agent invocations remain scoped to the requested run, so
+export the source with `no-mistakes export --run <source-run-id> --json` and locate
+`<source-step-id>` to inspect the reused work's rounds and calls. The link uses the
+stored source step reference, including the original source retained by repeated
+retries. `carried_from` is `null` when no source reference was stored. If the
+referenced row is unavailable, its `run_id` is `null` and the known `step_id` remains.
 
 Timestamps are Unix seconds. Durations are stored milliseconds, never recomputed
 from timestamps. Missing nullable facts are JSON `null`, including unreported

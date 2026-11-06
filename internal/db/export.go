@@ -35,17 +35,25 @@ type ExportRun struct {
 }
 
 type ExportStep struct {
-	ID             string        `json:"id"`
-	Name           string        `json:"name"`
-	Order          int           `json:"order"`
-	Status         string        `json:"status"`
-	ExitCode       *int          `json:"exit_code"`
-	StartedAt      *int64        `json:"started_at"`
-	CompletedAt    *int64        `json:"completed_at"`
-	DurationMS     *int64        `json:"duration_ms"`
-	ResponseOrigin string        `json:"response_origin"`
-	CIAttempt      *string       `json:"ci_attempt"`
-	Rounds         []ExportRound `json:"rounds"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Order          int               `json:"order"`
+	Status         string            `json:"status"`
+	ExitCode       *int              `json:"exit_code"`
+	StartedAt      *int64            `json:"started_at"`
+	CompletedAt    *int64            `json:"completed_at"`
+	DurationMS     *int64            `json:"duration_ms"`
+	ResponseOrigin string            `json:"response_origin"`
+	CIAttempt      *string           `json:"ci_attempt"`
+	CarriedFrom    *ExportStepSource `json:"carried_from"`
+	Rounds         []ExportRound     `json:"rounds"`
+}
+
+// ExportStepSource identifies the stored source of reused work. RunID stays
+// unknown if the source row is unavailable; StepID is the recorded reference.
+type ExportStepSource struct {
+	RunID  *string `json:"run_id"`
+	StepID string  `json:"step_id"`
 }
 
 type ExportRound struct {
@@ -121,10 +129,14 @@ func (d *DB) ExportRunFacts(ctx context.Context, runID string) (*RunExport, erro
 		return nil, fmt.Errorf("read export run: %w", err)
 	}
 	byStep := map[string]int{}
-	err = readExportRows(ctx, tx, `SELECT id, step_name, step_order, status, exit_code, started_at, completed_at, duration_ms, response_origin FROM step_results WHERE run_id = ? ORDER BY step_order, id`, runID, func(row scanner) error {
+	err = readExportRows(ctx, tx, `SELECT s.id, s.step_name, s.step_order, s.status, s.exit_code, s.started_at, s.completed_at, s.duration_ms, s.response_origin, NULLIF(s.carried_from, ''), source.run_id FROM step_results s LEFT JOIN step_results source ON source.id = s.carried_from WHERE s.run_id = ? ORDER BY s.step_order, s.id`, runID, func(row scanner) error {
 		s := ExportStep{Rounds: []ExportRound{}}
-		if err := row.Scan(&s.ID, &s.Name, &s.Order, &s.Status, &s.ExitCode, &s.StartedAt, &s.CompletedAt, &s.DurationMS, &s.ResponseOrigin); err != nil {
+		var sourceStepID, sourceRunID *string
+		if err := row.Scan(&s.ID, &s.Name, &s.Order, &s.Status, &s.ExitCode, &s.StartedAt, &s.CompletedAt, &s.DurationMS, &s.ResponseOrigin, &sourceStepID, &sourceRunID); err != nil {
 			return err
+		}
+		if sourceStepID != nil {
+			s.CarriedFrom = &ExportStepSource{RunID: sourceRunID, StepID: *sourceStepID}
 		}
 		byStep[s.ID] = len(out.Steps)
 		out.Steps = append(out.Steps, s)
