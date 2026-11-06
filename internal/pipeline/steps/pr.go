@@ -196,6 +196,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	requestedBaseBranch := runPRBaseBranch(sctx)
 	if existing != nil && !sctx.EvalReplay {
 		liveBase := strings.TrimSpace(existing.BaseBranch)
 		if liveBase != "" && liveBase != baseBranch {
@@ -210,6 +211,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 			if sha == "" {
 				baseBranch = liveBase
+				// Apply the deleted-target fallback to both update paths without
+				// changing recorded intent or creating a config-only retarget.
+				if requestedBaseBranch != "" {
+					requestedBaseBranch = liveBase
+				}
 			}
 		}
 	}
@@ -297,7 +303,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, err
 			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			if err := retargetExistingPRIfNeeded(sctx, host, existing, requestedBaseBranch); err != nil {
 				return nil, err
 			}
 			if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
@@ -314,7 +320,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := verifyPRHeadProofDisclosure(content.Body, s.headProofUnavailable, bodyLimit); err != nil {
 				return nil, err
 			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			if err := retargetExistingPRIfNeeded(sctx, host, existing, requestedBaseBranch); err != nil {
 				return nil, err
 			}
 			updated, err = host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
