@@ -577,9 +577,10 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ReviewerProfile  *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
-	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
-	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	CallerRestrictionsDigest string                     `json:"caller_restrictions_digest,omitempty"`
+	ReviewerProfile          *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlan         *verificationplan.Snapshot `json:"verification_plan"`
+	PiProfile                *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`

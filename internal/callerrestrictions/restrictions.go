@@ -31,6 +31,14 @@ type Record struct {
 	CapturedAt int64  `json:"captured_at"`
 }
 
+func (r *Record) Digest() string {
+	if r == nil {
+		return ""
+	}
+	b, _ := json.Marshal(r)
+	return fmt.Sprintf("%x", sha256.Sum256(b))
+}
+
 func Capture(path string) (*Record, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {

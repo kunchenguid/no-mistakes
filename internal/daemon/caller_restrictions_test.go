@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -63,6 +64,33 @@ func daemonCallerRestrictions(t *testing.T, content string) *callerrestrictions.
 		t.Fatal(err)
 	}
 	return r
+}
+
+func TestCallerRestrictionsRunInfoExposesOnlyRecordDigest(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	record := daemonCallerRestrictions(t, "No network access for the synthetic fixture.\n")
+	for _, restrictions := range []*callerrestrictions.Record{nil, record} {
+		run := &db.Run{ID: "synthetic-run", CallerRestrictions: restrictions}
+		info := runToInfo(database, run, nil)
+		if info.CallerRestrictionsDigest != restrictions.Digest() {
+			t.Fatalf("run metadata lost record binding: %+v", info)
+		}
+		wire, err := json.Marshal(info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded ipc.RunInfo
+		if err := json.Unmarshal(wire, &decoded); err != nil || decoded.CallerRestrictionsDigest != info.CallerRestrictionsDigest {
+			t.Fatalf("IPC lost record binding: %+v, %v", decoded, err)
+		}
+		if strings.Contains(string(wire), record.SourcePath) || strings.Contains(string(wire), strings.TrimSpace(record.Content)) {
+			t.Fatalf("run metadata disclosed restrictions: %s", wire)
+		}
+	}
 }
 
 func TestCallerRestrictionsConcurrentRunsAndRerun(t *testing.T) {

@@ -930,6 +930,9 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		if planID != "" && (run.VerificationPlan == nil || run.VerificationPlan.ID != planID) {
 			return "", fmt.Errorf("triggered run has a conflicting verification plan")
 		}
+		if restrictions != nil && run.CallerRestrictionsDigest != restrictions.Digest() {
+			return "", fmt.Errorf("triggered run has conflicting caller restrictions")
+		}
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {

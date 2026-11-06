@@ -2,18 +2,24 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/spf13/cobra"
 )
 
 func cliRestrictions(t *testing.T) *callerrestrictions.Record {
@@ -113,5 +119,97 @@ func TestCallerRestrictionsRefuseOlderDaemonBeforeLaunch(t *testing.T) {
 	}
 	if err := requireDaemonCallerRestrictions(client, nil); err != nil || client.calls != 1 {
 		t.Fatal("unset control probed new capability")
+	}
+}
+
+func TestCallerRestrictionsTriggerRunChecksCompetingRun(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		for _, name := range []string{"missing", "different content", "different source path", "different capture time", "matching", "unset request"} {
+			t.Run(fmt.Sprintf("terminal=%t/%s", terminal, name), func(t *testing.T) {
+				requested := cliRestrictions(t)
+				held := *requested
+				stored := &held
+				switch name {
+				case "missing":
+					stored = nil
+				case "different content", "unset request":
+					held.Content = "Keep the synthetic repository offline.\n"
+					held.SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(held.Content)))
+				case "different source path":
+					held.SourcePath = filepath.Join(t.TempDir(), "other-caller.txt")
+				case "different capture time":
+					held.CapturedAt++
+				}
+				var competing atomic.Pointer[ipc.RunInfo]
+				var headLookups atomic.Int32
+				launched := olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+					serveTranscriptHomesProbe(srv)
+					srv.Handle(ipc.MethodProbeCallerRestrictions, func(context.Context, json.RawMessage) (interface{}, error) {
+						return map[string]bool{"ok": true}, nil
+					})
+					srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+						if terminal {
+							return &ipc.GetActiveRunResult{}, nil
+						}
+						return &ipc.GetActiveRunResult{Run: competing.Load()}, nil
+					})
+					srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
+						if headLookups.Add(1) == 1 {
+							return &ipc.GetRunsResult{}, nil
+						}
+						return &ipc.GetRunsResult{Runs: []ipc.RunInfo{*competing.Load()}}, nil
+					})
+				})
+				p, err := paths.New()
+				if err != nil {
+					t.Fatal(err)
+				}
+				database, err := db.Open(p.DB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer database.Close()
+				repo, err := findRepo(database)
+				if err != nil {
+					t.Fatal(err)
+				}
+				local, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				gateDir := p.RepoDir(repo.ID)
+				cliGit(t, local, "clone", "--bare", local, gateDir)
+				cliGit(t, gateDir, "config", "receive.advertisePushOptions", "true")
+				cliGit(t, local, "remote", "add", gate.RemoteName, gateDir)
+				head := cliGit(t, local, "rev-parse", "HEAD")
+				status := types.RunRunning
+				if terminal {
+					status = types.RunCompleted
+				}
+				competing.Store(&ipc.RunInfo{ID: "competing-run", RepoID: repo.ID, Branch: "feature/omit", HeadSHA: head, Status: status, CallerRestrictionsDigest: stored.Digest()})
+				client, err := ipc.Dial(p.Socket())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer client.Close()
+				env := &axiEnv{p: p, d: database, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if name != "unset request" {
+					ctx = callerrestrictions.WithLaunchRecord(ctx, requested)
+				}
+				runID, err := triggerRunWithPRText(ctx, env, "feature/omit", nil, "", "", false, "", nil, db.RunPRText{})
+				if name == "matching" || name == "unset request" {
+					if err != nil || runID != "competing-run" {
+						t.Fatalf("compatible attachment: run=%q error=%v", runID, err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "conflicting caller restrictions") || runID != "" {
+					t.Fatalf("incompatible attachment accepted: run=%q error=%v", runID, err)
+				}
+				if len(*launched) != 0 {
+					t.Fatalf("attachment unexpectedly launched another run: %v", *launched)
+				}
+			})
+		}
 	}
 }
