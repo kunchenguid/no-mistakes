@@ -525,6 +525,18 @@ func TestCIWorkflow_WindowsStepsShardsRunEveryTestExactlyOnce(t *testing.T) {
 	})
 }
 
+func TestCIWorkflow_WindowsCoreShardsRunEveryCLITestExactlyOnce(t *testing.T) {
+	t.Parallel()
+	assertWindowsNamedShardsCoverEveryTest(t, windowsNamedShardSpec{
+		kind:    "core",
+		dir:     filepath.Join("internal", "cli"),
+		runKey:  "core_run",
+		skipKey: "core_skip",
+		runEnv:  "NM_CI_WINDOWS_CORE_RUN",
+		skipEnv: "NM_CI_WINDOWS_CORE_SKIP",
+	})
+}
+
 func TestCIWorkflow_WindowsDaemonShardsRunEveryTestExactlyOnce(t *testing.T) {
 	t.Parallel()
 	assertWindowsNamedShardsCoverEveryTest(t, windowsNamedShardSpec{
