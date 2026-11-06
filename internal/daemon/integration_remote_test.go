@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -29,7 +30,7 @@ func TestIntegrationRemoteFreshRunUsesSelectedRelease(t *testing.T) {
 	forgeEnv, forgeLog := integrationFakeForge(t)
 	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{
-			&steps.RebaseStep{}, &captureRefreshRepoStep{seen: seen},
+			&steps.RebaseStep{}, &integrationReviewStep{seen: seen},
 			&mockPassStep{name: types.StepTest}, &mockPassStep{name: types.StepDocument}, &mockPassStep{name: types.StepLint},
 			&integrationEnvStep{step: &steps.PushStep{}, env: forgeEnv},
 			&integrationEnvStep{step: &steps.PRStep{}, env: forgeEnv},
@@ -180,8 +181,31 @@ func (s *integrationEnvStep) Execute(sctx *pipeline.StepContext) (*pipeline.Step
 	return s.step.Execute(sctx)
 }
 
+// Model a completed review of the fixture's changed file, including the head
+// certificate required by Push and by approval recovery after a restart.
+type integrationReviewStep struct {
+	seen chan<- *db.Repo
+	park bool
+}
+
+func (*integrationReviewStep) Name() types.StepName { return types.StepReview }
+func (s *integrationReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	if s.seen != nil {
+		repo := *sctx.Repo
+		s.seen <- &repo
+	}
+	return &pipeline.StepOutcome{
+		NeedsApproval: s.park, Findings: `[]`, ReviewApprovedHeadSHA: head,
+		ReviewedPaths: []string{"topic.txt"}, ReviewablePaths: []string{"topic.txt"},
+	}, nil
+}
+
 func integrationRecoverySteps() []pipeline.Step {
-	return []pipeline.Step{&steps.RebaseStep{}, &mockApprovalStep{name: types.StepReview}, &integrationRecoveryStep{}}
+	return []pipeline.Step{&steps.RebaseStep{}, &integrationReviewStep{park: true}, &integrationRecoveryStep{}}
 }
 
 type integrationRecoveryStep struct{}
@@ -335,10 +359,13 @@ func TestIntegrationRemoteSurvivesPrivateDaemonRestart(t *testing.T) {
 func TestIntegrationRemoteConcurrentRunsHaveSeparateDestinations(t *testing.T) {
 	seen := make(chan *db.Repo, 2)
 	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&steps.RebaseStep{}, &captureRefreshRepoStep{seen: seen}}
+		return []pipeline.Step{&steps.RebaseStep{}, &integrationReviewStep{seen: seen}}
 	})
 	repo, head := setupTestGitRepo(t, p, database, "integration-concurrent")
 	gateDir := p.RepoDir(repo.ID)
+	if err := git.IsolateHooksPath(t.Context(), gateDir); err != nil {
+		t.Fatal(err)
+	}
 	gitCmd(t, repo.WorkingPath, "remote", "add", "origin", gateDir)
 	gitCmd(t, gateDir, "update-ref", "refs/remotes/origin/main", head)
 	originRefs := gitOutput(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/")
