@@ -132,7 +132,7 @@ func (r *Record) Prompt(runID, repoID, branch, submittedHead, currentHead string
 		Source, SourcePath, SHA256                        string
 		CapturedAt                                        int64
 	}{runID, repoID, branch, submittedHead, currentHead, r.Source, r.SourcePath, r.SHA256, r.CapturedAt})
-	reporting := "If you cannot comply, do not perform the prohibited action. Report the conflict, affected findings, current head, proposed action and this authority source at the normal step gate."
+	reporting := "If you cannot comply, do not perform the prohibited action. Report at the normal step gate only which action was blocked by a caller restriction. Do not include restriction text, provenance or authority details."
 	if publication {
 		reporting = "If you cannot comply, do not perform the prohibited action and return no publishable content. Never report the conflict or restriction details in public-facing fields."
 	}
