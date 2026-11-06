@@ -573,11 +573,16 @@ func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
 		name     string
 		mode     string
 		observed string
+		perRun   bool
 	}{
 		{name: "regenerate/observed", mode: config.PRUpdateTextRegenerate, observed: "main"},
 		{name: "regenerate/no-observation", mode: config.PRUpdateTextRegenerate},
 		{name: "keep/observed", mode: config.PRUpdateTextKeep, observed: "main"},
 		{name: "keep/no-observation", mode: config.PRUpdateTextKeep},
+		{name: "regenerate/per-run/observed", mode: config.PRUpdateTextRegenerate, observed: "main", perRun: true},
+		{name: "regenerate/per-run/no-observation", mode: config.PRUpdateTextRegenerate, perRun: true},
+		{name: "keep/per-run/observed", mode: config.PRUpdateTextKeep, observed: "main", perRun: true},
+		{name: "keep/per-run/no-observation", mode: config.PRUpdateTextKeep, perRun: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, baseSHA, layerSHA := setupGitRepo(t)
@@ -598,6 +603,13 @@ func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
 			sctx.Config.PR.BaseBranch = "layer1"
+			if tc.perRun {
+				run, insertErr := sctx.DB.InsertRunWithIntent(sctx.Repo.ID, sctx.Run.Branch, headSHA, baseSHA, nil, "layer1")
+				if insertErr != nil {
+					t.Fatal(insertErr)
+				}
+				sctx.Run = run
+			}
 			sctx.Config.PR.UpdateText = tc.mode
 			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
 			sctx.Run.PRURL = &owned
@@ -642,7 +654,18 @@ func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
 			if !strings.Contains(string(data), "stdin --body ") || strings.Contains(string(data), "pr create") || strings.Contains(string(data), "--base layer1") || strings.Contains(string(data), "--base main") {
 				t.Fatalf("expected an in-place update without retargeting:\n%s", data)
 			}
-			if sctx.Run.PRBaseBranch != nil || sctx.Config.PR.BaseBranch != "layer1" {
+			recorded, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.perRun {
+				if recorded.PRBaseBranch == nil || *recorded.PRBaseBranch != "layer1" || runPRBaseBranch(sctx) != "layer1" {
+					t.Fatal("publication changed the recorded per-run target")
+				}
+			} else if sctx.Run.PRBaseBranch != nil || recorded.PRBaseBranch != nil {
+				t.Fatal("publication turned a live base observation into target intent")
+			}
+			if sctx.Config.PR.BaseBranch != "layer1" {
 				t.Fatal("publication changed operator target intent")
 			}
 		})
