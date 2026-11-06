@@ -411,7 +411,7 @@ func observedMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads
 	probe := &scm.PR{Number: pr.Number, URL: pr.URL, HeadSHA: primary}
 	_, observed, _, err := observeCIChecks(ctx, host, probe)
 	if err != nil && !errors.Is(err, scm.ErrHeadChanged) {
-		return "", fmt.Errorf("%w: reading the merged head failed: %v", errMergedHeadUnproven, err)
+		return "", fmt.Errorf("reading the merged head failed: %w", err)
 	}
 	observed = strings.TrimSpace(observed)
 	if observed == "" {

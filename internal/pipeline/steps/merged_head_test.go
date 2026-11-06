@@ -72,19 +72,23 @@ func TestVerifyMergedHead_ObservedForeignHeadIsRefused(t *testing.T) {
 // one nobody can name must never be recorded as a clean pass.
 func TestVerifyMergedHead_UnprovenHeadIsRefused(t *testing.T) {
 	t.Parallel()
-	pr := &scm.PR{Number: "7", URL: "https://gitlab.example/octo/widgets/-/merge_requests/7"}
 	for _, tc := range []struct {
-		name string
-		host *mergedHeadTestHost
+		name    string
+		host    *mergedHeadTestHost
+		wantErr error
 	}{
-		{name: "no observation", host: &mergedHeadTestHost{}},
-		{name: "unreadable read", host: &mergedHeadTestHost{err: errors.New("rate limited")}},
+		{name: "no observation", host: &mergedHeadTestHost{}, wantErr: errMergedHeadUnproven},
+		{name: "unreadable read", host: &mergedHeadTestHost{err: context.DeadlineExceeded}, wantErr: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			pr := &scm.PR{Number: "7", URL: "https://gitlab.example/octo/widgets/-/merge_requests/7"}
 			_, err := verifyMergedHead(context.Background(), tc.host, pr, []string{strings.Repeat("a", 40)})
-			if !errors.Is(err, errMergedHeadUnproven) {
-				t.Fatalf("verifyMergedHead() error = %v, want an unproven merge refused", err)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("verifyMergedHead() error = %v, want %v", err, tc.wantErr)
+			}
+			if tc.host.err != nil && errors.Is(err, errMergedHeadUnproven) {
+				t.Fatalf("verifyMergedHead() error = %v, want the failed read to remain retryable", err)
 			}
 			if errors.Is(err, scm.ErrHeadChanged) {
 				t.Fatalf("verifyMergedHead() error = %v, want not reported as a head change", err)
