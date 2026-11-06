@@ -59,9 +59,9 @@ func wrapValidation(inner string) string {
 	return validationDetailsOpen + inner + validationDetailsClose
 }
 
-// minimalTail is the one-line risk level plus the attestation the pipeline
-// section already carries. Ordinary Bitbucket descriptions carry no
-// attestation comment; this does not invent one. An owned Bitbucket body
+// minimalTail keeps the pipeline introduction so head-proof limitations remain
+// visible even when round history is omitted. Ordinary Bitbucket descriptions
+// carry no attestation comment; this does not invent one. An owned Bitbucket body
 // carries that comment inside a text fence, and the fence is kept so the
 // marker stays visible there.
 func minimalTail(risk, pipelineMD string, provider scm.Provider) string {
