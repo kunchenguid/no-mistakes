@@ -199,7 +199,7 @@ func (s *integrationReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.S
 		s.seen <- &repo
 	}
 	return &pipeline.StepOutcome{
-		NeedsApproval: s.park, Findings: `[]`, ReviewApprovedHeadSHA: head,
+		NeedsApproval: s.park, Findings: `{"findings":[]}`, ReviewApprovedHeadSHA: head,
 		ReviewedPaths: []string{"topic.txt"}, ReviewablePaths: []string{"topic.txt"},
 	}, nil
 }
@@ -350,6 +350,9 @@ func TestIntegrationRemoteSurvivesPrivateDaemonRestart(t *testing.T) {
 	if err := client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil); err != nil {
 		t.Fatal(err)
 	}
+	// The server drains its connections before RunWithOptions returns.
+	// Release this client's scanner before waiting for the child to exit.
+	_ = client.Close()
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
 	}
