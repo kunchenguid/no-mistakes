@@ -24,6 +24,9 @@ import (
 
 // PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct {
+	// host overrides the SCM boundary for tests of publication composition.
+	// Production always constructs the configured provider below.
+	host scm.Host
 	// mediaUploader uploads image/video evidence at PR render time. Nil uses
 	// the GitHub host's user-attachments client. Tests inject a stub so they
 	// never talk to live GitHub.
@@ -32,6 +35,8 @@ type PRStep struct {
 	// will replace the drafted one, so the drafted title is neither validated
 	// nor formatted: discarded text must not block publishing.
 	titleReplaced bool
+
+	headProofUnavailable string
 	// gitlabUploader uploads image evidence to a GitLab project. Nil uses the
 	// GitLab host. Tests inject a stub so they never talk to live GitLab.
 	gitlabUploader gitlabEvidenceUploader
@@ -111,7 +116,10 @@ type pipelineUpdateGroup struct {
 func (s *PRStep) Name() types.StepName { return types.StepPR }
 
 func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	step := *s
+	s = &step
 	sctx.PublicIntentBrief = ""
+	s.headProofUnavailable = ""
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
@@ -131,7 +139,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
-	host, skipReason := buildHost(sctx, provider)
+	host := s.host
+	var skipReason string
+	if host == nil {
+		host, skipReason = buildHost(sctx, provider)
+	}
 	if host == nil {
 		if err := refuseSkipWithClosingIssues(sctx, skipReason); err != nil {
 			return nil, err
@@ -150,6 +162,15 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+	}
+
+	if _, err := publishedPRPushBinding(sctx, host); err != nil {
+		return nil, err
+	}
+	_, verifiesHead := host.(scm.PRHeadVerifier)
+	if !verifiesHead {
+		s.headProofUnavailable = fmt.Sprintf("PR head proof unavailable for provider %s; the exact pushed head was not verified.", provider)
+		sctx.Log(s.headProofUnavailable)
 	}
 
 	// Capture live author content before model drafting. An unreadable
@@ -180,6 +201,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
+		if err := verifyPublishedPR(sctx, host, existing); err != nil {
+			return nil, err
+		}
 		var live scm.PRContent
 		if reader, ok := host.(scm.PRContentReader); ok {
 			live, err = reader.GetPRContent(ctx, existing)
@@ -270,6 +294,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
 				return nil, err
 			}
+			if err := verifyPRHeadProofDisclosure(content.Body, s.headProofUnavailable, bodyLimit); err != nil {
+				return nil, err
+			}
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
@@ -282,6 +309,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 		if err := verifyClosingIssues(ctx, host, updated, sctx); err != nil {
+			return nil, err
+		}
+		if err := verifyPublishedPR(sctx, host, updated); err != nil {
 			return nil, err
 		}
 		if updated != nil && updated.URL != "" {
@@ -319,6 +349,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
 		return nil, err
 	}
+	if err := verifyPRHeadProofDisclosure(content.Body, s.headProofUnavailable, bodyLimit); err != nil {
+		return nil, err
+	}
 	sctx.Log("creating pull request...")
 	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent{Title: content.Title, Body: content.Body})
 	if err != nil {
@@ -331,11 +364,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if len(sctx.ClosingIssueRefs) > 0 {
 			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
 		}
+		if verifiesHead {
+			return nil, fmt.Errorf("verify published PR: created pull request identity is unavailable")
+		}
 		return &pipeline.StepOutcome{}, nil
 	}
-	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
-	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
-		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+	if !verifiesHead {
+		sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
+			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+		}
 	}
 	if template != "" || keepsPRUpdateText(sctx) || suppliedBody {
 		owner := createdOwnedBodyOwner(template, suppliedBody)
@@ -353,6 +391,15 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
 		return nil, err
+	}
+	if verifiesHead {
+		if err := verifyPublishedPR(sctx, host, created); err != nil {
+			return nil, err
+		}
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
+			return nil, fmt.Errorf("persist verified PR URL: %w", err)
+		}
+		sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
@@ -906,6 +953,14 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
 	}
 	pipelineMD, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
+	if s.headProofUnavailable != "" {
+		intro := noMistakesPRSignature + " " + s.headProofUnavailable
+		if pipelineMD == "" {
+			pipelineMD = "## Pipeline\n\n" + intro + "\n\n"
+		} else {
+			pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature, intro, 1)
+		}
+	}
 	// The review conversation rides inside the Pipeline section as an ordinary
 	// `### ` group, so the existing body-budget logic can drop it whole rather
 	// than competing with the attestation it must never displace.
