@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	toon "github.com/toon-format/toon-go"
+
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -35,6 +37,11 @@ func TestSyncRefusesIgnoredPathCollisions(t *testing.T) {
 					f := newCLISyncFixture(t)
 					publishIgnoredSyncTarget(t, &f, diverged, tc.incomingPath, tc.incomingKind)
 					cliWriteIgnored(t, f.local, tc.localPath, tc.localKind)
+					subdir := filepath.Join(f.local, "caller-subdir")
+					if err := os.MkdirAll(subdir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					chdir(t, subdir)
 					indexPath := filepath.Join(f.local, ".git", "index")
 					index, err := os.ReadFile(indexPath)
 					if err != nil {
@@ -45,7 +52,23 @@ func TestSyncRefusesIgnoredPathCollisions(t *testing.T) {
 						args = []string{"axi", "sync"}
 					}
 					out, err := executeCmd(args...)
-					if err == nil || !strings.Contains(out, "blocked_ignored_path_collision") || !strings.Contains(out, strconv.Quote(tc.localPath)) {
+					message := out
+					if axi {
+						var document struct {
+							BranchSync struct {
+								Error string `toon:"note"`
+							} `toon:"branch_sync"`
+						}
+						if decodeErr := toon.UnmarshalString(out, &document); decodeErr != nil {
+							t.Fatalf("decode refusal: %v\n%s", decodeErr, out)
+						}
+						message = document.BranchSync.Error
+					}
+					wantPath := tc.localPath
+					if tc.name == "directory-prefix" {
+						wantPath = "cache"
+					}
+					if err == nil || !strings.Contains(message, "ignored local path") || !strings.Contains(message, strconv.Quote(wantPath)) || (axi && !strings.Contains(out, "blocked_ignored_path_collision")) {
 						t.Errorf("expected named ignored-path refusal, got %v\n%s", err, out)
 					}
 					if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.old {
