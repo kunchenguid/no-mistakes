@@ -166,7 +166,9 @@ func stepCmdContext(sctx *pipeline.StepContext, ctx context.Context, name string
 	cmd := exec.CommandContext(ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	winproc.Harden(cmd)
-	if env := stepEnvironment(sctx); env != nil {
+	if env, err := stepEnvironment(sctx); err != nil {
+		cmd.Err = err
+	} else {
 		cmd.Env = env
 	}
 	if missingFromPath {
@@ -175,7 +177,7 @@ func stepCmdContext(sctx *pipeline.StepContext, ctx context.Context, name string
 	return cmd
 }
 
-func stepEnvironment(sctx *pipeline.StepContext) []string {
+func stepEnvironment(sctx *pipeline.StepContext) ([]string, error) {
 	var env []string
 	if len(sctx.Env) > 0 {
 		env = mergeEnv(sctx.Env)
@@ -184,9 +186,13 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 		env = sctx.ForgeContext.Environment.Apply(env)
 	}
 	if identity, ok := git.CommitIdentityFromContext(sctx.Ctx); ok {
-		env = identity.SubprocessEnvironment().Apply(env)
+		overlay, err := identity.SubprocessEnvironment(env)
+		if err != nil {
+			return nil, err
+		}
+		env = overlay.Apply(env)
 	}
-	return env
+	return env, nil
 }
 
 // stepGitRun runs git with the StepContext's environment plus the standard
@@ -339,7 +345,11 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 }
 
 func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
-	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmdStr)
+	env, err := stepEnvironment(sctx)
+	if err != nil {
+		return "", 0, err
+	}
+	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, env, cmdStr)
 }
 
 func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {

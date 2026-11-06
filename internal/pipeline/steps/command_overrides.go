@@ -28,7 +28,11 @@ func declareStepCommandOverrides(sctx *pipeline.StepContext, name string) {
 }
 
 func executeRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
-	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, sctx.Config.CommandOverrides[name].Nice)
+	env, err := stepEnvironment(sctx)
+	if err != nil {
+		return "", 0, err
+	}
+	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, env, command, sctx.Config.CommandOverrides[name].Nice)
 }
 
 // commandOverrideDeclaration states every machine-local override applied to a

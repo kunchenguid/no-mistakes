@@ -25,7 +25,8 @@ func TestCommitIdentityConditionalIncludeBindsDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
-	run(t, src, "git", "config", "--file", global, "includeIf.gitdir:"+filepath.ToSlash(src)+"/.git.path", identity)
+	gitDir := run(t, src, "git", "rev-parse", "--absolute-git-dir")
+	run(t, src, "git", "config", "--file", global, "includeIf.gitdir/i:"+filepath.ToSlash(gitDir)+".path", identity)
 	bound, err := CaptureCommitIdentity(ctx, src)
 	if err != nil || bound.AuthorName != "Submitter" || bound.CommitterEmail != "submitter@example.test" {
 		t.Fatalf("effective submission identity = %+v, %v", bound, err)

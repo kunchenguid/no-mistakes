@@ -303,7 +303,11 @@ func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.
 	} {
 		cmd := exec.Command("git", "commit", "--allow-empty", "-m", "agent subprocess")
 		cmd.Dir = target
-		cmd.Env = pipelineEnvironment(forge, identity).Apply(nil)
+		environment, err := pipelineEnvironment(forge, identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Env = environment.Apply(nil)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("agent commit: %v: %s", err, out)
 		}

@@ -58,13 +58,16 @@ func (i CommitIdentity) Environment() runenv.Overlay {
 	}, Unset: []string{"GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"}}
 }
 
-func (i CommitIdentity) SubprocessEnvironment() runenv.Overlay {
+func (i CommitIdentity) SubprocessEnvironment(base []string) (runenv.Overlay, error) {
 	environment := i.Environment()
 	for key := range environment.Set {
 		environment.Unset = append(environment.Unset, key)
 	}
 	environment.Set = nil
-	return environment
+	if err := stripIdentityConfig(&environment, base); err != nil {
+		return runenv.Overlay{}, err
+	}
+	return environment, nil
 }
 
 type commitIdentityContextKey struct{}
