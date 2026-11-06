@@ -537,7 +537,7 @@ func (d *DB) ClaimLaunchReceiptWithDestination(repoID, branch, launchNonce, subm
 	if existing.PRTextDigest() != prTextDigest {
 		return existing, false, nil
 	}
-	if baseRemote != "" && (existing.Integration == nil || existing.Integration.Remote != baseRemote) {
+	if !integration.MatchesRemote(integration.RemoteName(existing.Integration), baseRemote) {
 		return existing, false, nil
 	}
 	r := &Run{}

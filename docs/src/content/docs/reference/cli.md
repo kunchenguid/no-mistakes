@@ -236,8 +236,10 @@ Other providers retain their existing restrictions on fork routing.
 
 Missing, invalid, unreachable or moved selections refuse rather than falling
 back to `origin`. Reattaching cannot change the remote. Omit `--base-remote` to
-keep an existing run's selection. `rerun` and `retry` preserve its pin. An older
-daemon that cannot honor the selector is refused before submission.
+keep the selection when reattaching to an active run. A later run on a branch
+with a PR on another integration remote is refused. `rerun` and `retry` preserve
+the destination. An older daemon that cannot honor the selector is refused
+before submission.
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.

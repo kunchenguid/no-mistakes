@@ -3,8 +3,11 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/integration"
 )
 
@@ -39,20 +42,10 @@ func fetchRecoveredIntegrationBranch(ctx context.Context, workDir string, repo *
 
 func matchingIntegrationRequest(ctx context.Context, run *db.Run) error {
 	requested := integration.RequestedRemote(ctx)
-	if requested == "" {
-		return nil
-	}
-	if run.Integration == nil || run.Integration.Remote != requested {
+	if !integration.MatchesRemote(integration.RemoteName(run.Integration), requested) {
 		return fmt.Errorf("run already has a different integration destination; omit --base-remote to reattach")
 	}
 	return nil
-}
-
-func runIntegrationRemote(run *db.Run) string {
-	if run.Integration != nil {
-		return run.Integration.Remote
-	}
-	return "origin"
 }
 
 func inheritIntegrationPRURL(ctx context.Context, repo *db.Repo, run *db.Run) (string, error) {
@@ -64,7 +57,7 @@ func inheritIntegrationPRURL(ctx context.Context, repo *db.Repo, run *db.Run) (s
 	if requested == "" {
 		requested = "origin"
 	}
-	if requested != runIntegrationRemote(run) {
+	if requested != integration.RemoteName(run.Integration) {
 		return "", fmt.Errorf("cannot inherit an existing PR from another integration remote")
 	}
 	if run.Integration != nil {
@@ -73,4 +66,47 @@ func inheritIntegrationPRURL(ctx context.Context, repo *db.Repo, run *db.Run) (s
 		}
 	}
 	return prURL, nil
+}
+
+func (m *RunManager) checkBranchIntegrationPR(ctx context.Context, repo *db.Repo, branch string) error {
+	runs, err := m.db.GetRunsByRepo(repo.ID)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.Branch == branch && run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
+			_, err := inheritIntegrationPRURL(ctx, repo, run)
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *RunManager) cleanupIntegrationRefs(ctx context.Context, run *db.Run, gateDir string) {
+	if run == nil || run.Integration == nil || !run.Status.Terminal() {
+		return
+	}
+	if err := run.Integration.Validate(); err != nil {
+		return
+	}
+	runs, err := m.db.GetRunsByRepo(run.RepoID)
+	if err != nil {
+		slog.Warn("cannot check integration ref owners", "run_id", run.ID, "error", err)
+		return
+	}
+	for _, other := range runs {
+		if !other.Status.Terminal() && other.Integration != nil && other.Integration.Key == run.Integration.Key {
+			return
+		}
+	}
+	refs, err := git.Run(ctx, gateDir, "for-each-ref", "--format=%(refname)", run.Integration.Ref(""))
+	if err != nil {
+		slog.Warn("cannot list integration refs", "run_id", run.ID, "error", err)
+		return
+	}
+	for _, ref := range strings.Fields(refs) {
+		if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", "-d", ref); err != nil {
+			slog.Warn("cannot remove integration ref", "run_id", run.ID, "error", err)
+		}
+	}
 }

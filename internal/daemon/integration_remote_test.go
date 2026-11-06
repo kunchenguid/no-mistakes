@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -493,5 +494,216 @@ func TestIntegrationRemoteUnsetStillUsesOrigin(t *testing.T) {
 	}
 	if got := <-seen; got.UpstreamURL != repo.UpstreamURL {
 		t.Fatalf("unset selector changed destination: %+v", got)
+	}
+}
+
+func TestIntegrationRemoteExistingPRRefusesDefaultPushAndFreshRun(t *testing.T) {
+	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, head := setupTestGitRepo(t, p, database, "integration-pr-binding")
+	gateDir := p.RepoDir(repo.ID)
+	gitCmd(t, repo.WorkingPath, "remote", "add", "origin", gateDir)
+	custom := filepath.Join(t.TempDir(), "custom.git")
+	gitCmd(t, repo.WorkingPath, "clone", "--bare", gateDir, custom)
+	gitCmd(t, custom, "symbolic-ref", "HEAD", "refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "remote", "add", "custom", custom)
+	destination, err := integration.ResolveRequest(integration.WithRemote(t.Context(), "custom"), repo.WorkingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := database.InsertRunWithDestination(repo.ID, "topic", head, head, nil, "", "", "", "", false, nil, db.RunPRText{}, nil, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(previous.ID, "https://github.com/customer/project/pull/7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(previous.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := database.InsertRun(repo.ID, "topic", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(newer.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "topic")
+	followup := commitIntegrationTopic(t, repo.WorkingPath)
+	gitCmd(t, repo.WorkingPath, "push", "gate", "topic")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for _, proof := range []bool{false, true} {
+		params := &ipc.PushReceivedParams{Gate: gateDir, Ref: "refs/heads/topic", Old: head, New: followup, Intent: "update the existing PR"}
+		if proof {
+			params.LaunchNonce, params.ValidationGeneration = "followup", "one"
+		}
+		err := client.Call(ipc.MethodPushReceived, params, &ipc.PushReceivedResult{})
+		if err == nil || !strings.Contains(err.Error(), "cannot inherit an existing PR from another integration remote") {
+			t.Fatalf("push proof=%t did not refuse destination change: %v", proof, err)
+		}
+	}
+	var launched ipc.StartFreshRunResult
+	err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "topic", HeadSHA: followup, Intent: "update the existing PR",
+		LaunchNonce: "fresh-followup", ValidationGeneration: "one",
+	}, &launched)
+	if err == nil || !strings.Contains(err.Error(), "cannot inherit an existing PR from another integration remote") {
+		t.Fatalf("fresh launch did not refuse destination change: %v", err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("refused submissions created runs: %+v, %v", runs, err)
+	}
+	err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "topic", HeadSHA: followup, Intent: "update the existing PR",
+		LaunchNonce: "selected-followup", ValidationGeneration: "one", BaseRemote: "custom",
+	}, &launched)
+	if err != nil {
+		t.Fatalf("same destination was refused: %v", err)
+	}
+	if run := waitForRunTerminalState(t, database, launched.Receipt.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("same-destination run = %+v", run)
+	}
+}
+
+func TestIntegrationRemoteDefaultOriginAdmissionAndReceipt(t *testing.T) {
+	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, head := setupTestGitRepo(t, p, database, "integration-origin-reattach")
+	gitCmd(t, repo.WorkingPath, "remote", "add", "origin", p.RepoDir(repo.ID))
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	params := &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "main", HeadSHA: head, Intent: "retain the origin default",
+		LaunchNonce: "origin-default", ValidationGeneration: "one",
+	}
+	var first ipc.StartFreshRunResult
+	if err := client.Call(ipc.MethodStartFreshRun, params, &first); err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, database, first.Receipt.RunID)
+	params.BaseRemote = "origin"
+	var repeated ipc.StartFreshRunResult
+	if err := client.Call(ipc.MethodStartFreshRun, params, &repeated); err != nil {
+		t.Fatalf("explicit origin could not reattach: %v", err)
+	}
+	if repeated.Receipt.RunID != first.Receipt.RunID {
+		t.Fatalf("explicit origin created another run: %+v", repeated)
+	}
+	var claimed ipc.ClaimLaunchReceiptResult
+	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+		RepoID: repo.ID, Branch: "main", SubmittedHeadSHA: head, LaunchNonce: params.LaunchNonce,
+		ValidationGeneration: params.ValidationGeneration, IntentDigest: digestIntent(params.Intent), BaseRemote: "origin",
+	}, &claimed); err != nil {
+		t.Fatalf("explicit origin receipt disagreed with admission: %v", err)
+	}
+}
+
+func TestIntegrationRemoteCleanupPreservesActiveInheritedNamespace(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, head := setupTestGitRepo(t, p, database, "integration-ref-cleanup")
+	gateDir := p.RepoDir(repo.ID)
+	destination := &integration.Destination{
+		Remote: "custom", URL: gateDir, TransportURL: gateDir, DefaultBranch: "main", Key: "abcdefghijklmnopqrstuvwx",
+	}
+	insert := func(branch string, pin *integration.Destination) *db.Run {
+		t.Helper()
+		run, err := database.InsertRunWithDestination(repo.ID, branch, head, head, nil, "", "", "", "", false, nil, db.RunPRText{}, nil, pin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+	source := insert("topic", destination)
+	continuation := insert("topic", destination)
+	otherPin := *destination
+	otherPin.Key += "other"
+	insert("other", &otherPin)
+	for _, branch := range []string{"main", "release/customer", "topic"} {
+		gitCmd(t, gateDir, "update-ref", destination.Ref(branch), head)
+	}
+	gitCmd(t, gateDir, "update-ref", otherPin.Ref("main"), head)
+	wtDir := p.WorktreeDir(repo.ID, source.ID)
+	if err := git.WorktreeAdd(t.Context(), gateDir, wtDir, head); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(source.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	manager.removeRunWorktree(repo.ID, source.ID, gateDir, wtDir, "test_finished")
+	if got := gitOutput(t, gateDir, "for-each-ref", "--format=%(refname)", destination.Ref("")); len(strings.Fields(got)) != 3 {
+		t.Fatalf("active continuation lost its refs: %q", got)
+	}
+	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
+		t.Fatalf("finished source worktree was not removed: %v", err)
+	}
+	if err := database.UpdateRunStatus(continuation.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	continuation, err = database.GetRun(continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.cleanupIntegrationRefs(t.Context(), continuation, gateDir)
+	manager.cleanupIntegrationRefs(t.Context(), continuation, gateDir)
+	if got := gitOutput(t, gateDir, "for-each-ref", "--format=%(refname)", destination.Ref("")); got != "" {
+		t.Fatalf("finished namespace retained refs: %s", got)
+	}
+	if got := gitOutput(t, gateDir, "rev-parse", otherPin.Ref("main")); got != head {
+		t.Fatalf("cleanup removed another run's ref: %s", got)
+	}
+}
+
+func TestIntegrationRemoteContinuationOwnsNewNamespace(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, _ := setupTestGitRepo(t, p, database, "integration-continuation")
+	gitCmd(t, repo.WorkingPath, "remote", "add", "custom", p.RepoDir(repo.ID))
+	gitCmd(t, p.RepoDir(repo.ID), "symbolic-ref", "HEAD", "refs/heads/main")
+	source, err := integration.ResolveRequest(integration.WithRemote(t.Context(), "custom"), repo.WorkingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := *source
+	for range 2 {
+		continuation, err := integration.ResolveRequest(integration.WithPinned(t.Context(), source), repo.WorkingPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if continuation.Key == source.Key {
+			t.Fatal("continuation shares refs with a run that may still be cleaning up")
+		}
+		if continuation.Remote != source.Remote || continuation.URL != source.URL || continuation.TransportURL != source.TransportURL || continuation.DefaultBranch != source.DefaultBranch || *source != before {
+			t.Fatalf("continuation changed its destination: source=%+v continuation=%+v", source, continuation)
+		}
+	}
+	gitCmd(t, repo.WorkingPath, "remote", "set-url", "custom", repo.WorkingPath)
+	if _, err := integration.ResolveRequest(integration.WithPinned(t.Context(), source), repo.WorkingPath); err == nil {
+		t.Fatal("continuation accepted a moved pinned destination")
 	}
 }

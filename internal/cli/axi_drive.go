@@ -433,7 +433,7 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 		}
 		if active != nil {
-			if baseRemote != "" && active.BaseRemote != baseRemote {
+			if !integration.MatchesRemote(active.BaseRemote, baseRemote) {
 				return emitError(cmd, 2, "active run has a different integration remote; omit --base-remote to reattach")
 			}
 			if !active.ReviewerProfile.Matches(reviewer) {

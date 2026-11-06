@@ -1707,7 +1707,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReady:            r.CIReadyAt != nil,
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
-		BaseRemote:         runIntegrationRemote(r),
+		BaseRemote:         integration.RemoteName(r.Integration),
 		OmitIntent:         r.OmitIntent,
 		QuotaRouting:       r.QuotaRouting,
 		PiProfile:          r.PiProfile,

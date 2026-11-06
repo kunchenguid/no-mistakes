@@ -810,6 +810,7 @@ func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason str
 		slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)
 		return
 	}
+	m.cleanupIntegrationRefs(context.Background(), run, gateDir)
 	if refusal := protectedPathCleanupReason(m.db, run); refusal != "" {
 		slog.Warn("preserving run worktree", "run_id", runID, "path", wtDir, "reason", refusal)
 		return
@@ -1766,6 +1767,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		slog.Warn("repository URL refresh skipped; continuing with existing registration", "repo_id", repo.ID, "reason", gate.ReasonForRefreshFailure(refreshErr))
 	} else {
 		repo = refreshed
+	}
+	if err := m.checkBranchIntegrationPR(ctx, repo, branch); err != nil {
+		return "", err
 	}
 	destination, err := integration.ResolveRequest(ctx, repo.WorkingPath)
 	if err != nil {

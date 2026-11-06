@@ -49,6 +49,20 @@ func RequestedRemote(ctx context.Context) string {
 	return r.remote
 }
 
+func RemoteName(destination *Destination) string {
+	if destination != nil {
+		return destination.Remote
+	}
+	return "origin"
+}
+
+func MatchesRemote(selected, requested string) bool {
+	if selected == "" {
+		selected = "origin"
+	}
+	return requested == "" || selected == requested
+}
+
 func ValidateRemote(name string) error {
 	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\r\n\x00") {
 		return fmt.Errorf("base remote must be a configured remote name")
@@ -110,6 +124,7 @@ func ResolveRequest(ctx context.Context, workDir string) (*Destination, error) {
 			return nil, err
 		}
 		copy := *r.pinned
+		copy.Key = rand.Text()
 		return &copy, nil
 	}
 	if r.remote == "" {

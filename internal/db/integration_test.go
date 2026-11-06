@@ -48,3 +48,44 @@ func TestIntegrationRemotePinPersistsAndBindsReceipt(t *testing.T) {
 		t.Fatal("malformed persisted destination must fail closed")
 	}
 }
+
+func TestIntegrationRemoteDefaultOriginReceipt(t *testing.T) {
+	for _, remote := range []string{"", "origin", "custom"} {
+		t.Run("pin_"+remote, func(t *testing.T) {
+			database, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			repo, err := database.InsertRepo(t.TempDir(), "https://github.com/product/repo.git", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var destination *integration.Destination
+			if remote != "" {
+				destination = &integration.Destination{
+					Remote: remote, URL: "https://github.com/customer/repo.git", TransportURL: "https://github.com/customer/repo.git",
+					DefaultBranch: "main", Key: "abcdefghijklmnopqrstuvwx",
+				}
+			}
+			run, err := database.InsertRunWithDestination(repo.ID, "topic", "head", "base", nil, "nonce", "generation", "digest", "", false, nil, RunPRText{}, nil, destination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, claimed, err := database.ClaimLaunchReceiptWithDestination(repo.ID, "topic", "nonce", "head", "generation", "digest", "", false, "", "origin")
+			if err != nil || claimed != (remote != "custom") {
+				t.Fatalf("explicit origin claim = %t, %v", claimed, err)
+			}
+			stored, err := database.GetRun(run.ID)
+			if err != nil || stored == nil {
+				t.Fatalf("stored run = %+v, %v", stored, err)
+			}
+			if destination != nil && (stored.Integration == nil || *stored.Integration != *destination) {
+				t.Fatalf("claim changed pinned identity: %+v", stored.Integration)
+			}
+			if remote == "custom" && stored.LaunchReceiptClaimedAt != nil {
+				t.Fatal("origin claim consumed a selected remote receipt")
+			}
+		})
+	}
+}
