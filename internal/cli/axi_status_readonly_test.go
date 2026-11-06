@@ -70,56 +70,70 @@ func TestAxiStatusReadOnly(t *testing.T) {
 		t.Fatalf("status lost %s step in state %s:\n%s", step, status, out)
 	}
 
-	t.Run("live Test remains visible during a write transaction", func(t *testing.T) {
-		dir, p, database, repo := setupAxiQueryRepo(t)
-		run(t, dir, "git", "checkout", "-b", "feature/live-test")
-		live, err := database.InsertRun(repo.ID, "feature/live-test", "head", "base")
-		if err != nil {
-			t.Fatal(err)
+	for _, pendingSchema := range []bool{false, true} {
+		name := "current schema"
+		if pendingSchema {
+			name = "pending schema"
 		}
-		if err := database.UpdateRunStatus(live.ID, types.RunRunning); err != nil {
-			t.Fatal(err)
-		}
-		step, err := database.InsertStepResult(live.ID, types.StepTest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := database.UpdateStepStatus(step.ID, types.StepStatusRunning); err != nil {
-			t.Fatal(err)
-		}
-		writer, err := sql.Open("sqlite", p.DB())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer writer.Close()
-		var mode string
-		if err := writer.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
-			t.Fatalf("fixture must use WAL: mode=%q, err=%v", mode, err)
-		}
-		tx, err := writer.Begin()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		// Returning from UPDATE is the barrier: this real second connection
-		// owns the write lock until the explicit rollback below.
-		if _, err := tx.Exec("UPDATE runs SET updated_at = updated_at + 1 WHERE id = ?", live.ID); err != nil {
-			t.Fatal(err)
-		}
-		for range 3 {
-			assertRun(t, dir, live.ID, "test", "running")
-			assertRun(t, dir, live.ID, "test", "running", "--run", live.ID)
-		}
-		if err := tx.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-		if err := database.UpdateStepStatus(step.ID, types.StepStatusCompleted); err != nil {
-			t.Fatal(err)
-		}
-		for _, args := range [][]string{nil, {"--run", live.ID}} {
-			assertRun(t, dir, live.ID, "test", "completed", args...)
-		}
-	})
+		t.Run("live Test remains visible during a write transaction/"+name, func(t *testing.T) {
+			dir, p, database, repo := setupAxiQueryRepo(t)
+			run(t, dir, "git", "checkout", "-b", "feature/live-test")
+			live, err := database.InsertRun(repo.ID, "feature/live-test", "head", "base")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunStatus(live.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			step, err := database.InsertStepResult(live.ID, types.StepTest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateStepStatus(step.ID, types.StepStatusRunning); err != nil {
+				t.Fatal(err)
+			}
+			writer, err := sql.Open("sqlite", p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Close()
+			if pendingSchema {
+				// Model an existing database awaiting an additive schema change.
+				// Status does not need this table, so a pure reader can still
+				// observe the committed run while another connection writes.
+				if _, err := writer.Exec("DROP TABLE intent_cache"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var mode string
+			if err := writer.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+				t.Fatalf("fixture must use WAL: mode=%q, err=%v", mode, err)
+			}
+			tx, err := writer.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			// Returning from UPDATE is the barrier: this real second connection
+			// owns the write lock until the explicit rollback below.
+			if _, err := tx.Exec("UPDATE runs SET updated_at = updated_at + 1 WHERE id = ?", live.ID); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				assertRun(t, dir, live.ID, "test", "running")
+				assertRun(t, dir, live.ID, "test", "running", "--run", live.ID)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateStepStatus(step.ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{nil, {"--run", live.ID}} {
+				assertRun(t, dir, live.ID, "test", "completed", args...)
+			}
+		})
+	}
 
 	t.Run("does not repair schema", func(t *testing.T) {
 		dir, p, _, _ := setupAxiQueryRepo(t)
