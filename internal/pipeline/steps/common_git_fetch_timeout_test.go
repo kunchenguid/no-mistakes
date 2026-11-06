@@ -90,6 +90,7 @@ func TestPRStep_BaseLookupTimesOutBeforePublication(t *testing.T) {
 	sctx.Env = env
 	sctx.Config.PR.BaseBranch = "layer1"
 	gitCmd(t, dir, "remote", "set-url", "origin", hangingGitRemote(t))
+	recordPRTestPush(t, sctx)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
