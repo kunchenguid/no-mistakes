@@ -129,16 +129,11 @@ func (h *Host) repoArgs() []string {
 
 // bitbucketPullRequest is the subset of twg's `pull-requests get`/`query`/
 // `create`/`update` JSON this package reads. Field names mirror the
-// underlying Bitbucket Cloud API shape verbatim (id, state, links.html.href),
+// underlying Bitbucket Cloud API shape verbatim (id, state, source, destination),
 // which twg's own documented agent-field presets confirm it passes through.
 type bitbucketPullRequest struct {
 	ID    int    `json:"id"`
 	State string `json:"state"`
-	Links struct {
-		HTML struct {
-			Href string `json:"href"`
-		} `json:"html"`
-	} `json:"links"`
 	Source struct {
 		Branch struct {
 			Name string `json:"name"`
@@ -160,7 +155,7 @@ type bitbucketPullRequest struct {
 func (pr bitbucketPullRequest) toPR(repo RepoRef) *scm.PR {
 	return &scm.PR{
 		Number: strconv.Itoa(pr.ID),
-		URL:    prURL(repo, pr.ID, pr.Links.HTML.Href),
+		URL:    prURL(repo, pr.ID),
 	}
 }
 
@@ -528,10 +523,9 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 
 func (t *tailBuffer) String() string { return string(t.buf) }
 
-func prURL(repo RepoRef, prID int, rawURL string) string {
-	if url := strings.TrimSpace(rawURL); url != "" {
-		return url
-	}
+// prURL builds the URL from the configured repository and the validated id,
+// never from the response's own link, so number and URL cannot disagree.
+func prURL(repo RepoRef, prID int) string {
 	if prID <= 0 || strings.TrimSpace(repo.Workspace) == "" || strings.TrimSpace(repo.RepoSlug) == "" {
 		return ""
 	}

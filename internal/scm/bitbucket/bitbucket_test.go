@@ -657,3 +657,18 @@ func TestFindPRRejectsSummaryEnvelope(t *testing.T) {
 		t.Fatal("expected an error for a YAML summary envelope")
 	}
 }
+
+func TestFindPRNeverReturnsNumberAndURLThatDisagree(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {
+			stdout: `[{"id":42,"state":"OPEN","source":{"repository":{"full_name":"ws/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/99"}}}]`,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+	pr, err := h.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "42" || pr.URL != "https://bitbucket.org/ws/repo/pull-requests/42" {
+		t.Fatalf("FindPR() = %+v, want number 42 with the URL built from the repository and id", pr)
+	}
+}
