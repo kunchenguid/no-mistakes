@@ -261,12 +261,10 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	// must never be recorded from another commit's checks. Review-bot identity
 	// comes from that same head read, exactly as the polling loop names it.
 	pr.HeadSHA = sctx.Run.HeadSHA
-	checks, observedHead, _, err := getCIChecks(ctx, host, pr)
+	checks, observedHead, _, err := s.getCIChecks(sctx, host, pr)
 	if err == nil {
-		if strings.TrimSpace(observedHead) != "" {
-			if reason := s.headRewriteOverrideReason(sctx, observedHead); reason != "" {
-				return reason, nil
-			}
+		if reason := s.headRewriteOverrideReason(sctx, observedHead); reason != "" {
+			return reason, nil
 		}
 		checks, err = requiredReviewChecks(sctx, host, pr, checks)
 	}
@@ -411,7 +409,7 @@ func observedMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads
 		}
 	}
 	probe := &scm.PR{Number: pr.Number, URL: pr.URL, HeadSHA: primary}
-	_, observed, _, err := getCIChecks(ctx, host, probe)
+	_, observed, _, err := observeCIChecks(ctx, host, probe)
 	if err != nil && !errors.Is(err, scm.ErrHeadChanged) {
 		return "", fmt.Errorf("%w: reading the merged head failed: %v", errMergedHeadUnproven, err)
 	}
@@ -949,7 +947,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
-		checks, observedHead, _, err := getCIChecks(ctx, host, pr)
+		checks, observedHead, _, err := s.getCIChecks(sctx, host, pr)
 		if observedHead != "" && observedHead != lastCheckHeadSHA {
 			timeoutFailingChecks = nil
 			lastCheckHeadSHA = observedHead
@@ -1002,49 +1000,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		} else {
 			consecutiveCheckErrs = 0
-			// A provider that binds no head to its check read (Bitbucket,
-			// Gitea, Forgejo, Azure DevOps and Origin read statuses against the
-			// pull request rather than a commit) cannot prove these results
-			// describe the head this run validated. The poll's earlier
-			// push-target read is not enough on its own: a rewrite that lands
-			// between that read and this one would hand back the foreign head's
-			// green checks and establish readiness for a commit no step here
-			// saw. Bind the unbound read to the push target's head re-read now,
-			// then apply the same ownership guard to either source. Refusing
-			// every unbound read outright would leave no run on those providers
-			// ever ready.
-			checkHead := strings.TrimSpace(observedHead)
-			var headErr error
-			if checkHead == "" {
-				checkHead, headErr = publishedBranchHead(sctx)
-			}
-			if headErr != nil || !s.ciRunOwnsHead(sctx, checkHead) {
+			if !s.ciRunOwnsHead(sctx, observedHead) {
 				lastMonitorLog = ciMonitorStatus{}
-				if strings.TrimSpace(observedHead) == "" {
-					if headErr != nil {
-						sctx.Log(fmt.Sprintf("warning: could not re-read the published branch head after an unbound check read, so no check result is used this poll: %v", headErr))
-					} else {
-						sctx.Log(fmt.Sprintf("the check read binds no head and the push target now serves %s, which this run owns nowhere, so no result from it can establish readiness for %s", shortSHA(checkHead), shortSHA(sctx.Run.HeadSHA)))
-					}
-					if err := clearCIMonitorReadyForIssues(sctx); err != nil {
-						return nil, err
-					}
-				} else {
-					// A provider resolves the checks against the pull request's live
-					// head, so a rewrite that lands between the state read and this
-					// read surfaces here as green or failing checks for a commit this
-					// run never validated. The same adoption applies before any of
-					// those results can establish readiness.
-					outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", checkHead, prOpen)
-					if adoptErr != nil {
-						return nil, adoptErr
-					}
-					if outcome != nil {
-						return outcome, nil
-					}
-					// Nothing was adopted - the push target serves a head this run
-					// owns, or its own read failed. These checks still belong to a
-					// head the run never validated, so none of them may be read.
+				outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", observedHead, prOpen)
+				if adoptErr != nil {
+					return nil, adoptErr
+				}
+				if outcome != nil {
+					return outcome, nil
 				}
 				// Keep polling, on the same bound every other unread poll has.
 				consecutiveUnreadPolls++
