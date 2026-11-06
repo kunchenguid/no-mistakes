@@ -536,10 +536,11 @@ func TestCIStep_MergedWithoutProofRefusesWithoutTerminalState(t *testing.T) {
 		t.Run(entry, func(t *testing.T) {
 			t.Parallel()
 			sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
-			prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+			prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 			sctx.Run.PRURL = &prURL
-			sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
-			sctx.Env, _ = fakeGlab(t, `{"state":"merged"}`)
+			sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+			api := newFakeBitbucketCIAPI(t, "MERGED", `{"values":[]}`)
+			sctx.Env = fakeBitbucketEnv(api.server.URL)
 			observed := false
 			sctx.SetPRState = func(state string) error {
 				observed = true
