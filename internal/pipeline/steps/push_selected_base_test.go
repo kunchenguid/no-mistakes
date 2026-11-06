@@ -9,8 +9,11 @@ import (
 )
 
 func TestMirrorReconciliationUsesSelectedBase(t *testing.T) {
-	for _, source := range []string{"default", "config", "run"} {
+	for _, source := range []string{"default", "config", "run", "refreshed_upstream"} {
 		for _, restored := range []bool{false, true} {
+			if source == "refreshed_upstream" && !restored {
+				continue
+			}
 			name := source + "/deleted"
 			if restored {
 				name = source + "/restored"
@@ -47,7 +50,7 @@ func TestMirrorReconciliationUsesSelectedBase(t *testing.T) {
 				gitCmd(t, gateDir, "fetch", dir, private+":refs/heads/feature")
 				gitCmd(t, dir, "checkout", "main")
 				gitCmd(t, dir, "rm", "doomed.txt")
-				commit("main deletion")
+				deletedHead := commit("main deletion")
 				selected := "integration"
 				gitCmd(t, dir, "checkout", "-b", selected)
 				if restored {
@@ -74,6 +77,27 @@ func TestMirrorReconciliationUsesSelectedBase(t *testing.T) {
 				case "run":
 					sctx.Config.PR.BaseBranch = "main"
 					sctx.Run.PRBaseBranch = &selected
+				case "refreshed_upstream":
+					// The invoking checkout changes origin after the gate was
+					// created. Its gate worktree keeps the old URL, whose selected
+					// branch deletes a file the current upstream requires.
+					stale := t.TempDir()
+					gitCmd(t, stale, "init", "--bare")
+					gitCmd(t, stale, "symbolic-ref", "HEAD", "refs/heads/"+selected)
+					gitCmd(t, dir, "push", stale, deletedHead+":refs/heads/"+selected)
+					gitCmd(t, dir, "remote", "set-url", "origin", stale)
+					gateWork := t.TempDir()
+					gitCmd(t, gateWork, "clone", stale, ".")
+					gitCmd(t, gateWork, "fetch", dir, live)
+					gitCmd(t, gateWork, "checkout", "--detach", live)
+					gitCmd(t, dir, "remote", "set-url", "origin", upstream)
+					sctx.WorkDir = gateWork
+					sctx.Repo.UpstreamURL = upstream
+					sctx.Repo.URLsVerified = true
+					sctx.Config.PR.BaseBranch = selected
+					if got := resolveUpstreamURL(sctx); got != upstream {
+						t.Fatalf("run upstream = %q, want refreshed %q", got, upstream)
+					}
 				}
 				plan, err := planGateMirrorReconciliation(sctx.Ctx, sctx, "refs/heads/feature", "feature", live)
 				if restored {
