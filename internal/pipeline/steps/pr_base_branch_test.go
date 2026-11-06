@@ -520,7 +520,7 @@ func TestPRStep_ObservedBaseNeverRetargets(t *testing.T) {
 	// retargets it; the run observed layer2 earlier and scopes by it.
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "main")
 
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.ObservedBaseBranch = &observed
 	owned := "https://github.com/test/repo/pull/42"
@@ -549,7 +549,7 @@ func TestPRStep_ObservedBaseNeverRetargets(t *testing.T) {
 	// configured base, never on the observation.
 	createDir, createBase, createHead := setupGitRepo(t)
 	createEnv, createLog := fakeGH(t, "")
-	createCtx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, createDir, createBase, createHead, config.Commands{})
+	createCtx := newPRTestContext(t, &mockAgent{name: "test"}, createDir, createBase, createHead, config.Commands{})
 	createCtx.Env = createEnv
 	createCtx.Run.ObservedBaseBranch = &observed
 	if _, err := (&PRStep{}).Execute(createCtx); err != nil {
@@ -600,7 +600,7 @@ func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
 			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
 			sctx.Config.PR.BaseBranch = "layer1"
 			if tc.perRun {
@@ -609,6 +609,7 @@ func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
 					t.Fatal(insertErr)
 				}
 				sctx.Run = run
+				recordPRTestPush(t, sctx)
 			}
 			sctx.Config.PR.UpdateText = tc.mode
 			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
@@ -689,7 +690,7 @@ func TestPRStep_ExistingTargetSurvivesObservation(t *testing.T) {
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
 			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
 			sctx.Config.PR.UpdateText = mode
 			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
