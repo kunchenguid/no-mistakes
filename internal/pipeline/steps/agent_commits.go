@@ -24,9 +24,10 @@ var errAgentCommitsNotLinear = errors.New("agent commits are not a linear chain 
 // assertPipelineHeadContinuity and ciHeadAwaitsRecording use: every commit above
 // sctx.Run.HeadSHA is work the pipeline has not recorded yet, including commits
 // an earlier failed agent turn left behind. Only a linear, non-merge chain on
-// that head is rewritten. Trees, authors and parents are kept (only the message
-// changes) and HEAD moves with a compare-and-swap against the head observed. An
-// unexpected shape or a git failure returns an error with the agent's commits
+// that head is rewritten. Trees, author attribution and author dates are kept.
+// Rewritten commits use the run's bound committer. HEAD moves with a
+// compare-and-swap against the head observed. An unexpected shape or a git
+// failure returns an error with the agent's commits
 // untouched, so the change is never dropped and never published unshaped.
 func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, render func() (string, error)) error {
 	anchor := strings.TrimSpace(sctx.Run.HeadSHA)
