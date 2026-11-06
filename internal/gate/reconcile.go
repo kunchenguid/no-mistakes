@@ -592,7 +592,9 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, live
 		return false, err
 	}
 	defer os.RemoveAll(indexDir)
-	env := []string{"GIT_INDEX_FILE=" + filepath.Join(indexDir, "index")}
+	// update-index requires a worktree even for --force-remove. Give the
+	// copied index an empty scratch worktree, never the invoking worktree.
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(indexDir, "index"), "GIT_WORK_TREE=" + indexDir}
 	if _, err := git.RunWithEnv(ctx, repoDir, env, "read-tree", privateHead); err != nil {
 		return false, err
 	}
