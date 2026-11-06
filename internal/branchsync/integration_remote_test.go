@@ -1,13 +1,91 @@
 package branchsync
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/integration"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestIntegrationRemoteSyncUsesRuntimeCredentials(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		name := "refresh"
+		if apply {
+			name = "apply"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newSyncFixture(t)
+			const credentialURL = "https://fixture-user:fixture-password@integration.invalid/owner/project.git"
+			mustRun(t, f.local, "remote", "add", "custom", credentialURL)
+			pin := &integration.Destination{
+				Remote: "custom", URL: safeurl.Redact(credentialURL), TransportURL: safeurl.Redact(credentialURL),
+				DefaultBranch: "main", Key: "credentialledabcdefghijkl",
+			}
+			var err error
+			f.run, err = f.db.InsertRunWithDestination(f.repo.ID, "feature/sync", f.old, f.base, nil, "", "", "", "", false, nil, db.RunPRText{}, nil, pin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.UpdateRunHeadSHA(f.run.ID, f.pushed); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+				HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(credentialURL), Ref: "refs/heads/feature/sync",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			completeSyncRun(t, f)
+			// The transport seam requires the synthetic URL's credentials,
+			// then drives real Git against the local published repository.
+			calls := 0
+			f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+				calls++
+				if remote != credentialURL {
+					return "", fmt.Errorf("synthetic remote credentials were lost")
+				}
+				return git.LsRemote(ctx, dir, f.remote, ref)
+			}
+			f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
+				calls++
+				if remote != credentialURL {
+					return fmt.Errorf("synthetic remote credentials were lost")
+				}
+				return git.FetchRemoteBranchToPrivateRef(ctx, dir, f.remote, branch, localRef)
+			}
+			var state State
+			wantCalls := 2
+			if apply {
+				state = f.service.Apply(f.ctx)
+				wantCalls = 3
+				if state.State != StateSynchronized || !state.Changed || state.Local.Head != f.pushed {
+					t.Fatalf("credentialled apply = %#v", state)
+				}
+			} else {
+				state = f.service.Refresh(f.ctx)
+				if state.State != StateBehind || state.Safety != SafetySafeFastForward || state.Changed {
+					t.Fatalf("credentialled refresh = %#v", state)
+				}
+			}
+			if calls != wantCalls {
+				t.Fatalf("Git calls = %d, want %d", calls, wantCalls)
+			}
+			stored, err := f.db.GetRun(f.run.ID)
+			if err != nil || stored.Integration.TransportURL != pin.TransportURL {
+				t.Fatalf("runtime credential recovery changed the stored identity: %+v, %v", stored, err)
+			}
+			if got := mustRun(t, f.local, "remote", "get-url", "custom"); got != credentialURL {
+				t.Fatalf("sync changed the configured remote: %q", got)
+			}
+		})
+	}
+}
 
 func selectedSyncFixture(t *testing.T, fork bool) *syncFixture {
 	t.Helper()

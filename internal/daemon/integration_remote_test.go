@@ -711,3 +711,60 @@ func TestIntegrationRemoteContinuationOwnsNewNamespace(t *testing.T) {
 		t.Fatal("continuation accepted a moved pinned destination")
 	}
 }
+
+func TestIntegrationRemoteStartupCleansInterruptedRefsWithoutAWorktree(t *testing.T) {
+	for _, withWorktree := range []bool{false, true} {
+		name := "worktree already gone"
+		if withWorktree {
+			name = "worktree retained"
+		}
+		t.Run(name, func(t *testing.T) {
+			p, database := newParkedRunEnv(t)
+			repo, head := setupTestGitRepo(t, p, database, "integration-crash-cleanup")
+			gateDir := p.RepoDir(repo.ID)
+			pin := &integration.Destination{
+				Remote: "custom", URL: gateDir, TransportURL: gateDir, DefaultBranch: "main", Key: "crashedabcdefghijklmnopqr",
+			}
+			run, err := database.InsertRunWithDestination(repo.ID, "topic", head, head, nil, "", "", "", "", false, nil, db.RunPRText{}, nil, pin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			step, err := database.InsertStepResult(run.ID, types.StepRebase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(step.ID); err != nil {
+				t.Fatal(err)
+			}
+			if withWorktree {
+				if err := git.WorktreeAdd(t.Context(), gateDir, p.WorktreeDir(repo.ID, run.ID), head); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, branch := range []string{"main", "release/customer", "topic"} {
+				gitCmd(t, gateDir, "update-ref", pin.Ref(branch), head)
+			}
+			foreignRef := "refs/no-mistakes/integration/anotherabcdefghijklmnop/main"
+			gitCmd(t, gateDir, "update-ref", foreignRef, head)
+			// Boot the real private daemon over the persisted crash state.
+			// Startup must retire refs independently of worktree reaping.
+			runTestDaemon(t, p, database, func() []pipeline.Step {
+				return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+			}, 3*time.Second)
+			terminal, err := database.GetRun(run.ID)
+			if err != nil || terminal.Status != types.RunFailed {
+				t.Fatalf("interrupted run was not terminalized: %+v, %v", terminal, err)
+			}
+			refs, err := git.Run(t.Context(), gateDir, "for-each-ref", "--format=%(refname)", pin.Ref(""))
+			if err != nil || refs != "" {
+				t.Fatalf("startup retained interrupted integration refs: %q, %v", refs, err)
+			}
+			if got := gitOutput(t, gateDir, "rev-parse", foreignRef); got != head {
+				t.Fatalf("startup removed another namespace: %q", got)
+			}
+		})
+	}
+}
