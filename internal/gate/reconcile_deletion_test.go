@@ -11,7 +11,7 @@ import (
 )
 
 func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
-	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure"} {
+	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream"} {
 		t.Run(change, func(t *testing.T) {
 			work := initReconcileRepo(t)
 			reconcileGit(t, work, "branch", "-M", "main")
@@ -42,7 +42,11 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			upstream := filepath.Join(t.TempDir(), "upstream.git")
 			reconcileGit(t, "", "init", "--bare", upstream)
 			reconcileGit(t, upstream, "symbolic-ref", "HEAD", "refs/heads/main")
-			reconcileGit(t, work, "push", upstream, newBase+":refs/heads/main")
+			upstreamHead := newBase
+			if change == "older_upstream" {
+				upstreamHead = reconcileGit(t, work, "rev-parse", base+"^")
+			}
+			reconcileGit(t, work, "push", upstream, upstreamHead+":refs/heads/main")
 			reconcileGit(t, work, "remote", "add", "origin", upstream)
 			reconcileGit(t, work, "checkout", "feature")
 			if change != "branch_deletion" {

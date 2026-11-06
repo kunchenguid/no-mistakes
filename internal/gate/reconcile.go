@@ -569,6 +569,12 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, live
 	if len(strings.Fields(base)) != 1 || len(strings.Fields(common)) != 1 {
 		return false, nil
 	}
+	// A default branch rolled back behind the fork is not evidence that the
+	// branch integrated a deletion. Comparing its older tree would otherwise
+	// misread files introduced before the fork as upstream deletions.
+	if _, err := git.Run(ctx, repoDir, "merge-base", "--is-ancestor", common, base); err != nil {
+		return false, nil
+	}
 	deleted, err := git.RunRaw(ctx, repoDir, "diff-tree", "--no-commit-id", "--name-only", "--diff-filter=D", "--no-renames", "-r", "-z", common, base)
 	if err != nil || len(deleted) == 0 {
 		return false, err
