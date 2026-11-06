@@ -194,10 +194,19 @@ func TestCallerRestrictionsCannotBeSuppliedByVerificationEvidence(t *testing.T) 
 
 func TestCallerRestrictionsCannotComplyIsReportableAtTheNormalGate(t *testing.T) {
 	dir, base, head := setupGitRepo(t)
-	ag := &mockAgent{name: "fake", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"cannot-comply","severity":"warning","action":"ask-user","description":"Caller restrictions prohibit the proposed install; caller --caller-restrictions is the authority."}],"summary":"decision needed"}`)}, nil
+	ag := &mockAgent{name: "fake", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		// This checks instruction delivery, not whether a model will obey it.
+		for _, instruction := range []string{
+			"Report at the normal step gate only which action was blocked by a caller restriction.",
+			"Do not include restriction text, provenance or authority details.",
+		} {
+			if !strings.Contains(opts.Prompt, instruction) {
+				t.Errorf("conflict reporting instruction missing %q", instruction)
+			}
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"cannot-comply","severity":"warning","action":"ask-user","description":"Dependency installation was blocked by a caller restriction."}],"summary":"decision needed"}`)}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
 	bindTestCallerRestrictions(t, sctx)
 	outcome, err := (&DocumentStep{}).Execute(sctx)
 	if err != nil {
@@ -209,5 +218,21 @@ func TestCallerRestrictionsCannotComplyIsReportableAtTheNormalGate(t *testing.T)
 	findings, err := types.ParseFindingsJSON(outcome.Findings)
 	if err != nil || len(findings.Items) != 1 || findings.Items[0].ID != "cannot-comply" {
 		t.Fatalf("conflict report lost: %+v %v", findings, err)
+	}
+	// Persist the agent's finding as a real step round before PR rendering.
+	insertCompletedStep(t, sctx, types.StepDocument, outcome.Findings, "")
+	pipelineMD, risk, testingMD, evidence := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
+	content, err := (&PRStep{}).fallbackPRContent(sctx, "", risk, testingMD, pipelineMD, evidence, 0, scm.ProviderGitHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content.Body, findings.Items[0].Description) {
+		t.Fatal("recorded conflict finding disappeared from the PR body")
+	}
+	r := sctx.Run.CallerRestrictions
+	for _, private := range []string{strings.TrimSpace(r.Content), r.Source, r.SourcePath, r.SHA256} {
+		if strings.Contains(content.Body, private) {
+			t.Fatalf("PR body contains private caller restriction detail %q", private)
+		}
 	}
 }
