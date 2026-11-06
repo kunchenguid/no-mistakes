@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	toon "github.com/toon-format/toon-go"
 )
@@ -100,6 +102,110 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			}
 		}
 		t.Fatalf("status lost %s step in state %s:\n%s", step, status, out)
+	}
+
+	for _, preFork := range []bool{false, true} {
+		name := "v1.106.1"
+		if preFork {
+			name += " without fork registration"
+		}
+		t.Run("released schema/"+name, func(t *testing.T) {
+			dir, _, _, repo := setupAxiQueryRepo(t)
+			run(t, dir, "git", "checkout", "-b", "feature/released-schema")
+			t.Setenv("NM_HOME", t.TempDir())
+			p, err := paths.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer, err := sql.Open("sqlite", p.DB()+"?_pragma=journal_mode(wal)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Close()
+			var fixture struct {
+				Release    string   `json:"release"`
+				Commit     string   `json:"commit"`
+				Schema     string   `json:"schema"`
+				Migrations []string `json:"migrations"`
+			}
+			data, err := os.ReadFile(filepath.Join("testdata", "status-schema-v1.106.1.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &fixture); err != nil {
+				t.Fatal(err)
+			}
+			if fixture.Release != "v1.106.1" || fixture.Commit != "5732d1ed88a1572fa6115d6ede5d69bfec097946" {
+				t.Fatal("fixture must retain its released-schema provenance")
+			}
+			if _, err := writer.Exec(fixture.Schema); err != nil {
+				t.Fatal(err)
+			}
+			// Follow this release's opener, including its duplicate-column no-op.
+			for _, statement := range fixture.Migrations {
+				if _, err := writer.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+					t.Fatal(err)
+				}
+			}
+			// The last release already has fork_url. Also exercise a database
+			// predating fork registration rather than mislabelling it as that release.
+			if preFork {
+				if _, err := writer.Exec("ALTER TABLE repos DROP COLUMN fork_url"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := writer.Exec(`INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at) VALUES (?, ?, ?, 'main', 1)`, repo.ID, dir, repo.UpstreamURL); err != nil {
+				t.Fatal(err)
+			}
+			const id = "released-schema-run"
+			if _, err := writer.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, ?, 'feature/released-schema', 'head', 'base', 'running', 1, 2)`, id, repo.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES ('released-schema-step', ?, 'test', ?, 'running')`, id, types.StepTest.Order()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, duration_ms, created_at) VALUES ('released-schema-round', 'released-schema-step', 1, 'initial', 1, 1)`); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(p.RunLogDir(id), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(p.RunLogDir(id), "test.log"), []byte("live Test output\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var before int
+			if err := writer.QueryRow("PRAGMA schema_version").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := writer.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.Exec("UPDATE runs SET updated_at = updated_at + 1 WHERE id = ?", id); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				for _, args := range [][]string{nil, {"--run", id}} {
+					assertRun(t, dir, id, "test", "running", args...)
+					assertLogs(t, dir, id, args...)
+				}
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec("UPDATE step_results SET status = 'completed' WHERE id = 'released-schema-step'"); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{nil, {"--run", id}} {
+				assertRun(t, dir, id, "test", "completed", args...)
+				assertLogs(t, dir, id, args...)
+			}
+			var after int
+			if err := writer.QueryRow("PRAGMA schema_version").Scan(&after); err != nil || after != before {
+				t.Fatalf("queries changed the released schema: before=%d after=%d err=%v", before, after, err)
+			}
+		})
 	}
 
 	for _, pendingSchema := range []bool{false, true} {
