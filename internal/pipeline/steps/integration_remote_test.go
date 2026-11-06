@@ -4,13 +4,49 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/integration"
 )
+
+func TestIntegrationRemoteEmptyDiffUsesFetchedDestination(t *testing.T) {
+	dir, base, submitted := setupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "customer.git")
+	gitCmd(t, dir, "init", "--bare", remote)
+	selected := gitCmd(t, dir, "commit-tree", base+"^{tree}", "-p", base, "-m", "customer sentinel")
+	gitCmd(t, dir, "push", remote, selected+":refs/heads/main", selected+":refs/heads/release/customer")
+	gitCmd(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	gitCmd(t, dir, "remote", "add", "customer", remote)
+	destination, err := integration.ResolveRequest(integration.WithRemote(context.Background(), "customer"), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, submitted, submitted, config.Commands{})
+	sctx.Run.Integration = destination
+	sctx.Repo.Integration = destination
+	sctx.Repo.UpstreamURL = destination.URL
+	sctx.Repo.DefaultBranch = destination.DefaultBranch
+	branch := "release/customer"
+	sctx.Run.PRBaseBranch = &branch
+	outcome, err := (&RebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched := gitCmd(t, dir, "rev-parse", destination.Ref(branch))
+	files, err := git.DiffNameOnly(context.Background(), dir, selected, "HEAD")
+	if err != nil || len(files) != 1 || files[0] != "feature.txt" || fetched != selected {
+		t.Fatalf("fixture or selected base is wrong: fetched=%s selected=%s files=%v err=%v", fetched, selected, files, err)
+	}
+	t.Logf("selected=%s submitted=%s integrated=%s legacy_base=%q diff_files=%v", selected, submitted, sctx.Run.HeadSHA, mergeBaseWithDefaultBranch(context.Background(), dir, branch), files)
+	if outcome.SkipRemaining {
+		t.Fatal("a real topic diff against the selected base must continue to Review")
+	}
+}
 
 func TestIntegrationRemotePRDestinationAndForkHead(t *testing.T) {
 	for _, provider := range []string{"github", "gitlab", "github-fork"} {
