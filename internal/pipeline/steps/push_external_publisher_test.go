@@ -215,7 +215,7 @@ func TestPublication_ExternalPublisherUsesCommitTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The brackets are literal filename characters, not a glob expression.
-	trusted, err := config.LoadRepoFromBytes([]byte(strings.Replace(externalPublisherYAML, ".shipping-gate.json", "literal[gate].json", 1)))
+	trusted, err := config.LoadRepoFromBytes([]byte(strings.Replace(externalPublisherYAML, ".shipping-gate.json", "'literal[gate].json'", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
