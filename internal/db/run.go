@@ -347,8 +347,7 @@ type RunWorktree struct {
 }
 
 // ActiveRunWorktrees returns the identity and recorded placement of every
-// pending or running run, and is the one runs query that must work against a
-// database this binary has not migrated yet.
+// pending or running run, including before this binary has migrated the database.
 //
 // The gate-execution-context preflight runs before any command opens the database
 // read-write, so on the first invocation after an upgrade it reads through
