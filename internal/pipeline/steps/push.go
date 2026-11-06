@@ -277,7 +277,10 @@ func planGateMirrorReconciliation(ctx context.Context, sctx *pipeline.StepContex
 	if err != nil {
 		return plan, fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
 	}
-	plan, err = gatepkg.PlanMirrorPublicationReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, runOwnedSubmittedHead(sctx), publishedHead)
+	resolveUpstream := func() gatepkg.ReconciliationUpstream {
+		return gatepkg.ReconciliationUpstream{URL: resolveUpstreamURL(sctx), BaseBranch: effectivePRBaseBranch(sctx)}
+	}
+	plan, err = gatepkg.PlanMirrorPublicationReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, resolveUpstream, runOwnedSubmittedHead(sctx), publishedHead)
 	if err != nil {
 		return gatepkg.StaleBranchPlan{}, fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
 	}

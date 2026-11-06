@@ -118,6 +118,31 @@ with context and whose lines a later live commit edited is not at risk either.
 At most 64 first-parent candidates are tried; past that bound the proof fails
 closed.
 
+When a rebase accepted a file deletion from the selected integration base,
+private edits to that file cause a modify/delete conflict even with
+live-favoring resolution. If the ordinary proofs leave content at risk,
+the deletion-aware proof reads and fetches the exact live selected base head
+from the upstream URL supplied by its caller. The URL and integration branch
+travel together; the proof never rediscovers a gate worktree's `origin` or
+default branch. Publication supplies the same resolved upstream URL used by
+rebase and push, including a refreshed checkout registration. The caller
+supplies the integration branch selected under the
+[`pr.base_branch` rules](/no-mistakes/reference/repo-config/#prbase_branch).
+Only when this proof is needed does AXI submission without a run override
+fetch the default branch to resolve trusted configuration. A submission
+without a stale mirror does not query upstream for reconciliation.
+
+The selected base's merge base with the live head identifies the upstream
+changes already integrated by the branch. The live and private heads must
+also have a unique common ancestor, which must be an ancestor of that
+integration boundary. Only paths deleted between those two commits, and still
+absent from the live tree, may be removed from an unreferenced copy of the
+private tree for the survival proof.
+Every remaining path must pass the same whole-tree proof above. A deletion
+made only on the branch does not qualify, and an unreadable or ambiguous base
+or failed tree inspection refuses reconciliation. The original private head
+is still the head archived before the mirror ref is removed.
+
 If survival cannot be proven, the whole private-only range is reported as at
 risk.
 
