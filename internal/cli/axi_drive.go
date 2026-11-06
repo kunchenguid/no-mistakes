@@ -1440,19 +1440,21 @@ func (e *respondRefusalError) helpLines(runID string) []string {
 	return help
 }
 
-// respondDispositionFields renders what a response recorded for its gate. It is
-// empty for actions that record no finding-level decision, so only a fix
-// response is echoed.
+// respondDispositionFields renders the accepted fix or external-settlement
+// dispositions. Other actions emit no echo, even when they record a decline.
 func respondDispositionFields(result ipc.RespondResult) []toon.Field {
-	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.Kept == nil) {
+	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.ResolvedExternal == nil && result.Kept == nil) {
 		return nil
 	}
-	fixed, ignored, kept := result.Fixed, result.Ignored, result.Kept
+	fixed, ignored, external, kept := result.Fixed, result.Ignored, result.ResolvedExternal, result.Kept
 	if fixed == nil {
 		fixed = []string{}
 	}
 	if ignored == nil {
 		ignored = []string{}
+	}
+	if external == nil {
+		external = []string{}
 	}
 	if kept == nil {
 		kept = []string{}
@@ -1460,6 +1462,7 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 	return []toon.Field{{Key: "recorded", Value: toon.NewObject(
 		toon.Field{Key: "fixed", Value: fixed},
 		toon.Field{Key: "ignored", Value: ignored},
+		toon.Field{Key: "resolved_external", Value: external},
 		toon.Field{Key: "kept", Value: kept},
 	)}}
 }
@@ -1655,7 +1658,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
-		Long: "Sends approve/fix/skip/abort/complete-coverage for the step currently awaiting approval, then\n" +
+		Long: "Sends approve/fix/skip/abort/complete-coverage/resolved_external for the step currently awaiting approval, then\n" +
 			"blocks until the next gate, CI-ready decision point, or final outcome.\n" +
 			"With no flags it answers the active run on the current branch. Pass\n" +
 			"--run <id> to answer a specific run by its id from anywhere - including\n" +
@@ -1668,6 +1671,10 @@ func newAxiRespondCmd() *cobra.Command {
 			"--ignore is refused too: reverting an applied fix is out of scope for a gate\n" +
 			"response. The recorded dispositions (fixed, ignored, kept) are echoed in the\n" +
 			"output.\n\n" +
+			"With --action resolved_external, name settled Review finding IDs in --findings\n" +
+			"and give a nonempty --reason. The reason is kept in round history; do not\n" +
+			"include private file bytes. A static rereview follows without fixing or\n" +
+			"approving the findings. Other findings and missing coverage still block.\n\n" +
 			"With --action abort, the operator rejects the parked gate: the round is\n" +
 			"recorded as declined, the step fails as \"aborted by user: <reason>\", and the\n" +
 			"run ends failed. --reason is required and is kept in the step error and the\n" +
@@ -1712,14 +1719,14 @@ func newAxiRespondCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip | abort | complete-coverage (required)")
+	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip | abort | complete-coverage | resolved_external (required)")
 	cmd.Flags().StringVar(&runID, "run", "", "answer this run id directly, without resolving the current branch or worktree")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
-	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
+	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix or resolve externally")
 	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to selected findings; '-' reads stdin (exclusive with --instructions-file)")
 	cmd.Flags().StringVar(&instructionsFile, "instructions-file", "", "read fix guidance from a file (exclusive with --instructions)")
-	cmd.Flags().StringVar(&reason, "reason", "", "reason preserved with a Test approval exception (--step test --action approve), and required with --action abort")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason for a Test approval exception; required for abort or resolved_external (do not include private file bytes)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix; '-' reads stdin (exclusive with --add-finding-file)")
 	cmd.Flags().StringVar(&addFindingFile, "add-finding-file", "", "read JSON finding object from a file (exclusive with --add-finding)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response, and an open review question requires `axi answer`")
@@ -1761,13 +1768,13 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	respondCmd := "no-mistakes axi respond" + runFlag(ra.runID)
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
 	switch act {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionCompleteCoverage:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionCompleteCoverage, types.ActionResolvedExternal:
 	case "":
 		return emitError(cmd, 2, "--action is required",
 			"Run `"+respondCmd+" --action approve|fix|skip|abort`")
 	default:
 		return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
-			"Valid actions: approve, fix, skip, abort, complete-coverage")
+			"Valid actions: approve, fix, skip, abort, complete-coverage, resolved_external")
 	}
 	if act == types.ActionCompleteCoverage && (ra.autoYes || ra.findings != "" || ra.ignore != "" || ra.instructions != "" || ra.addFinding != "" || ra.reason != "") {
 		return emitError(cmd, 2, "complete-coverage cannot approve subsequent gates or change findings")
@@ -1872,8 +1879,13 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			return emitError(cmd, 2, "--action abort requires --reason <text>: the rejection is recorded with the operator's reason",
 				"Run `"+respondCmd+" --action abort --reason \"why this gate is rejected\"`")
 		}
-	} else if ra.reason != "" && (act != types.ActionApprove || stepName != types.StepTest) {
-		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step, or to --action abort")
+	} else if ra.reason != "" && act != types.ActionResolvedExternal && (act != types.ActionApprove || stepName != types.StepTest) {
+		return emitError(cmd, 2, "--reason applies only to Test approval, abort, or resolved_external")
+	}
+	if act == types.ActionResolvedExternal {
+		if stepName != types.StepReview || strings.TrimSpace(ra.reason) == "" || len(splitCSV(ra.findings)) == 0 || ra.ignore != "" || ra.autoYes || ra.instructions != "" || ra.instructionsFile != "" || ra.addFinding != "" || ra.addFindingFile != "" {
+			return emitError(cmd, 2, "resolved_external requires a Review gate, --findings <id,...> and --reason <text>; no other finding changes are allowed")
+		}
 	}
 	if act == types.ActionCompleteCoverage && stepName != types.StepReview {
 		return emitError(cmd, 2, "complete-coverage applies only to a parked Review")
@@ -1906,8 +1918,8 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			}
 			added = append(added, f)
 		}
-	} else if len(ignoreIDs) > 0 || ra.findings != "" {
-		return emitError(cmd, 2, "--findings and --ignore apply only to --action fix")
+	} else if len(ignoreIDs) > 0 || (ra.findings != "" && act != types.ActionResolvedExternal) {
+		return emitError(cmd, 2, "--findings and --ignore apply only to --action fix, except --findings for resolved_external")
 	}
 
 	var coverage *ipc.CoverageBinding

@@ -323,6 +323,7 @@ no-mistakes axi respond --action fix --add-finding '{"description":"...","action
 no-mistakes axi respond --action fix --findings F1 --instructions-file ./guidance.md
 no-mistakes axi respond --action fix --add-finding-file ./finding.json
 no-mistakes axi respond --action skip
+no-mistakes axi respond --step review --action resolved_external --findings F1 --reason "grant verified outside the review worktree"
 no-mistakes axi respond --step review --action complete-coverage
 no-mistakes axi respond --action abort --reason "why the gate is rejected"
 no-mistakes axi respond --run <id> --action approve
@@ -330,14 +331,14 @@ no-mistakes axi respond --run <id> --action approve
 
 | Flag             | Type     | Default       | Description                                                          |
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, `complete-coverage`, or `abort`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
+| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, `complete-coverage`, `resolved_external`, or `abort`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--run`          | `string` | current-branch active run | Answer the gate of this run ID from any directory, without resolving the current branch or worktree |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
-| `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix with `--action fix`               |
+| `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix, or to settle with `resolved_external`               |
 | `--ignore`       | `string` | (none)        | Comma-separated finding IDs to decline with `--action fix`; see the accounting rules below |
 | `--instructions` | `string` | (none)        | Driver fix guidance applied to selected findings with `--action fix`; recorded as `driver_instructions`, never as the user's decision; `-` reads stdin until EOF, cancellation, or `--wait`; exclusive with `--instructions-file` |
 | `--instructions-file` | `string` | (none) | Read driver fix guidance from a file; exclusive with `--instructions` |
-| `--reason`       | `string` | (none)        | Operator's reason: optional exception explanation for a Test approval, required with `--action abort` |
+| `--reason`       | `string` | (none)        | Operator's reason: optional exception explanation for a Test approval, required with `--action abort` or `resolved_external` |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix; a `driver_instructions` key is refused, since driver guidance comes only from `--instructions`; `-` reads stdin until EOF, cancellation, or `--wait`; exclusive with `--add-finding-file` |
 | `--add-finding-file` | `string` | (none) | Read JSON finding object from a file; exclusive with `--add-finding` |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
@@ -345,17 +346,19 @@ no-mistakes axi respond --run <id> --action approve
 
 Prefer the file flags for text containing backticks, quotes, or newlines: they bypass shell expansion and preserve the input bytes through the response, including trailing newlines. File paths are relative to the caller's working directory and literal (a file named `-` is not stdin). Only the inline form with value `-` reads stdin; at most one input can read stdin per response, and the command stops waiting for it on EOF, cancellation, or `--wait` expiry. Each file/stdin input must be nonempty, not whitespace-only, and valid UTF-8; files must be regular and readable. The file/stdin readers reuse the bounded intent transport (49,122 bytes). The complete encoded request, including JSON escaping, guidance repeated for selected findings, and the newline delimiter, must fit the 1 MiB IPC frame limit; larger requests are refused before sending with their encoded size and limit. Inline text other than `-` retains its existing behavior. Both file flags require `--action fix`.
 
-Declines are explicit. With `--action fix`, every finding the gate shows must appear in `--findings` or `--ignore`; a response that leaves one out is refused with the unaccounted IDs named and the gate stays parked, so a partial selection can never silently decline the findings it omitted. An ID in both lists, or an ID the gate does not show, is refused the same way. A finding a previous response for the same step already decided may be omitted to keep that decision, including when recovery parks the same round again. Naming a finding previously chosen to fix in `--ignore` is refused too, because reverting an applied fix is out of scope for a gate response. The validation fails closed on the state it reads: if the gate's findings or this step's earlier decisions cannot be read, the response is refused, the gate stays parked, and the refusal names what could not be read. See [Finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) for how these decisions are stored and carried into later rounds.
+Declines are explicit. With `--action fix`, every finding the gate shows must appear in `--findings` or `--ignore`; a response that leaves one out is refused with the unaccounted IDs named and the gate stays parked, so a partial selection can never silently decline the findings it omitted. An ID in both lists, or an ID the gate does not show, is refused the same way. A finding a previous response for the same step already decided may be omitted to keep that decision, including when recovery parks the same round again. On a Review gate that match follows the finding's content, so a finding an earlier round chose to fix may be omitted even after the reviewer re-mints its ID or moves its line. Naming a finding previously chosen to fix in `--ignore` is refused too, because reverting an applied fix is out of scope for a gate response. The validation fails closed on the state it reads: if the gate's findings or this step's earlier decisions cannot be read, the response is refused, the gate stays parked, and the refusal names what could not be read. See [Finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) for how these decisions are stored and carried into later rounds.
 
 Finding IDs are trimmed before validation. Missing or repeated gate finding IDs receive fresh IDs before the gate is shown, so each ID selects only one finding. An added finding with no ID, or an ID that collides with any gate finding, receives a fresh ID. Ignored findings and selections already recorded for a recovered round also reserve their IDs. See [Finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) for how a fix response restores acknowledged work after recovery.
 
 A user-authored addition that collides with existing finding content is retained instead of being silently dropped. A matching non-user `no-op` can be replaced by the user record; collisions with blocking or other user-authored records keep both records. Its normalized ID, action, and instructions stay attached to the record sent to the fixer.
 
-Every successful fix response echoes what it recorded in a `recorded:` object: `fixed` (the findings selected, including `--add-finding` items under their normalized IDs), `ignored` (the findings explicitly declined), and `kept` (the gate findings omitted that a previous response for this step had already decided). A finding the restored decision dispatched is reported under `fixed`, not also under `kept`. Approve, skip, and abort emit no disposition echo. They are not decision-free: a nonempty gate they resolve is recorded as a decline round, which is what later rounds read as `user_chose_to_ignore`. `--yes` resolution is unchanged: it selects every current finding.
+Every successful fix response echoes what it recorded in a `recorded:` object: `fixed` (the findings selected, including `--add-finding` items under their normalized IDs), `ignored` (the findings explicitly declined), `resolved_external` (the findings settled outside the review worktree, empty for a fix response), and `kept` (the gate findings omitted that a previous response for this step had already decided). A finding the restored decision dispatched is reported under `fixed`, not also under `kept`. On a Review gate, `--ignore` is refused for a finding the gate shows twice as an identical record, at the same line, since the decline could never be matched on a later round, and every fix response is refused on a round that already records an external disposition, which keeps the operator's reason intact. An ignore-only Review response is refused the same way on a round that already records an approve, skip, or abort decline, which recovery can park again: select the findings with `--findings`, or resolve the gate with approve, skip, or abort. Approve, skip, and abort emit no disposition echo. They are not decision-free: a nonempty gate they resolve is recorded as a decline round, which is what later rounds read as `user_chose_to_ignore`. `--yes` resolution is unchanged: it selects every current finding.
 
 `--action complete-coverage` continues a Review gate under the [coverage continuation rules](/no-mistakes/reference/pipeline-steps/#coverage-continuation).
 It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--instructions-file`, `--add-finding`, `--add-finding-file`, and `--reason`.
 The CLI supplies the observed head, step result, and latest round binding automatically.
+
+`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It also refuses a reviewer question, a pipeline-owned finding such as `review-questions-unreadable`, any finding an earlier round of the same Review chose to fix, and any finding the gate shows twice as an identical record at the same line. It starts another static Review turn without a fix or approval. Later rounds of the same Review can reissue the same finding under a different ID or line, and the recorded decision still suppresses it, as long as its content identifies one finding on each round; a decision that could never be matched is refused rather than recorded. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
@@ -615,22 +618,26 @@ The top-level keys are `schema_version` (currently `1`), `run_id`, `step`, and `
 Each round has these fields:
 
 - `round`: the step-local round number; identify a round by `(run_id, step, round)`, not by finding ID alone.
-- `trigger`: the recorded execution trigger, such as `initial`, `auto_fix`, legacy `user_fix`, `coverage`, `answer`, or `retry`; consumers must allow new trigger values.
+- `trigger`: the recorded execution trigger, such as `initial`, `auto_fix`, legacy `user_fix`, `coverage`, `external`, `answer`, or `retry`; consumers must allow new trigger values.
 - `summary` and `findings`: the round's complete summary and array of finding objects, or `null` when absent.
   Finding fields are preserved, including optional fields and instructions; consumers must ignore unknown fields.
   TOON prints an integer outside ±(2^53−1) as a quoted decimal string to keep it exact; `--json` keeps it a number.
   An explicit empty findings array stays `[]` and does not mean that earlier findings were resolved.
 - `selected_finding_ids`: IDs selected for fixing **after this round**, or `null` when no selection was recorded.
   `[]` is an explicit selection of nothing, distinct from no decision.
-- `selection_source`: the recorded source (`user`, `auto_fix`, or `user_declined`), or `null`.
+- `selection_source`: the recorded source (`user`, `auto_fix`, `user_declined`, `user_ignored`, or `resolved_external`), or `null`.
   An automatic selection does not mean the user declined the remaining findings.
   `user_declined` does not distinguish approve, skip, and abort; this export does not infer a verdict or whether a fix succeeded.
+  `user_ignored` is a Review fix response that declined every finding its gate showed, recorded only there because only Review carries a decline forward, and `resolved_external` is a settlement outside the review worktree; neither is a verdict on the step.
+  Both values were added within `schema_version` 1, and the ignore-only Review round that now records `user_ignored` recorded `user_declined` in earlier versions.
+  A consumer that collects the operator's declines must match `user_declined` and `user_ignored` together.
 - `response_origin`: the recorded caller classification (`interactive`, `auto_yes`, or `unknown`).
 - `user_findings`: the merged finding array dispatched after user edits or additions, or `null` when absent.
+  On a `resolved_external` round it is not a fix dispatch: it holds the settled findings, each carrying the operator's reason in `user_instructions`.
 - `fix_summary`: the recorded fix result, or `null` when absent.
 - `duration_ms` and `created_at`: recorded duration in milliseconds and creation time in Unix seconds.
 
-Consumers should tolerate additive fields and new source/origin values; incompatible changes require a new `schema_version`.
+Consumers should tolerate additive fields and new source/origin values, including a value a later version records where an earlier version recorded a different one; incompatible changes require a new `schema_version`.
 The export excludes internal configuration snapshots and does not publish anything remotely, but finding descriptions and instructions can still contain private repository information.
 
 ## no-mistakes axi handoff

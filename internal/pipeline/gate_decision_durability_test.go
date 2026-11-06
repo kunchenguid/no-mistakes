@@ -168,7 +168,7 @@ func TestExecutor_ReansweredRoundPreservesAcknowledgedFindingContent(t *testing.
 			if dispatched.Items[0].UserInstructions != "preserve logger format" || dispatched.Items[2].UserInstructions != "keep compatibility" {
 				t.Fatalf("dispatch lost the acknowledged instructions: %+v", dispatched.Items)
 			}
-			chosen := earlierChosenToFixIDs([]*db.StepRound{read()}, gate)
+			chosen := EarlierChosenToFixIDs(types.StepReview, []*db.StepRound{read()}, gate)
 			if !chosen["R1"] || !chosen["R2"] || chosen["R3"] {
 				t.Fatalf("preserved decisions = %v", chosen)
 			}

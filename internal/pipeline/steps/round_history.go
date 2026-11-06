@@ -54,7 +54,11 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	if err != nil || len(rounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(rounds, true)
+	step, err := sctx.DB.GetStepResult(sctx.StepResultID)
+	if err != nil || step == nil {
+		return ""
+	}
+	blocks := renderRoundHistoryBlocks(rounds, true, step.StepName)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -63,6 +67,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 		"Use this to avoid repeating work you already tried. " +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
 		"Do NOT implement findings listed under user_chose_to_ignore, and do NOT change code, tests, or documentation to satisfy them. " +
+		"Findings listed under user_resolved_external were verified by the user outside this worktree and are settled; treat them like user_chose_to_ignore and do NOT re-report them. " +
 		"Do NOT revert or undo fixes the user chose under user_chose_to_fix. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
 		driverInstructionsNote +
@@ -77,39 +82,30 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 // sticky set only ever grows. Only the current step's own history keeps driver
 // guidance, under a note saying whose it is; anywhere else it would read as
 // part of the user's decision.
-func renderRoundHistoryBlocks(rounds []*db.StepRound, ownStep bool) []string {
+func renderRoundHistoryBlocks(rounds []*db.StepRound, ownStep bool, step types.StepName) []string {
 	var blocks []string
-	var earlierFixes map[string]bool
-	for _, r := range rounds {
+	for i, r := range rounds {
+		earlierFixes := earlierFixKeys(step, rounds[:i], r)
 		if block := renderRoundHistoryEntry(r, earlierFixes, ownStep); block != "" {
 			blocks = append(blocks, block)
 		}
-		earlierFixes = withChosenToFix(earlierFixes, r)
 	}
 	return blocks
 }
 
-// withChosenToFix extends the running set with the findings this round's human
-// selection chose to fix, returning a new set (or the input unchanged when the
-// round chose nothing). Only a user selection counts: an auto-fix selection is
-// the pipeline's own choice and decides nothing, and an approve/skip/abort
-// resolution selected nothing.
-func withChosenToFix(chosen map[string]bool, r *db.StepRound) map[string]bool {
-	if r == nil || selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
-		return chosen
+func earlierFixKeys(step types.StepName, rounds []*db.StepRound, target *db.StepRound) map[string]bool {
+	keys := make(map[string]bool)
+	if target == nil || target.FindingsJSON == nil {
+		return keys
 	}
-	keys := pipeline.ChosenFindingKeys(r)
-	if len(keys) == 0 {
-		return chosen
+	chosen := pipeline.EarlierChosenToFixIDs(step, rounds, *target.FindingsJSON)
+	findings, _ := types.ParseFindingsJSON(*target.FindingsJSON)
+	for _, item := range findings.Items {
+		if chosen[item.ID] {
+			keys[pipeline.FindingDecisionKey(item)] = true
+		}
 	}
-	next := make(map[string]bool, len(chosen)+len(keys))
-	for key := range chosen {
-		next[key] = true
-	}
-	for key := range keys {
-		next[key] = true
-	}
-	return next
+	return keys
 }
 
 func branchEarlierFixes(entries []*db.BranchDecisionRound, database *db.DB) map[*db.StepRound]map[string]bool {
@@ -126,7 +122,7 @@ func branchEarlierFixes(entries []*db.BranchDecisionRound, database *db.DB) map[
 		grouped[key] = append(grouped[key], entry.Round)
 	}
 	earlier := make(map[*db.StepRound]map[string]bool, len(entries))
-	for _, rounds := range grouped {
+	for key, rounds := range grouped {
 		loaded := rounds
 		if database != nil && rounds[0].StepResultID != "" {
 			var err error
@@ -137,14 +133,11 @@ func branchEarlierFixes(entries []*db.BranchDecisionRound, database *db.DB) map[
 		}
 		sort.SliceStable(loaded, func(i, j int) bool { return loaded[i].Round < loaded[j].Round })
 		for _, target := range rounds {
-			var chosen map[string]bool
-			for _, predecessor := range loaded {
-				if predecessor.Round >= target.Round {
-					break
-				}
-				chosen = withChosenToFix(chosen, predecessor)
+			end := 0
+			for end < len(loaded) && loaded[end].Round < target.Round {
+				end++
 			}
-			earlier[target] = chosen
+			earlier[target] = earlierFixKeys(key.step, loaded[:end], target)
 		}
 	}
 	return earlier
@@ -340,10 +333,9 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 		if err != nil {
 			continue
 		}
-		var earlierFixes map[string]bool
-		for _, r := range rounds {
+		for i, r := range rounds {
+			earlierFixes := earlierFixKeys(step.StepName, rounds[:i], r)
 			lines = appendHumanDecisionLines(lines, string(step.StepName), r, earlierFixes)
-			earlierFixes = withChosenToFix(earlierFixes, r)
 		}
 	}
 	if len(lines) == 0 {
@@ -463,7 +455,7 @@ func declinedFindingLines(r *db.StepRound, earlierFixes map[string]bool) []strin
 		return nil
 	}
 	switch selectionSourceValue(r.SelectionSource) {
-	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined:
+	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored:
 	default:
 		return nil
 	}
@@ -580,7 +572,7 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.UncertifiedPriorRounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds, false)
+	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds, false, types.StepReview)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -642,16 +634,28 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownS
 				b.WriteString(line)
 			}
 		}
-	case db.RoundSelectionSourceUserDeclined:
-		// The user resolved this round's gate with approve, skip, or abort,
-		// so the selection is an explicit empty set and every finding they saw
-		// is declined - except one an earlier round already chose to fix, which
-		// keeps that decision. There is no user_chose_to_fix half to render.
+	case db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored:
+		// The user resolved this round's gate with approve, skip, or abort, or
+		// declined every finding it showed with an ignore-only fix response.
+		// Either way the selection is an explicit empty set and every finding
+		// they saw is declined - except one an earlier round already chose to
+		// fix, which keeps that decision. There is no user_chose_to_fix half to
+		// render.
 		if len(declined) > 0 {
 			b.WriteString("\nuser_chose_to_ignore:")
 			for _, line := range declined {
 				b.WriteString("\n  - ")
 				b.WriteString(line)
+			}
+		}
+	case db.RoundSelectionSourceExternal:
+		if r.UserFindingsJSON != nil {
+			if lines := renderRoundFindingLines(*r.UserFindingsJSON); len(lines) > 0 {
+				b.WriteString("\nuser_resolved_external:")
+				for _, line := range lines {
+					b.WriteString("\n  - ")
+					b.WriteString(line)
+				}
 			}
 		}
 	case db.RoundSelectionSourceAutoFix:
@@ -835,7 +839,7 @@ func supersededReviewHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.PreviousRunReviewRounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds, false)
+	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds, false, types.StepReview)
 	if len(blocks) == 0 {
 		return ""
 	}

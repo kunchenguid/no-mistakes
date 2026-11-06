@@ -1,8 +1,7 @@
 package steps
 
 import (
-	"fmt"
-
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -38,7 +37,7 @@ func stripDeferredPipelineOwnedDeliveryFindings(findings Findings) (Findings, in
 	}
 	out := findings
 	out.Items = kept
-	out.Summary = filteredReviewSummary(kept)
+	out.Summary = pipeline.FilteredReviewSummary(kept)
 	switch findings.RiskScope {
 	case types.FindingsRiskScopePipelineOwnedDelivery:
 		out.RiskLevel = "low"
@@ -49,16 +48,6 @@ func stripDeferredPipelineOwnedDeliveryFindings(findings Findings) (Findings, in
 		out.RiskRationale = "review risk retained after deferred delivery filtering"
 	}
 	return out, dropped
-}
-
-func filteredReviewSummary(items []Finding) string {
-	if len(items) == 0 {
-		return "no review findings remain"
-	}
-	if len(items) == 1 {
-		return "1 review finding remains"
-	}
-	return fmt.Sprintf("%d review findings remain", len(items))
 }
 
 // isDeferredPipelineOwnedDeliveryFinding reports whether a finding's claim is

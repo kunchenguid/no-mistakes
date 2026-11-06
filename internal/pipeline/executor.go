@@ -313,8 +313,8 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		option = options[0]
 	}
 	coverage := []*ipc.CoverageBinding{option.Coverage}
-	if approvalReason != "" && action != types.ActionAbort && (step != types.StepTest || action != types.ActionApprove) {
-		return RespondDispositions{}, fmt.Errorf("a reason applies only to Test approval or an abort")
+	if approvalReason != "" && action != types.ActionAbort && action != types.ActionResolvedExternal && (step != types.StepTest || action != types.ActionApprove) {
+		return RespondDispositions{}, fmt.Errorf("a reason applies only to Test approval, an abort, or resolved_external")
 	}
 	// The gate loop dispatches on the action, so an unknown one is refused
 	// here while the gate stays parked for a valid response, rather than
@@ -335,9 +335,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	// refuses the handler's own release, and the gate parks forever with every
 	// question answered.
 	switch action {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionAnswer, types.ActionCompleteCoverage:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionAnswer, types.ActionCompleteCoverage, types.ActionResolvedExternal:
 	default:
-		return RespondDispositions{}, fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer)", action)
+		return RespondDispositions{}, fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer, complete-coverage, resolved_external)", action)
 	}
 	e.mu.Lock()
 	if !e.waiting {
@@ -363,6 +363,91 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	} else if len(coverage) != 0 && coverage[0] != nil {
 		e.mu.Unlock()
 		return RespondDispositions{}, fmt.Errorf("coverage binding applies only to complete-coverage")
+	}
+	// A settlement selects nothing to fix and dispatches no fixer, so the
+	// response carries no selection and the findings it named are reported only
+	// in the echo. Leaving them on the response made the live path report an
+	// approval with a selection count and the recovered path report none, for
+	// the same decision.
+	var settledFindingIDs []string
+	var settledFindings *string
+	if action == types.ActionResolvedExternal {
+		if step != types.StepReview || strings.TrimSpace(approvalReason) == "" || len(uniqueNonEmpty(findingIDs)) == 0 || len(ignoreFindingIDs) != 0 || len(addedFindings) != 0 || len(instructions.userNotes()) != 0 || len(instructions.driverNotes()) != 0 {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("resolved_external requires Review, --findings, and a nonempty --reason; it cannot fix, ignore, add or change findings")
+		}
+		gate, parsed := parseGateFindingIDs(e.waitingFindings)
+		allowed := make(map[string]bool, len(gate))
+		for _, id := range gate {
+			allowed[id] = true
+		}
+		ids := uniqueNonEmpty(findingIDs)
+		if !parsed || len(idsOutside(ids, allowed)) != 0 {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("resolved_external requires finding IDs shown at the current Review gate")
+		}
+		items, err := types.ParseFindingsJSON(e.waitingFindings)
+		if err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("read review findings: %w", err)
+		}
+		named := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			named[id] = true
+		}
+		for _, item := range items.Items {
+			if named[item.ID] && !settleableReviewFinding(item) {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("resolved_external cannot settle %s: a reviewer's question is answered with `no-mistakes axi answer`, and a pipeline-owned finding is never settled outside the worktree", item.ID)
+			}
+		}
+		rounds, refusal := e.roundsForFixValidation()
+		if refusal != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, refusal
+		}
+		if len(rounds) == 0 || rounds[len(rounds)-1].ID != e.waitingRoundID || rounds[len(rounds)-1].SelectionSource != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("resolved_external requires an undecided current review round")
+		}
+		// An external disposition can only suppress a finding no earlier round
+		// of this step chose to fix, exactly as --ignore can only decline one.
+		// Accepting it here and silently never applying it would report a
+		// decision the run never acted on.
+		chosenToFix := EarlierChosenToFixIDs(step, rounds, e.waitingFindings)
+		var reversals []string
+		for _, id := range gate {
+			if named[id] && chosenToFix[id] {
+				reversals = append(reversals, id)
+			}
+		}
+		if len(reversals) > 0 {
+			e.mu.Unlock()
+			return RespondDispositions{}, &RespondRefusal{
+				Message:            fmt.Sprintf("%s already chosen to fix in an earlier round of this step", strings.Join(reversals, ",")),
+				DeclinedEarlierFix: reversals,
+				Help:               fixResponseRevertHelp,
+			}
+		}
+		if ambiguous := ambiguousSettlementIDs(e.waitingFindings, ids); len(ambiguous) > 0 {
+			e.mu.Unlock()
+			return RespondDispositions{}, &RespondRefusal{
+				Message: fmt.Sprintf("%s cannot be settled: the gate shows another finding with identical content", strings.Join(ambiguous, ",")),
+				Help:    ambiguousSettlementHelp,
+			}
+		}
+		record := types.FilterFindings(types.Findings{Items: items.Items}, ids)
+		for i := range record.Items {
+			record.Items[i].UserInstructions = strings.TrimSpace(approvalReason)
+		}
+		encoded, err := types.MarshalFindingsJSON(record)
+		if err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, err
+		}
+		settledFindings = &encoded
+		settledFindingIDs = idsInPayloadOrder(ids, gate)
+		findingIDs = nil
 	}
 	if action == types.ActionApprove && e.waitingApprovalRefusal != "" {
 		refusal := e.waitingApprovalRefusal
@@ -394,6 +479,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		response.approvalOverride = unresolved
 	}
 	dispositions := RespondDispositions{}
+	if action == types.ActionResolvedExternal {
+		dispositions.ResolvedExternal = settledFindingIDs
+	}
 	if action == types.ActionFix {
 		// Validate against the parked gate while the mutex still holds it: the
 		// gate cannot be resolved by anything else in this window, so the
@@ -410,6 +498,23 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, refusal
 		}
+		// Recovery re-parks a round that already recorded its decision. A fix
+		// response carries a user selection forward (restorePendingDecision)
+		// and may replace an approve/skip/abort decline, but it has nowhere to
+		// put an external settlement: the round holds one decision, and this
+		// write would erase the operator's recorded reason.
+		for _, round := range rounds {
+			if round.ID != e.waitingRoundID || round.SelectionSource == nil {
+				continue
+			}
+			if *round.SelectionSource == db.RoundSelectionSourceExternal {
+				e.mu.Unlock()
+				return RespondDispositions{}, &RespondRefusal{
+					Message: "this round already records an external finding disposition, so the response was not recorded",
+					Help:    decidedRoundHelp,
+				}
+			}
+		}
 		if step == types.StepReview && e.db != nil && e.waitingStepResultID != "" {
 			limit, err := e.reviewFixRoundLimit(e.waitingStepResultID)
 			if err != nil {
@@ -422,10 +527,22 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 				return RespondDispositions{}, refusal
 			}
 		}
-		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
+		split, err := splitFixResponse(step, e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
 		if err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err
+		}
+		// A Review decline is sticky, so it is held to the same matching rule
+		// the filter applies: a decline the filter could never match again
+		// would be echoed as recorded and never suppress anything.
+		if step == types.StepReview {
+			if ambiguous := ambiguousSettlementIDs(e.waitingFindings, split.Ignored); len(ambiguous) > 0 {
+				e.mu.Unlock()
+				return RespondDispositions{}, &RespondRefusal{
+					Message: fmt.Sprintf("%s cannot be declined: the gate shows another finding with identical content", strings.Join(ambiguous, ",")),
+					Help:    ambiguousSettlementHelp,
+				}
+			}
 		}
 		dispositions = split
 		// Dispatch and persistence must use the same ids the validation
@@ -474,6 +591,16 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		if err := e.db.SetStepResponseOrigin(e.waitingStepResultID, option.Origin); err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err
+		}
+	}
+	// Last of the writes that can refuse this response: a settlement stored
+	// before one of them failed would leave the round decided while the gate
+	// stayed parked, and a decided external round refuses every continuation.
+	if settledFindings != nil {
+		empty := db.DeclinedSelectionJSON
+		if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &empty, db.RoundSelectionSourceExternal, settledFindings, option.Origin); err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("record external review disposition: %w", err)
 		}
 	}
 	e.waiting = false
@@ -730,6 +857,7 @@ type stepExecutionState struct {
 	// the two answer paths disagree about the step's durable status. That is
 	// what skipFixExecution above is for.
 	answering              bool
+	resolvingExternal      bool
 	completingCoverage     bool
 	coverageRound          *db.StepRound
 	previousFindings       string
@@ -784,6 +912,7 @@ type recoveredGate struct {
 	lastRoundID            string
 	reviewedHeadSHA        string
 	selectedOutstandingIDs []string
+	settledExternally      bool
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -891,56 +1020,70 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 	}
 
-	e.mu.Lock()
-	e.waiting = true
-	e.waitingStep = gate.step.Name()
-	e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
-	e.waitingApprovalVerify = e.approvalVerifier(gate.step, reconcileCtx)
-	e.waitingFindings = gate.findings
-	e.waitingStepResultID = gate.stepResult.ID
-	e.waitingRoundID = gate.lastRoundID
-	e.mu.Unlock()
-	e.emitStepEventWithFindingsAndError(
-		ipc.EventStepCompleted,
-		run,
-		repo,
-		gate.step.Name(),
-		string(gate.stepResult.Status),
-		gate.findings,
-		"",
-		gate.stepResult.DurationMS,
-	)
-
-	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
-	if errors.Is(err, ErrDaemonShutdown) {
-		return ErrParkedAtShutdown
-	}
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-	}
-	if err != nil {
-		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
-			slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+	// The round already records the operator's external settlement and its
+	// reason, so there is nothing left to ask: parking again would offer a gate
+	// whose every continuation is refused. The settlement is replayed instead,
+	// exactly as the live loop replays it, and the rereview it starts parks a
+	// fresh round the operator can fix, settle, or continue coverage on.
+	var response approvalResponse
+	if gate.settledExternally {
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 		}
-		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", err.Error(), &duration)
-		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
-	}
-	if reconciled {
-		return completeReconciledGate()
-	}
+		response = approvalResponse{action: types.ActionResolvedExternal}
+	} else {
+		e.mu.Lock()
+		e.waiting = true
+		e.waitingStep = gate.step.Name()
+		e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
+		e.waitingApprovalVerify = e.approvalVerifier(gate.step, reconcileCtx)
+		e.waitingFindings = gate.findings
+		e.waitingStepResultID = gate.stepResult.ID
+		e.waitingRoundID = gate.lastRoundID
+		e.mu.Unlock()
+		e.emitStepEventWithFindingsAndError(
+			ipc.EventStepCompleted,
+			run,
+			repo,
+			gate.step.Name(),
+			string(gate.stepResult.Status),
+			gate.findings,
+			"",
+			gate.stepResult.DurationMS,
+		)
 
-	approvalFields := telemetry.Fields{
-		"step":       telemetry.StepName(gate.step.Name()),
-		"action":     string(response.action),
-		"fix_review": gate.stepResult.Status == types.StepStatusFixReview,
+		waited, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
+		if errors.Is(err, ErrDaemonShutdown) {
+			return ErrParkedAtShutdown
+		}
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+		}
+		if err != nil {
+			if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
+				slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", err.Error(), &duration)
+			return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
+		}
+		if reconciled {
+			return completeReconciledGate()
+		}
+		response = waited
+
+		approvalFields := telemetry.Fields{
+			"step":       telemetry.StepName(gate.step.Name()),
+			"action":     string(response.action),
+			"fix_review": gate.stepResult.Status == types.StepStatusFixReview,
+		}
+		if agentName := e.telemetryAgentName(); agentName != "" {
+			approvalFields["agent"] = agentName
+		}
+		if selectedCount := selectedFindingCount(gate.findings, response.findingIDs); selectedCount > 0 {
+			approvalFields["selected_findings_count"] = selectedCount
+		}
+		telemetry.Track("approval", approvalFields)
 	}
-	if agentName := e.telemetryAgentName(); agentName != "" {
-		approvalFields["agent"] = agentName
-	}
-	if selectedCount := selectedFindingCount(gate.findings, response.findingIDs); selectedCount > 0 {
-		approvalFields["selected_findings_count"] = selectedCount
-	}
-	telemetry.Track("approval", approvalFields)
 	switch response.action {
 	case types.ActionApprove:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
@@ -987,7 +1130,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	// same way; only the bookkeeping before it and the state handed in differ.
 	// An answer is not a verdict, so it records no selection on the round -
 	// leaving one would read as the human declining the round's findings.
-	case types.ActionFix, types.ActionAnswer, types.ActionCompleteCoverage:
+	case types.ActionFix, types.ActionAnswer, types.ActionCompleteCoverage, types.ActionResolvedExternal:
 		state := stepExecutionState{
 			roundNum:        gate.round,
 			autoFixAttempts: gate.autoFixes,
@@ -999,6 +1142,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			state.coverageRound = response.coverageRound
 			state.outstandingFindings = gate.findings
 			state.selectedOutstandingIDs = gate.selectedOutstandingIDs
+		} else if response.action == types.ActionResolvedExternal {
+			state.resolvingExternal = true
+			state.outstandingFindings = gate.findings
+			state.selectedOutstandingIDs = gate.selectedOutstandingIDs
+			if err := e.db.UpdateStepStatus(gate.stepResult.ID, types.StepStatusRunning); err != nil {
+				return e.failRun(run, repo, fmt.Errorf("return recovered Review to running: %w", err), ctx)
+			}
+			e.emitStepEvent(ipc.EventStepStarted, run, repo, gate.step.Name(), string(types.StepStatusRunning))
 		} else if response.action == types.ActionAnswer {
 			state.answering = true
 			// Carry the parked gate's outstanding set into the finalize round.
@@ -1132,6 +1283,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
 			}
+			gate.settledExternally = latest.SelectionSource != nil && *latest.SelectionSource == db.RoundSelectionSourceExternal
 			continue
 		}
 		if gate == nil {
@@ -1594,6 +1746,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	switch {
 	case state.completingCoverage:
 		nextTrigger = "coverage"
+	case state.resolvingExternal:
+		nextTrigger = "external"
 	// answering is tested FIRST because the two are not exclusive: an answer
 	// round that inherits a fix_review gate's context carries fixing too, and
 	// labelling it "auto_fix" would persist a human's answer as a pipeline fix
@@ -1677,6 +1831,33 @@ rounds:
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
+		settledReviewFindings := 0
+		if carryFindings && e.db != nil {
+			rounds, err := e.db.GetRoundsByStep(sr.ID)
+			if err != nil {
+				return false, "", fmt.Errorf("read Review dispositions: %w", err)
+			}
+			filtered, err := filterSettledReviewFindings(outcome.Findings, rounds)
+			if err != nil {
+				return false, "", fmt.Errorf("apply Review dispositions: %w", err)
+			}
+			outcome.Findings = filtered
+			outstandingFindings, err = filterSettledReviewFindings(outstandingFindings, rounds)
+			if err != nil {
+				return false, "", fmt.Errorf("apply Review dispositions to carried findings: %w", err)
+			}
+			// A settled finding is dropped from the gate's work, never from the
+			// operator's verdict: once this step has settled anything, every
+			// later round parks for an explicit approve, so a run carrying a
+			// human disposition is never a silent clean pass. The park cannot
+			// be left to the findings themselves - an `info` ask-user finding
+			// parks only while it is still reported, and the filter is exactly
+			// what stops reporting it.
+			settledReviewFindings = SettledReviewFindingCount(rounds)
+			if settledReviewFindings > 0 {
+				outcome.NeedsApproval = true
+			}
+		}
 		// roundFindings is this round's own output, used for the auto-fix
 		// selection and for the verification below. effectiveFindings is what
 		// the gate, the persisted findings, and the stats all decide on.
@@ -1744,6 +1925,10 @@ rounds:
 			}
 			outcome.NeedsApproval = true
 			writeLog(reviewFixRoundLimitMessage(reviewFixRounds, maxReviewFixRounds))
+		}
+
+		if settledReviewFindings > 0 {
+			effectiveFindings = withSettledReviewSummary(effectiveFindings, settledReviewFindings)
 		}
 
 		if effectiveFindings != "" {
@@ -1996,6 +2181,24 @@ rounds:
 				slog.Info("step fix requested, re-executing", "step", stepName)
 				continue rounds
 
+			case types.ActionResolvedExternal:
+				phaseStart = time.Now()
+				writeLog("continuing Review with a recorded external finding disposition")
+				if err := markRunning(); err != nil {
+					return false, "", err
+				}
+				sctx.Fixing = false
+				sctx.AutoFixRound = false
+				sctx.FinalizingAnswers = false
+				sctx.SkipFixExecution = false
+				sctx.CoverageContinuation = nil
+				sctx.PreviousFindings = ""
+				sctx.DeferredFindings = ""
+				sctx.CarriedFindings = ""
+				BindUncertifiedPipelineRange(sctx)
+				nextTrigger = "external"
+				continue rounds
+
 			case types.ActionCompleteCoverage:
 				phaseStart = time.Now()
 				writeLog("continuing static review to complete coverage without a fix or approval")
@@ -2180,7 +2383,22 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
 	if idsJSON == "" {
 		if len(response.ignoreFindingIDs) > 0 {
-			if err := e.db.SetStepRoundDeclined(e.waitingRoundID, response.origin); err != nil {
+			// Only Review settles a finding, so only Review needs an explicit
+			// decline to be distinguishable from an approve - and only there
+			// can a recorded decline refuse one.
+			if step != types.StepReview {
+				if err := e.db.SetStepRoundDeclined(e.waitingRoundID, response.origin); err != nil {
+					return fmt.Errorf("record the response's declines: %w", err)
+				}
+				return nil
+			}
+			if err := e.db.SetStepRoundIgnored(e.waitingRoundID, response.origin); err != nil {
+				if errors.Is(err, db.ErrStepRoundDecisionRecorded) {
+					return &RespondRefusal{
+						Message: "this round already records a decision this response cannot replace, so the declines were not recorded",
+						Help:    decidedRoundHelp,
+					}
+				}
 				return fmt.Errorf("record the response's declines: %w", err)
 			}
 			return nil

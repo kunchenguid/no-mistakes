@@ -678,3 +678,28 @@ func mustOpenEval(t *testing.T, p *paths.Paths) *Store {
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
+
+// A resolved_external round is the operator affirming the named finding is
+// real and already settled outside the worktree. Reading its empty selection
+// as "approved and shipped unfixed" labels a true finding a false positive and
+// teaches the corpus the opposite of what the human decided.
+func TestCaptureDoesNotLabelAnExternallySettledFindingAsFalsePositive(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	settled := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"auto-fix","user_instructions":"grant verified on the machine"}]}`
+	if err := sourceDB.SetStepRoundUserDecision(reviewRound.ID, strPtr(db.DeclinedSelectionJSON), db.RoundSelectionSourceExternal, strPtr(settled)); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+	assertCaptureUnlabeled(t, ctx, p, sourceDB, run.ID)
+}

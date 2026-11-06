@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"strconv"
 	"strings"
@@ -79,6 +80,45 @@ func SameFinding(a, b types.Finding) bool {
 	return findingKey(a) == findingKey(b)
 }
 
+// FilteredReviewSummary is the review summary a filter substitutes when it
+// stopped reporting part of the reviewer's payload, so the operator reads a
+// sentence that counts what the payload still lists.
+func FilteredReviewSummary(items []types.Finding) string {
+	if len(items) == 0 {
+		return "no review findings remain"
+	}
+	if len(items) == 1 {
+		return "1 review finding remains"
+	}
+	return fmt.Sprintf("%d review findings remain", len(items))
+}
+
+// SettledWithoutFixText owns the wording for a human disposition that removed
+// a finding without a fix, so the live gate and the published PR body report a
+// settlement the same way. The count is the lower bound
+// SettledReviewFindingCount reports.
+func SettledWithoutFixText(settled int) string {
+	return fmt.Sprintf("at least %d settled by the operator without a fix", settled)
+}
+
+// withSettledReviewSummary restates a settled Review payload's summary as the
+// count of the findings that payload lists plus the settlement that parked it.
+// A Review step that settled a finding keeps filtering every later round's
+// report, so the reviewer's own sentence can no longer describe the gate, and a
+// round with nothing left to report would otherwise read as a clean pass.
+func withSettledReviewSummary(raw string, settled int) string {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
+	}
+	findings.Summary = FilteredReviewSummary(findings.Items) + ", " + SettledWithoutFixText(settled)
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
 func findingFingerprint(item types.Finding) types.Finding {
 	item = findingKey(item)
 	item.Line = 0
@@ -89,6 +129,18 @@ func countFindingFingerprints(items []types.Finding) map[types.Finding]int {
 	counts := make(map[types.Finding]int, len(items))
 	for _, item := range items {
 		counts[findingFingerprint(item)]++
+	}
+	return counts
+}
+
+// countFindingKeys counts the payload's findings by their full identity,
+// including line. Two findings with one count differ only in where they are,
+// so a decision can still name one of them; two findings with one key are
+// indistinguishable records and a decision cannot.
+func countFindingKeys(items []types.Finding) map[types.Finding]int {
+	counts := make(map[types.Finding]int, len(items))
+	for _, item := range items {
+		counts[findingKey(item)]++
 	}
 	return counts
 }

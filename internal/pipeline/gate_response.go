@@ -21,6 +21,8 @@ type RespondDispositions struct {
 	Fixed []string
 	// Ignored names the findings the response explicitly declined.
 	Ignored []string
+	// ResolvedExternal names findings settled outside the review worktree.
+	ResolvedExternal []string
 	// Kept names the findings the response omitted that an earlier round of
 	// the same step had already decided, so it kept that decision instead of
 	// declining them by omission.
@@ -63,6 +65,15 @@ const fixResponseRevertHelp = "Reverting an applied fix is out of scope for a ga
 // or this step's earlier rounds - could not be read. The refusal is fail
 // closed: the gate stays parked and nothing is recorded.
 const fixResponseUnreadableHelp = "The response was refused rather than validated against unreadable state, and the gate is still parked: inspect it with `no-mistakes axi status`, then retry, or approve or skip the step instead."
+
+// ambiguousSettlementHelp is the refusal help for a disposition that names a
+// finding the gate shows twice under the same content. A later review turn
+// cannot tell the two apart, so the decision could never be applied.
+const ambiguousSettlementHelp = "The gate shows another finding with the same file, severity and description, so a later review turn could not tell them apart: list them in --findings to have the pipeline fix them, or resolve the gate with approve, skip, or abort."
+
+// decidedRoundHelp is the refusal help for a fix response aimed at a round
+// that already records a disposition this response would overwrite.
+const decidedRoundHelp = "The recorded decision and its reason stay in the round history: let the review continue, or resolve the gate with approve, skip, or abort."
 
 // decodeRoundDecision checks the stored decision fields a fix response is
 // attributed by. Only a value that is PRESENT and undecodable fails: a round
@@ -128,7 +139,7 @@ func decodeRoundDecision(round *db.StepRound) error {
 // same rule the executor applies to an unreadable round history). The gate
 // stays parked, and the refusal names the problem and points at the state to
 // inspect.
-func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingIDs, ignoreFindingIDs []string) (RespondDispositions, error) {
+func splitFixResponse(step types.StepName, gateFindingsJSON string, rounds []*db.StepRound, findingIDs, ignoreFindingIDs []string) (RespondDispositions, error) {
 	gate, gateParsed := parseGateFindingIDs(gateFindingsJSON)
 	inGate := make(map[string]bool, len(gate))
 	for _, id := range gate {
@@ -183,7 +194,7 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 		}
 	}
 
-	chosenToFix := earlierChosenToFixIDs(rounds, gateFindingsJSON)
+	chosenToFix := EarlierChosenToFixIDs(step, rounds, gateFindingsJSON)
 	var reversals []string
 	for _, id := range gate {
 		if ignoreSet[id] && chosenToFix[id] {
@@ -199,6 +210,9 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 	}
 
 	decided := earlierUserDecisionIDs(rounds, gateFindingsJSON)
+	for id := range chosenToFix {
+		decided[id] = true
+	}
 	var unaccounted []string
 	for _, id := range gate {
 		if fixSet[id] || ignoreSet[id] || decided[id] {
@@ -248,8 +262,17 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 		if !humanDecidedRound(round) {
 			continue
 		}
-		if round.FindingsJSON != nil {
-			findings, _ := types.ParseFindingsJSON(*round.FindingsJSON)
+		// An approve/skip/abort or a fix response addresses every finding its
+		// gate showed, so the whole payload is decided. An external
+		// disposition names the findings it settles and rules on nothing else,
+		// so crediting its payload would let a later response omit - and the
+		// complement then permanently suppress - a finding nobody adjudicated.
+		decided := round.FindingsJSON
+		if *round.SelectionSource == db.RoundSelectionSourceExternal {
+			decided = round.UserFindingsJSON
+		}
+		if decided != nil {
+			findings, _ := types.ParseFindingsJSON(*decided)
 			for _, item := range findings.Items {
 				keys[FindingDecisionKey(item)] = true
 			}
@@ -261,14 +284,35 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 	return decisionIDsInGate(keys, gate)
 }
 
-func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
-	keys := make(map[string]bool)
-	for _, round := range rounds {
-		for key := range ChosenFindingKeys(round) {
-			keys[key] = true
+// EarlierChosenToFixIDs names the gate's findings an earlier round already
+// chose to fix.
+//
+// Only Review carries a decision forward by content, so only there does the
+// reversal refusal ask the settlement identity the filter does - a twin at
+// another line the selection never named stays declinable on its own, while a
+// content the selection covered in full stays protected however many instances
+// this gate reports. Every other step re-derives its findings each round and
+// settles nothing, so it keeps the exact identity earlierUserDecisionIDs
+// reads.
+func EarlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate string) map[string]bool {
+	if step != types.StepReview {
+		keys := make(map[string]bool)
+		for _, round := range rounds {
+			for key := range ChosenFindingKeys(round) {
+				keys[key] = true
+			}
+		}
+		return decisionIDsInGate(keys, gate)
+	}
+	chosen := chosenToFixSettlements(rounds)
+	findings, _ := types.ParseFindingsJSON(gate)
+	ids := make(map[string]bool)
+	for _, item := range findings.Items {
+		if chosen.matchesChosen(item) {
+			ids[item.ID] = true
 		}
 	}
-	return decisionIDsInGate(keys, gate)
+	return ids
 }
 
 func decisionIDsInGate(keys map[string]bool, gate string) map[string]bool {
@@ -290,7 +334,7 @@ func humanDecidedRound(round *db.StepRound) bool {
 		return false
 	}
 	switch *round.SelectionSource {
-	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined:
+	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored, db.RoundSelectionSourceExternal:
 		return true
 	default:
 		return false

@@ -32,7 +32,7 @@ func TestHandleRespondWithOverrides_IgnoreOnlyFixResponseIsRecorded(t *testing.T
 		if steps, err := m.db.GetStepsByRun(runID); err == nil && len(steps) > 0 {
 			if rounds, err := m.db.GetRoundsByStep(steps[0].ID); err == nil {
 				for _, round := range rounds {
-					if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceUserDeclined {
+					if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceUserIgnored {
 						got := ""
 						if round.SelectedFindingIDs != nil {
 							got = *round.SelectedFindingIDs

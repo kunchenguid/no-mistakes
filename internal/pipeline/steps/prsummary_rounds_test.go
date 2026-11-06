@@ -327,3 +327,173 @@ func TestBuildPipelineSummary_SkippedStepWithEmptyRoundIsNotAPass(t *testing.T) 
 		})
 	}
 }
+
+// A finding the operator settled outside the review worktree, or ignored
+// outright, is never fixed: it only stops being reported. The PR body names it
+// as settled without a fix rather than folding it into the fixed count.
+func TestBuildPipelineSummary_ASettledFindingIsPublishedAsSettled(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible"}],"summary":"1 warning"}`
+	settled := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible","user_instructions":"grant verified on the machine"}]}`
+	empty := db.DeclinedSelectionJSON
+	for _, tc := range []struct{ name, source string }{
+		{"resolved external", db.RoundSelectionSourceExternal},
+		{"explicit ignore", db.RoundSelectionSourceUserIgnored},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := tc.source
+			first := &db.StepRound{Round: 1, Trigger: "initial", FindingsJSON: &findings, SelectedFindingIDs: &empty, SelectionSource: &source, DurationMS: 1000}
+			if source == db.RoundSelectionSourceExternal {
+				first.UserFindingsJSON = &settled
+			}
+			steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+			rounds := map[string][]*db.StepRound{"s1": {
+				first,
+				{Round: 2, Trigger: "external", DurationMS: 700},
+			}}
+
+			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+			if !strings.Contains(md, "🔧 **Review** - 1 issue found → at least 1 settled by the operator without a fix ✅") {
+				t.Errorf("expected the settled finding named as settled, got:\n%s", md)
+			}
+		})
+	}
+}
+
+func TestBuildPipelineSummary_ASettledRoundIsNotPublishedAsACleanRound(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible"}],"summary":"1 warning"}`
+	settled := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible","user_instructions":"grant verified on the machine"}]}`
+	filtered := `{"findings":[]}`
+	empty := db.DeclinedSelectionJSON
+	for _, tc := range []struct {
+		name, source, trigger string
+		payload               *string
+		provider              scm.Provider
+	}{
+		{"resolved external", db.RoundSelectionSourceExternal, "external", &filtered, scm.ProviderGitHub},
+		{"explicit ignore", db.RoundSelectionSourceUserIgnored, "auto_fix", &filtered, scm.ProviderGitHub},
+		{"external nil payload", db.RoundSelectionSourceExternal, "external", nil, scm.ProviderGitHub},
+		{"ignore nil payload", db.RoundSelectionSourceUserIgnored, "auto_fix", nil, scm.ProviderGitHub},
+		{"external markdown", db.RoundSelectionSourceExternal, "external", &filtered, scm.ProviderBitbucket},
+		{"ignore markdown", db.RoundSelectionSourceUserIgnored, "auto_fix", &filtered, scm.ProviderBitbucket},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := tc.source
+			first := &db.StepRound{Round: 1, Trigger: "initial", FindingsJSON: &findings, SelectedFindingIDs: &empty, SelectionSource: &source, DurationMS: 1000}
+			if source == db.RoundSelectionSourceExternal {
+				first.UserFindingsJSON = &settled
+			}
+			steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+			rounds := map[string][]*db.StepRound{"s1": {
+				first,
+				{Round: 2, Trigger: tc.trigger, FindingsJSON: tc.payload, DurationMS: 700},
+			}}
+
+			md, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
+
+			if strings.Contains(md, "No issues found") {
+				t.Errorf("the settled round was published as having found nothing, got:\n%s", md)
+			}
+			if strings.Contains(md, "✅ Re-checked - no issues remain.") {
+				t.Errorf("the settled round was published as fully re-checked, got:\n%s", md)
+			}
+			if !strings.Contains(md, "✅ No issues remain - at least 1 settled by the operator without a fix.") {
+				t.Errorf("the round detail does not name the settlement, got:\n%s", md)
+			}
+		})
+	}
+}
+
+func TestBuildPipelineSummary_SettlementDoesNotRelabelEarlierEmptyRounds(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"F1","severity":"warning","file":"a.go","line":10,"description":"missing check"}]}`
+	empty := `{"findings":[]}`
+	selection := db.DeclinedSelectionJSON
+	source := db.RoundSelectionSourceUserIgnored
+	steps := []*db.StepResult{{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+	rounds := map[string][]*db.StepRound{"review": {
+		{Round: 1, Trigger: "initial", FindingsJSON: &empty},
+		{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings, SelectedFindingIDs: &selection, SelectionSource: &source},
+		{Round: 3, Trigger: "auto_fix", FindingsJSON: &empty},
+		{Round: 4, Trigger: "external", FindingsJSON: &empty},
+	}}
+
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+	if strings.Count(md, "✅ No issues found.") != 1 {
+		t.Fatalf("the initial empty round must retain its clean result:\n%s", md)
+	}
+	if strings.Count(md, "✅ No issues remain - at least 1 settled by the operator without a fix.") != 2 {
+		t.Fatalf("each empty round after the settlement must name the settlement:\n%s", md)
+	}
+}
+
+// A Review that settled one finding and ended with another still reported must
+// still publish the settlement. docs reference/pipeline-steps.md states the PR
+// body reports a settled finding as settled without a fix, and a line that only
+// counts what remains says nothing about the human decision at all.
+func TestBuildPipelineSummary_ASettlementIsPublishedWhenFindingsRemain(t *testing.T) {
+	t.Parallel()
+	two := `{"findings":[` +
+		`{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible"},` +
+		`{"id":"bug","severity":"error","file":"main.go","line":9,"description":"off-by-one"}],"summary":"2 findings"}`
+	remaining := `{"findings":[{"id":"bug","severity":"error","file":"main.go","line":9,"description":"off-by-one"}],"summary":"1 error"}`
+	settled := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible","user_instructions":"grant verified on the machine"}]}`
+	empty := db.DeclinedSelectionJSON
+	source := db.RoundSelectionSourceExternal
+
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &remaining}}
+	rounds := map[string][]*db.StepRound{"s1": {
+		{Round: 1, Trigger: "initial", FindingsJSON: &two, SelectedFindingIDs: &empty, SelectionSource: &source, UserFindingsJSON: &settled, DurationMS: 1000},
+		{Round: 2, Trigger: "external", FindingsJSON: &remaining, DurationMS: 700},
+	}}
+
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+	if !strings.Contains(md, "1 settled by the operator without a fix") {
+		t.Errorf("the settlement was dropped because a finding remained, got:\n%s", md)
+	}
+}
+
+// The common mixed response - fix one finding, decline another - records a
+// single user selection, and the Review disposition filter then drops the
+// declined finding from every later report. The body must credit the fix and
+// name the settlement separately, and must say nothing about a settlement when
+// the response declined nothing.
+func TestBuildPipelineSummary_AMixedFixAndIgnoreSeparatesTheTwoOutcomes(t *testing.T) {
+	t.Parallel()
+	two := `{"findings":[` +
+		`{"id":"bug","severity":"warning","file":"main.go","line":3,"description":"off-by-one"},` +
+		`{"id":"grant","severity":"warning","file":"main.go","line":9,"description":"private grant not visible"}],"summary":"2 warnings"}`
+	one := `{"findings":[{"id":"bug","severity":"warning","file":"main.go","line":3,"description":"off-by-one"}],"summary":"1 warning"}`
+	source := db.RoundSelectionSourceUser
+	selected := `["bug"]`
+	for _, tc := range []struct {
+		name        string
+		findings    string
+		wantFound   string
+		wantSettled bool
+	}{
+		{"declines the finding it did not select", two, "2 issues found", true},
+		{"selects every finding it showed", one, "1 issue found", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shown := tc.findings
+			steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+			rounds := map[string][]*db.StepRound{"s1": {
+				{Round: 1, Trigger: "initial", FindingsJSON: &shown, SelectedFindingIDs: &selected, SelectionSource: &source, DurationMS: 1000},
+				{Round: 2, Trigger: "auto_fix", DurationMS: 700},
+			}}
+
+			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+			if !strings.Contains(md, "🔧 **Review** - "+tc.wantFound) {
+				t.Errorf("expected the fixed round still credited with %q, got:\n%s", tc.wantFound, md)
+			}
+			if settled := strings.Contains(md, "1 settled by the operator without a fix"); settled != tc.wantSettled {
+				t.Errorf("settlement reported = %v, want %v, got:\n%s", settled, tc.wantSettled, md)
+			}
+		})
+	}
+}

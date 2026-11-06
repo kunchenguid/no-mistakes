@@ -12,15 +12,21 @@ const (
 	RoundSelectionSourceAutoFix = "auto_fix"
 	// RoundSelectionSourceUserDeclined records that a caller resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort, or a fix response that declined every finding the gate
-	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
-	// finding-level state at all, so "the caller declined every finding" and
+	// skip, or abort, or a non-Review fix response that declined every finding
+	// the gate showed (--ignore with no --findings). Review records an explicit
+	// ignore under RoundSelectionSourceUserIgnored instead. Before this source
+	// existed, approve, skip, and abort wrote no finding-level state at all,
+	// so "the caller declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
 	// partial selection stores one, as the complement of
 	// SelectedFindingIDs, so this source is written with an explicit empty
 	// JSON array rather than a NULL.
 	RoundSelectionSourceUserDeclined = "user_declined"
+	// These sources distinguish a fix response's explicit ignore from an
+	// approve/skip/abort decline, and an externally settled finding from a fix.
+	RoundSelectionSourceUserIgnored = "user_ignored"
+	RoundSelectionSourceExternal    = "resolved_external"
 )
 
 // DeclinedSelectionJSON is the SelectedFindingIDs value written alongside
@@ -35,10 +41,11 @@ type StepRound struct {
 	ID           string
 	StepResultID string
 	Round        int
-	// Trigger is "initial", "auto_fix", "coverage", or "answer" (a review turn resumed
-	// once every question it left open was answered - not a fix round, since
-	// no code changed). "coverage" starts another static review without a fix
-	// or verdict; legacy "user_fix" is treated as "auto_fix".
+	// Trigger is "initial", "auto_fix", "coverage", "external", or "answer" (a
+	// review turn resumed once every question it left open was answered - not
+	// a fix round, since no code changed). "coverage" and "external" each
+	// start another static review without a fix or verdict; legacy "user_fix"
+	// is treated as "auto_fix".
 	Trigger          string
 	FindingsJSON     *string // nullable - findings produced by this round
 	ReviewedHeadSHA  *string // non-authoritative commit candidate captured by a review round
@@ -50,7 +57,9 @@ type StepRound struct {
 	// dispatched to the fix agent after the user edited per-finding
 	// instructions or added their own findings. It includes both the
 	// selected agent-produced findings (with any attached user
-	// instructions) and the user-authored findings.
+	// instructions) and the user-authored findings. With
+	// RoundSelectionSourceExternal, it instead holds the externally settled
+	// findings and their reason in UserInstructions; no fixer is dispatched.
 	UserFindingsJSON *string
 	// SelectedFindingIDs, when non-nil, is a JSON array of finding IDs that
 	// were chosen (by the user or auto-fix filter) to be fixed AFTER this

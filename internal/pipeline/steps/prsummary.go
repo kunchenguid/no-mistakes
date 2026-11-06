@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -1251,6 +1252,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
 	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
+	settledFindings := settledWithoutFixCount(sr, rounds)
 	riskLevel := ""
 	if sr.StepName == types.StepReview {
 		src := finalFindings
@@ -1283,7 +1285,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	}
 
 	if findingsCleared {
-		result := buildFixResultText(rounds)
+		result := buildFixResultText(rounds, settledFindings)
 		line := fmt.Sprintf("🔧 **%s** - %s ✅", name, result)
 		return buildDetail(line)
 	}
@@ -1296,6 +1298,9 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	// Had findings and the final state still contains them - approved as-is.
 	count := countFindingsBySeverity(currentFindings)
 	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
+	if settledFindings > 0 {
+		line = fmt.Sprintf("%s, %s", line, pipeline.SettledWithoutFixText(settledFindings))
+	}
 	return buildDetail(line)
 }
 
@@ -1392,7 +1397,7 @@ func roundsHaveParseFailure(rounds []*db.StepRound) bool {
 	return false
 }
 
-func buildFixResultText(rounds []*db.StepRound) string {
+func buildFixResultText(rounds []*db.StepRound, settled int) string {
 	// Count findings in round 1.
 	var initialCount int
 	if len(rounds) > 0 && rounds[0].FindingsJSON != nil {
@@ -1437,8 +1442,28 @@ func buildFixResultText(rounds []*db.StepRound) string {
 			parts = append(parts, fmt.Sprintf("%s (%d)", result.text, result.count))
 		}
 	}
+	if settled > 0 {
+		parts = append(parts, pipeline.SettledWithoutFixText(settled))
+	}
 
 	return strings.Join(parts, " → ")
+}
+
+func settledWithoutFixCount(sr *db.StepResult, rounds []*db.StepRound) int {
+	if sr.StepName != types.StepReview {
+		return 0
+	}
+	return pipeline.SettledReviewFindingCount(rounds)
+}
+
+func emptyRoundDetailLine(isFixRound bool, settled int) string {
+	if settled > 0 {
+		return fmt.Sprintf("✅ No issues remain - %s.", pipeline.SettledWithoutFixText(settled))
+	}
+	if isFixRound {
+		return "✅ Re-checked - no issues remain."
+	}
+	return "✅ No issues found."
 }
 
 // buildStepDetails renders the collapsible body for a step as an
@@ -1459,8 +1484,8 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	// True only when the step recorded final findings but no round captured
 	// them - a data gap we must not paper over as "no issues found".
 	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
-
-	for _, r := range rounds {
+	for i, r := range rounds {
+		settled := settledWithoutFixCount(sr, rounds[:i])
 		isFixRound := r.IsFixRound()
 		if isFixRound {
 			inner.WriteString(fixRoundLine(r))
@@ -1468,13 +1493,10 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		}
 
 		if r.FindingsJSON == nil {
-			switch {
-			case missingRoundFindingsData:
+			if missingRoundFindingsData {
 				inner.WriteString("findings not recorded\n\n")
-			case isFixRound:
-				inner.WriteString("✅ Re-checked - no issues remain.\n\n")
-			default:
-				inner.WriteString("✅ No issues found.\n\n")
+			} else {
+				inner.WriteString(emptyRoundDetailLine(isFixRound, settled) + "\n\n")
 			}
 			continue
 		}
@@ -1486,11 +1508,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		}
 
 		if len(findings.Items) == 0 {
-			if isFixRound {
-				inner.WriteString("✅ Re-checked - no issues remain.\n")
-			} else {
-				inner.WriteString("✅ No issues found.\n")
-			}
+			inner.WriteString(emptyRoundDetailLine(isFixRound, settled) + "\n")
 			writeTestedDetails(&inner, sr, &findings, flavor)
 			inner.WriteString("\n")
 			continue

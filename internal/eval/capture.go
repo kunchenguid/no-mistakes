@@ -603,7 +603,11 @@ func goldFromRound(round *db.StepRound, decision Decision, prState string) Label
 			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, goldSourceUserAdded, GoldFalseNegative))
 		}
 	}
-	if prState == prStateMerged && hasRecordedDecision(decision) && round.FindingsJSON != nil {
+	// A resolved_external round is the operator affirming the named findings
+	// are real and already settled outside the worktree, so its unselected
+	// findings are the opposite of the "approved and shipped unfixed" signal
+	// this label records.
+	if prState == prStateMerged && hasRecordedDecision(decision) && decision.SelectionSource != db.RoundSelectionSourceExternal && round.FindingsJSON != nil {
 		for _, finding := range parseFindingItems(*round.FindingsJSON) {
 			id := strings.TrimSpace(finding.ID)
 			if id == "" || seen[id] || selected[id] {
