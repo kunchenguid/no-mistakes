@@ -221,6 +221,27 @@ func TestSubmissionIdentityRefusesUnprovableLegacyGlobalIdentity(t *testing.T) {
 	}
 }
 
+func TestSubmissionIdentityPreservesLocalRoleConfiguration(t *testing.T) {
+	for _, worktree := range []bool{false, true} {
+		t.Run(fmt.Sprint(worktree), func(t *testing.T) {
+			p, d := newParkedRunEnv(t)
+			repo, _ := setupTestGitRepo(t, p, d, "identity-local-roles")
+			scope := "--local"
+			if worktree {
+				gitCmd(t, repo.WorkingPath, "config", "extensions.worktreeConfig", "true")
+				scope = "--worktree"
+			}
+			gitCmd(t, repo.WorkingPath, "config", scope, "author.name", "Local Author")
+			gitCmd(t, repo.WorkingPath, "config", scope, "committer.email", "local-committer@example.test")
+			identity, err := submissionIdentity(context.Background(), repo.WorkingPath)
+			want := git.CommitIdentity{AuthorName: "Local Author", AuthorEmail: "test@test.com", CommitterName: "Test", CommitterEmail: "local-committer@example.test"}
+			if err != nil || identity != want {
+				t.Fatalf("legacy role identity = %+v, %v, want %+v", identity, err, want)
+			}
+		})
+	}
+}
+
 func TestSubmissionIdentityWithLinkedCheckouts(t *testing.T) {
 	for _, isolated := range []bool{false, true} {
 		t.Run(fmt.Sprint(isolated), func(t *testing.T) {
@@ -268,6 +289,14 @@ func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.
 		t.Setenv("GIT_"+role+"_DATE", "2000-01-01T00:00:00Z")
 	}
 	forge := &forgecontext.Context{Environment: runenv.Overlay{Set: map[string]string{"GIT_AUTHOR_NAME": "Forge Override"}}}
+	t.Setenv("GIT_CONFIG_COUNT", "3")
+	t.Setenv("GIT_CONFIG_KEY_0", "author.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "Daemon Config Author")
+	t.Setenv("GIT_CONFIG_KEY_1", "author.email")
+	t.Setenv("GIT_CONFIG_VALUE_1", "daemon-config@example.test")
+	t.Setenv("GIT_CONFIG_KEY_2", "test.retained")
+	t.Setenv("GIT_CONFIG_VALUE_2", "count value")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'committer.name'='Daemon Config Committer' 'committer.email=daemon-config@example.test' 'test.parameter'='O'\\''Brien = value'")
 	for target, want := range map[string]string{
 		repo.WorkingPath: "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
 		nested:           "Fixture <fixture@example.test> | Fixture <fixture@example.test>",
@@ -280,6 +309,14 @@ func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.
 		}
 		if got := gitOutput(t, target, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
 			t.Errorf("%s identity = %q, want %q", target, got, want)
+		}
+		for key, want := range map[string]string{"test.retained": "count value", "test.parameter": "O'Brien = value"} {
+			read := exec.Command("git", "config", "--get", key)
+			read.Dir, read.Env = target, cmd.Env
+			out, err := read.CombinedOutput()
+			if err != nil || string(out) != want+"\n" {
+				t.Errorf("retained %s = %q, %v, want %q", key, out, err, want)
+			}
 		}
 	}
 }

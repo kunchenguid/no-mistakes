@@ -85,6 +85,11 @@ func TestCommitIdentitySubprocessesKeepNestedRepositoryIdentity(t *testing.T) {
 				sctx.Env = append(sctx.Env, "GIT_"+role+"_NAME=Step Override", "GIT_"+role+"_EMAIL=step@example.test")
 			}
 			for _, target := range []string{".", "fixture"} {
+				sctx.Env = append(sctx.Env,
+					"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=author.name", "GIT_CONFIG_VALUE_0=Step Config Author",
+					"GIT_CONFIG_KEY_1=author.email", "GIT_CONFIG_VALUE_1=step-config@example.test",
+					"GIT_CONFIG_PARAMETERS='committer.name=Step Config Committer' 'committer.email'='step-config@example.test'",
+				)
 				if entry == "command" {
 					cmd := stepCmd(sctx, "git", "-C", target, "commit", "--allow-empty", "-m", "subprocess")
 					if out, err := cmd.CombinedOutput(); err != nil {
