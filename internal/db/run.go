@@ -135,26 +135,38 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, %s, created_at, updated_at, reviewer_profile`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
 
-func (d *DB) runColumns() string {
-	intentCheck := "NULL"
-	if d.hasColumn("runs", "intent_check_json") {
-		intentCheck = "intent_check_json"
+func (d *DB) runColumns() (string, error) {
+	rows, err := d.sql.Query(`SELECT name FROM pragma_table_info('runs')`)
+	if err != nil {
+		return "", fmt.Errorf("read run schema: %w", err)
 	}
-	// Selected only when the schema has it. OpenReadOnly does not migrate, and
-	// a query naming a missing column fails the preflight that guards every
-	// command that would apply the migration. NULL is the pre-column case:
-	// those runs keep the local_root resolution and are not moved.
-	evidenceDir := "NULL"
-	if d.hasColumn("runs", "evidence_dir") {
-		evidenceDir = "evidence_dir"
+	defer rows.Close()
+	present := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return "", fmt.Errorf("read run schema: %w", err)
+		}
+		present[name] = true
 	}
-	transcriptHomes := "NULL"
-	if d.hasColumn("runs", "transcript_homes") {
-		transcriptHomes = "transcript_homes"
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("read run schema: %w", err)
 	}
-	return fmt.Sprintf(runColumns, intentCheck, evidenceDir, transcriptHomes)
+	columns := strings.Split(runColumns, ", ")
+	for i, name := range columns {
+		if !present[name] {
+			columns[i] = "NULL"
+		}
+		switch name {
+		case "ci_ready_no_ci", "push_active", "parked_ms", "omit_intent":
+			columns[i] = "COALESCE(" + columns[i] + ", 0)"
+		case "quota_routing":
+			columns[i] = "COALESCE(" + columns[i] + ", '')"
+		}
+	}
+	return strings.Join(columns, ", "), nil
 }
 
 func scanRun(row interface {
@@ -449,8 +461,12 @@ func (d *DB) runWorktreesOutside(prefix, statusClause string) ([]RunWorktree, er
 
 // GetRun returns a run by ID.
 func (d *DB) GetRun(id string) (*Run, error) {
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, err
+	}
 	r := &Run{}
-	err := scanRun(d.sql.QueryRow(`SELECT `+d.runColumns()+` FROM runs WHERE id = ?`, id), r)
+	err = scanRun(d.sql.QueryRow(`SELECT `+columns+` FROM runs WHERE id = ?`, id), r)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -463,9 +479,13 @@ func (d *DB) GetRun(id string) (*Run, error) {
 // GetRunByLaunchNonce returns the one durable proof binding for a repository
 // branch, or nil when this nonce has not created a run.
 func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, error) {
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, err
+	}
 	r := &Run{}
-	err := scanRun(d.sql.QueryRow(
-		`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND branch = ? AND launch_nonce = ?`,
+	err = scanRun(d.sql.QueryRow(
+		`SELECT `+columns+` FROM runs WHERE repo_id = ? AND branch = ? AND launch_nonce = ?`,
 		repoID, branch, launchNonce,
 	), r)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -516,6 +536,10 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 	if existing.PRTextDigest() != prTextDigest {
 		return existing, false, nil
 	}
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, false, err
+	}
 	r := &Run{}
 	err = scanRun(d.sql.QueryRow(
 		`UPDATE runs SET launch_receipt_claimed_at = ?
@@ -529,7 +553,7 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 		   AND (? = '' OR json_extract(reviewer_profile, '$.model') = ?)
 		   AND (? = '' OR json_extract(reviewer_profile, '$.effort') = ?)
 		   AND launch_receipt_claimed_at IS NULL
-		 RETURNING `+d.runColumns(),
+		 RETURNING `+columns,
 		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort, rAgent, rAgent, rModel, rModel, rEffort, rEffort,
 	), r)
 	if err == nil {
@@ -547,7 +571,11 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 
 // GetRunsByRepo returns all runs for a repo, newest first.
 func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
-	rows, err := d.sql.Query(`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.sql.Query(`SELECT `+columns+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("get runs by repo: %w", err)
 	}
@@ -568,8 +596,12 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 // push without scanning (and rebuilding step data for) the repo's entire run
 // history, so the cost stays bounded to the handful of runs for one head.
 func (d *DB) GetRunsByRepoHead(repoID, branch, headSHA string) ([]*Run, error) {
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(
-		`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND branch = ? AND head_sha = ? ORDER BY created_at DESC, id DESC`,
+		`SELECT `+columns+` FROM runs WHERE repo_id = ? AND branch = ? AND head_sha = ? ORDER BY created_at DESC, id DESC`,
 		repoID, branch, headSHA,
 	)
 	if err != nil {
@@ -593,15 +625,18 @@ func (d *DB) GetRunsByRepoHead(repoID, branch, headSHA string) ([]*Run, error) {
 // the current branch. When branch is empty, returns the most recently created
 // active run across any branch.
 func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, err
+	}
 	r := &Run{}
-	var err error
 	if branch == "" {
 		err = scanRun(d.sql.QueryRow(
-			`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
+			`SELECT `+columns+` FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
 		), r)
 	} else {
 		err = scanRun(d.sql.QueryRow(
-			`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
+			`SELECT `+columns+` FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
 		), r)
 	}
 	if err == sql.ErrNoRows {
@@ -615,8 +650,12 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 
 // GetActiveRuns returns all pending or running runs across all repos, newest first.
 func (d *DB) GetActiveRuns() ([]*Run, error) {
+	columns, err := d.runColumns()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(
-		`SELECT `+d.runColumns()+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
+		`SELECT `+columns+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
 		types.RunPending, types.RunRunning,
 	)
 	if err != nil {

@@ -28,17 +28,41 @@ func TestAxiStatusReadOnly(t *testing.T) {
 		t.Fatalf("build CLI: %v\n%s", err, out)
 	}
 
-	query := func(t *testing.T, dir string, args ...string) (string, error) {
+	queryCommand := func(t *testing.T, dir, command string, args ...string) (string, error) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, bin, append([]string{"axi", "status"}, args...)...)
+		cmd := exec.CommandContext(ctx, bin, append([]string{"axi", command}, args...)...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if ctx.Err() != nil {
-			t.Fatalf("status timed out: %v\n%s", ctx.Err(), out)
+			t.Fatalf("%s timed out: %v\n%s", command, ctx.Err(), out)
 		}
 		return string(out), err
+	}
+	query := func(t *testing.T, dir string, args ...string) (string, error) {
+		t.Helper()
+		return queryCommand(t, dir, "status", args...)
+	}
+	assertLogs := func(t *testing.T, dir, id string, args ...string) {
+		t.Helper()
+		out, err := queryCommand(t, dir, "logs", append([]string{"--step", "test"}, args...)...)
+		if err != nil {
+			t.Fatalf("logs %v failed while run %s exists: %v\n%s", args, id, err, out)
+		}
+		var doc struct {
+			Run  string `toon:"run"`
+			Step string `toon:"step"`
+			Log  []struct {
+				Line string `toon:"line"`
+			} `toon:"log"`
+		}
+		if err := toon.UnmarshalString(out, &doc); err != nil {
+			t.Fatalf("decode logs: %v\n%s", err, out)
+		}
+		if doc.Run != id || doc.Step != "test" || len(doc.Log) != 1 || doc.Log[0].Line != "live Test output" {
+			t.Fatalf("logs lost live run %s or its output:\n%s", id, out)
+		}
 	}
 	assertRun := func(t *testing.T, dir, id, step, status string, args ...string) {
 		t.Helper()
@@ -55,12 +79,20 @@ func TestAxiStatusReadOnly(t *testing.T) {
 					Status string `toon:"status"`
 				} `toon:"steps"`
 			} `toon:"run"`
+			BranchSync struct {
+				Pipeline struct {
+					Run string `toon:"run"`
+				} `toon:"pipeline"`
+			} `toon:"branch_sync"`
 		}
 		if err := toon.UnmarshalString(out, &doc); err != nil {
 			t.Fatalf("decode status: %v\n%s", err, out)
 		}
 		if doc.Run.ID != id || doc.Run.Status != "running" {
 			t.Fatalf("status lost live run %s:\n%s", id, out)
+		}
+		if doc.BranchSync.Pipeline.Run != id {
+			t.Fatalf("status lost cached branch-sync annotation for run %s:\n%s", id, out)
 		}
 		for _, s := range doc.Run.Steps {
 			if s.Step == step && s.Status == status {
@@ -92,6 +124,12 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			if err := database.UpdateStepStatus(step.ID, types.StepStatusRunning); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.MkdirAll(p.RunLogDir(live.ID), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(p.RunLogDir(live.ID), "test.log"), []byte("live Test output\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			writer, err := sql.Open("sqlite", p.DB())
 			if err != nil {
 				t.Fatal(err)
@@ -101,7 +139,11 @@ func TestAxiStatusReadOnly(t *testing.T) {
 				// Model an existing database awaiting an additive schema change.
 				// Status does not need this table, so a pure reader can still
 				// observe the committed run while another connection writes.
-				if _, err := writer.Exec("DROP TABLE intent_cache"); err != nil {
+				if _, err := writer.Exec(`DROP TABLE intent_cache;
+					DROP TRIGGER runs_reviewer_profile_immutable;
+					ALTER TABLE runs DROP COLUMN reviewer_profile;
+					ALTER TABLE runs DROP COLUMN parked_ms;
+					ALTER TABLE runs DROP COLUMN quota_routing`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -122,6 +164,8 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			for range 3 {
 				assertRun(t, dir, live.ID, "test", "running")
 				assertRun(t, dir, live.ID, "test", "running", "--run", live.ID)
+				assertLogs(t, dir, live.ID)
+				assertLogs(t, dir, live.ID, "--run", live.ID)
 			}
 			if err := tx.Rollback(); err != nil {
 				t.Fatal(err)
@@ -131,6 +175,16 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			}
 			for _, args := range [][]string{nil, {"--run", live.ID}} {
 				assertRun(t, dir, live.ID, "test", "completed", args...)
+				assertLogs(t, dir, live.ID, args...)
+			}
+			if pendingSchema {
+				var n int
+				if err := writer.QueryRow("SELECT count(*) FROM pragma_table_info('runs') WHERE name IN ('reviewer_profile', 'parked_ms', 'quota_routing')").Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n != 0 {
+					t.Fatalf("queries recreated %d missing run columns", n)
+				}
 			}
 		})
 	}

@@ -1,8 +1,10 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,65 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestReadOnlyRunsBeforeAdditiveMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.sqlite")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	if _, err := legacy.Exec(`
+		CREATE TABLE runs (
+			id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, branch TEXT NOT NULL,
+			head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, status TEXT NOT NULL,
+			pr_url TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+		);
+		INSERT INTO runs VALUES ('run-1', 'repo-1', 'feature', 'head', 'base', 'running', NULL, NULL, 1, 2);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	want := &Run{ID: "run-1", RepoID: "repo-1", Branch: "feature", HeadSHA: "head", BaseSHA: "base", Status: types.RunRunning, CreatedAt: 1, UpdatedAt: 2}
+	for name, read := range map[string]func() ([]*Run, error){
+		"id": func() ([]*Run, error) {
+			r, err := reader.GetRun("run-1")
+			return []*Run{r}, err
+		},
+		"repository": func() ([]*Run, error) { return reader.GetRunsByRepo("repo-1") },
+		"head":       func() ([]*Run, error) { return reader.GetRunsByRepoHead("repo-1", "feature", "head") },
+		"active branch": func() ([]*Run, error) {
+			r, err := reader.GetActiveRun("repo-1", "feature")
+			return []*Run{r}, err
+		},
+		"active repository": func() ([]*Run, error) {
+			r, err := reader.GetActiveRun("repo-1", "")
+			return []*Run{r}, err
+		},
+		"all active": reader.GetActiveRuns,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+				t.Fatalf("read = %+v, want original run with zero-valued added fields %+v", got, want)
+			}
+		})
+	}
+	var columns int
+	if err := legacy.QueryRow("SELECT count(*) FROM pragma_table_info('runs')").Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if columns != 10 {
+		t.Fatalf("read-only queries migrated the runs table to %d columns", columns)
+	}
+}
 
 func TestRunInsertAndGet(t *testing.T) {
 	d := openTestDB(t)
