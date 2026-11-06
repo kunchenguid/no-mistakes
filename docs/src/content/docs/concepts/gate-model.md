@@ -118,11 +118,13 @@ with context and whose lines a later live commit edited is not at risk either.
 At most 64 first-parent candidates are tried; past that bound the proof fails
 closed.
 
-When a rebase accepted a file deletion from the upstream default branch,
+When a rebase accepted a file deletion from the selected integration base,
 Git reports a modify/delete conflict even with live-favoring resolution.
 If the ordinary proofs fail, reconciliation reads and fetches the exact live
-default-branch head from `origin`. Its merge base with the live head identifies
-the upstream changes already integrated by the branch. Only paths deleted
+selected base head from `origin`. The caller supplies the run override,
+configured `pr.base_branch`, or repository default used for integration.
+Its merge base with the live head identifies the upstream changes already
+integrated by the branch. Only paths deleted
 there since the common ancestor, and still absent from the live tree, may be
 removed from an unreferenced copy of the private tree for the survival proof.
 Every remaining path must pass the same whole-tree proof above. A deletion

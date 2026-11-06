@@ -12,7 +12,7 @@ import (
 )
 
 func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
-	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream"} {
+	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure", "older_upstream", "selected_restores", "selected_deletes", "missing_base", "unknown_base"} {
 		t.Run(change, func(t *testing.T) {
 			work := initReconcileRepo(t)
 			reconcileGit(t, work, "branch", "-M", "main")
@@ -32,7 +32,7 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			reconcileGit(t, work, "commit", "-m", "add other file")
 			privateHead := reconcileGit(t, work, "rev-parse", "HEAD")
 			reconcileGit(t, work, "checkout", "main")
-			if change != "branch_deletion" {
+			if change != "branch_deletion" && change != "selected_deletes" {
 				reconcileGit(t, work, "rm", "doomed.txt")
 				reconcileGit(t, work, "commit", "-m", "base deletes doomed")
 			} else {
@@ -50,16 +50,29 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			}
 			reconcileGit(t, work, "push", upstream, upstreamHead+":refs/heads/main")
 			reconcileGit(t, work, "remote", "add", "origin", upstream)
+			selectedBase := "main"
+			if change == "selected_restores" || change == "selected_deletes" {
+				selectedBase = "integration"
+				reconcileGit(t, work, "checkout", "-b", selectedBase)
+				if change == "selected_restores" {
+					writeReconcileFile(t, work, "doomed.txt", "original doomed\n")
+					reconcileGit(t, work, "add", "doomed.txt")
+				} else {
+					reconcileGit(t, work, "rm", "doomed.txt")
+				}
+				reconcileGit(t, work, "commit", "-m", "selected integration base")
+				reconcileGit(t, work, "push", upstream, "HEAD:refs/heads/"+selectedBase)
+			}
 			reconcileGit(t, work, "checkout", "feature")
-			if change != "branch_deletion" {
-				if _, err := reconcileGitAllowFail(work, "rebase", "main"); err == nil {
+			if change != "branch_deletion" && change != "selected_restores" {
+				if _, err := reconcileGitAllowFail(work, "rebase", selectedBase); err == nil {
 					t.Fatal("fixture must encounter the modify/delete conflict")
 				}
 				reconcileGit(t, work, "rm", "doomed.txt")
 				t.Setenv("GIT_EDITOR", "true")
 				reconcileGit(t, work, "rebase", "--continue")
 			} else {
-				reconcileGit(t, work, "rebase", "main")
+				reconcileGit(t, work, "rebase", selectedBase)
 				reconcileGit(t, work, "rm", "doomed.txt")
 				reconcileGit(t, work, "commit", "-m", "branch discards required edit")
 			}
@@ -119,14 +132,23 @@ done
 			if change == "upstream_failure" {
 				reconcileGit(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
 			}
-			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "")
+			if change == "missing_base" {
+				selectedBase = ""
+			} else if change == "unknown_base" {
+				selectedBase = "missing"
+			}
+			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "", selectedBase)
+			publicationPlan, publicationErr := PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, selectedBase)
+			if (err == nil) != (publicationErr == nil) || plan.Reconcile != publicationPlan.Reconcile {
+				t.Fatalf("submission/publication differ: plan=%+v err=%v; publication=%+v err=%v", plan, err, publicationPlan, publicationErr)
+			}
 			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
 				t.Fatalf("planning moved mirror to %s, want %s", got, privateHead)
 			}
 			if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
 				t.Fatalf("planning created archive %s", tags)
 			}
-			if change != "kept" && change != "later_edit" {
+			if change != "kept" && change != "later_edit" && change != "selected_deletes" {
 				if err == nil || plan.Reconcile {
 					t.Fatalf("lost content accepted: plan=%+v err=%v", plan, err)
 				}

@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/closingissues"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -872,7 +873,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, submissionHead); err != nil {
 		return "", err
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "", submissionReconciliationBase(ctx, env, submissionHead, baseBranch))
 	if err != nil {
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
 	}
@@ -938,6 +939,51 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
+}
+
+func submissionReconciliationBase(ctx context.Context, env *axiEnv, head, requested string) string {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		return requested
+	}
+	base := strings.TrimSpace(env.repo.DefaultBranch)
+	if base == "" {
+		return ""
+	}
+	ref := "refs/heads/" + base
+	sha, err := git.LsRemote(ctx, ".", "origin", ref)
+	if err != nil || sha == "" {
+		return ""
+	}
+	if err := git.FetchRemoteRef(ctx, ".", "origin", ref, sha); err != nil {
+		return ""
+	}
+	readConfig := func(commit string) (*config.RepoConfig, error) {
+		entry, err := git.Run(ctx, ".", "ls-tree", commit, "--", ".no-mistakes.yaml")
+		if err != nil {
+			return nil, err
+		}
+		if entry == "" {
+			return &config.RepoConfig{}, nil
+		}
+		content, err := git.ShowFile(ctx, ".", commit, ".no-mistakes.yaml")
+		if err != nil {
+			return nil, err
+		}
+		return config.LoadRepoFromBytes([]byte(content))
+	}
+	trusted, err := readConfig(sha)
+	if err != nil {
+		return ""
+	}
+	pushed, err := readConfig(head)
+	if err != nil {
+		return ""
+	}
+	effective := config.EffectiveRepoConfig(pushed, trusted, trusted.AllowRepoCommands)
+	if selected := strings.TrimSpace(effective.PR.BaseBranch); selected != "" {
+		return selected
+	}
+	return base
 }
 
 func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {

@@ -42,8 +42,8 @@ type StaleBranchPlan struct {
 // contains all of its content or a recovery anchor preserves each private-only
 // commit that proof misses, or under the exact run-owned-head exception
 // described in docs/src/content/docs/concepts/gate-model.md.
-func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchReconciliation, error) {
-	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead)
+func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead, selectedBase string) (StaleBranchReconciliation, error) {
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, selectedBase)
 	if err != nil || !plan.Reconcile {
 		return StaleBranchReconciliation{}, err
 	}
@@ -63,8 +63,8 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // PlanMirrorPublicationReconciliation instead. The contract and rationale are
 // owned by docs/src/content/docs/concepts/gate-model.md (Private mirror
 // reconciliation).
-func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, false, runOwnedHead)
+func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead, selectedBase string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, selectedBase, false, runOwnedHead)
 }
 
 // PlanMirrorPublicationReconciliation is the pipeline-publication variant of
@@ -75,11 +75,11 @@ func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 // agent-created head nor any other recorded head is eligible; every other
 // mirror head still needs the full preservation proof or the recovery-anchor
 // preservation credit.
-func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, runOwnedHeads ...string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, true, runOwnedHeads...)
+func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, selectedBase string, runOwnedHeads ...string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, selectedBase, true, runOwnedHeads...)
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, selectedBase string, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
@@ -164,11 +164,8 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				remaining = append(remaining, commit)
 			}
 		}
-		var deletionProofErr error
 		if len(remaining) > 0 {
-			var contained bool
-			contained, deletionProofErr = privateTreeSurvivesBaseDeletion(ctx, gateDir, workDir, liveHead, gateHead)
-			if contained && deletionProofErr == nil {
+			if contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, workDir, liveHead, gateHead, selectedBase); contained && err == nil {
 				remaining = nil
 			}
 		}
@@ -187,9 +184,6 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				branchRef, len(remaining), liveHead, strings.Join(atRisk, "; "),
 				joinSatisfiers(satisfiers),
 			)
-			if deletionProofErr != nil {
-				return plan, fmt.Errorf("%w; upstream-deletion proof unavailable: %v", refusal, deletionProofErr)
-			}
 			return plan, refusal
 		}
 		plan.PreservedByRecovery = preserved
@@ -522,13 +516,14 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 // from live may be removed from the private tree for this proof. All remaining
 // content must pass the ordinary whole-tree survival proof. In particular, a
 // deletion made only on the branch earns no credit.
-//
-// This fallback runs only after ordinary containment and preservation fail. It
-// pins the default branch from origin's live HEAD, not a local branch name or a
-// stale tracking ref. FetchRemoteRef checks that exact snapshot before use.
-// No branch or archive is changed; the projected commit is an unreferenced
-// proof object, and apply still archives the original private head.
-func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, liveHead, privateHead string) (bool, error) {
+func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, liveHead, privateHead, selectedBase string) (bool, error) {
+	selectedBase = strings.TrimSpace(selectedBase)
+	if selectedBase == "" {
+		return false, nil
+	}
+	if _, err := git.Run(ctx, workDir, "check-ref-format", "refs/heads/"+selectedBase); err != nil {
+		return false, err
+	}
 	hasOrigin, err := git.HasRemote(ctx, workDir, "origin")
 	if err != nil || !hasOrigin {
 		return false, err
@@ -540,22 +535,10 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, live
 	if len(urls) != 1 {
 		return false, fmt.Errorf("origin must have exactly one upstream URL")
 	}
-	remoteHead, err := git.Run(ctx, workDir, "ls-remote", "--symref", "--", urls[0], "HEAD")
-	if err != nil {
+	upstreamRef := "refs/heads/" + selectedBase
+	upstreamHead, err := git.LsRemote(ctx, workDir, urls[0], upstreamRef)
+	if err != nil || upstreamHead == "" {
 		return false, err
-	}
-	var upstreamRef, upstreamHead string
-	for _, line := range strings.Split(remoteHead, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[0] == "ref:" && strings.HasPrefix(fields[1], "refs/heads/") && fields[2] == "HEAD" {
-			upstreamRef = fields[1]
-		}
-		if len(fields) == 2 && fields[1] == "HEAD" {
-			upstreamHead = fields[0]
-		}
-	}
-	if upstreamRef == "" || upstreamHead == "" {
-		return false, fmt.Errorf("upstream HEAD does not identify a default branch commit")
 	}
 	if err := git.FetchRemoteRef(ctx, repoDir, urls[0], upstreamRef, upstreamHead); err != nil {
 		return false, err
@@ -572,7 +555,7 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, live
 	if len(strings.Fields(base)) != 1 || len(strings.Fields(common)) != 1 {
 		return false, nil
 	}
-	// A default branch rolled back behind the fork is not evidence that the
+	// A selected base rolled back behind the fork is not evidence that the
 	// branch integrated a deletion. Comparing its older tree would otherwise
 	// misread files introduced before the fork as upstream deletions.
 	if _, err := git.Run(ctx, repoDir, "merge-base", "--is-ancestor", common, base); err != nil {
