@@ -36,7 +36,7 @@ func TestPROmitIntentSuppressionIsTightenOnly(t *testing.T) {
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				return &agent.Result{Output: json.RawMessage(`{"title":"feat: helper","body":"## What Changed\n\n- A helper."}`)}, nil
 			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+			sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
 			sctx.Run.OmitIntent = tc.runOmitIntent
 			trusted, err := config.LoadRepoFromBytes([]byte(tc.repoPolicy))
 			if err != nil {
@@ -78,7 +78,7 @@ func TestPROmitIntentWithholdsIntentFromDraftingTurns(t *testing.T) {
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				return &agent.Result{Output: json.RawMessage(`{"title":"feat: helper","body":"## What Changed\n\n- A helper."}`)}, nil
 			}}
-			return newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{}), ag
+			return newPRTestContext(t, ag, dir, base, head, config.Commands{}), ag
 		}},
 		{name: "repository template narrative", setup: func(t *testing.T) (*pipeline.StepContext, *mockAgent) {
 			sctx, ag, _ := templateTestContext(t)
@@ -133,7 +133,7 @@ func TestPRPublishIntentSuppressionCoversDefaultAgentAndFallback(t *testing.T) {
 					}
 					return &agent.Result{Output: json.RawMessage(`{"title":"feat: helper","body":"## What Changed\n\n- A helper."}`)}, nil
 				}}
-				sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+				sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
 				policy := "pr: {}"
 				if tc.publish != nil {
 					policy = fmt.Sprintf("pr: {publish_intent: %t}", *tc.publish)
@@ -174,7 +174,7 @@ func TestPRSuppliedBodyPublishesIntentUnderTheSameControls(t *testing.T) {
 		t.Run(fmt.Sprintf("omit=%v", omit), func(t *testing.T) {
 			t.Parallel()
 			dir, base, head := setupGitRepo(t)
-			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 			insertCompletedStep(t, sctx, types.StepReview, "", "")
 			title, body := "Supplied title", "Supplied narrative."
 			sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body

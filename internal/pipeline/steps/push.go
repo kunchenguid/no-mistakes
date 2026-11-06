@@ -231,14 +231,21 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		}
 	}
 
-	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{
+	binding := db.PushBinding{
 		HeadSHA:           headBeingPushed,
 		TargetKind:        pushTarget,
 		TargetFingerprint: branchsync.TargetFingerprint(pushURL),
 		Ref:               ref,
-	}); err != nil {
+	}
+	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, binding); err != nil {
 		return err
 	}
+	sctx.Shared.SetPublishedPush(pipeline.PublishedPush{
+		RunID:           sctx.Run.ID,
+		RepoID:          sctx.Repo.ID,
+		Binding:         binding,
+		PreviousHeadSHA: decision.remoteSHA,
+	})
 	sctx.Run.HeadSHA = headBeingPushed
 	return nil
 }

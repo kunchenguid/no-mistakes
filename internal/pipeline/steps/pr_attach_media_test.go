@@ -72,7 +72,7 @@ func screenshotFindings(path string) string {
 func renderPRWithScreenshot(t *testing.T, uploader userAssetUploader, configure func(sctx *testPRAttachCtx)) (body, logs string) {
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
 	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
@@ -115,7 +115,7 @@ func TestPRStep_DefaultConfigEmbedsGitHubScreenshotAttachment(t *testing.T) {
 func TestPRStep_ReusesScreenshotAttachmentAcrossPRRenders(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
 	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
@@ -143,7 +143,7 @@ func TestPRStep_ReusesScreenshotAttachmentAcrossPRRenders(t *testing.T) {
 func TestPRStep_DeduplicatesScreenshotUploadsByPath(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Desktop checkout","path":%q},{"kind":"screenshot","label":"Mobile checkout","path":%q}]}`, png, png)
@@ -231,7 +231,7 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	pngDir := ""
 	makeCtx := func(ag agent.Agent) *pipeline.StepContext {
-		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 		enableDefaultEvidence(sctx)
 		if pngDir == "" {
 			pngDir = writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
@@ -271,7 +271,7 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 func TestPRStep_TokenRefusalAsksOnceAndSkipsTheRemainingFiles(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	env, ghLog := fakeGH(t, "")
 	sctx.Env = env
@@ -346,7 +346,7 @@ func TestPRStep_NonGitHubForgeLeavesScreenshotUnchanged(t *testing.T) {
 func TestPRStep_TextArtifactIsNotUploaded(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	logPath := writeEvidenceFile(t, sctx.EvidenceDir, "cli-run.txt", []byte("it works\n"))
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"CLI run","path":%q}]}`, logPath)
@@ -370,7 +370,7 @@ func TestPRStep_TextArtifactIsNotUploaded(t *testing.T) {
 func TestPRStep_OversizedImageIsSkippedWithReason(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	png := writeEvidenceFile(t, sctx.EvidenceDir, "oversize.png", make([]byte, 10*1024*1024+1))
 	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
@@ -478,7 +478,7 @@ func TestPRStep_UnsupportedImagePreservesCommittedPath(t *testing.T) {
 func TestPRStep_VideoAttachmentIsBareURL(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	video := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.mp4", []byte("ftyp"))
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"video","label":"Checkout recording","path":%q}]}`, video)

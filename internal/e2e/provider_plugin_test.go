@@ -15,8 +15,7 @@ import (
 // TestProviderPluginJourney drives a full run against a host no built-in
 // provider recognizes, with PR and CI handled by an operator-configured
 // provider plugin: the global provider_plugins block is read by the real
-// loader, the PR step opens the PR through the plugin, and the CI step reads
-// checks, sees the PR merge at the run's head, and verifies the merged proof.
+// loader.
 // The plugin is the reference fake (internal/scm/plugin/fakeplugin) behind
 // the fakeagent binary, so the test exercises only the public CLI contract.
 func TestProviderPluginJourney(t *testing.T) {
@@ -58,7 +57,6 @@ func TestProviderPluginJourney(t *testing.T) {
 	h.CommitChange(branchName, "plugin.txt", "provider plugin e2e\n", "add provider plugin e2e file")
 	h.PushToGate(branchName)
 
-	// The CI step observes the merge on its second poll, 30s after the first.
 	run := h.WaitForRun(branchName, 150*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
@@ -66,6 +64,9 @@ func TestProviderPluginJourney(t *testing.T) {
 	wantURL := "https://" + pluginHost + "/" + repoPath + "/pulls/1"
 	if run.PRURL == nil || *run.PRURL != wantURL {
 		t.Fatalf("PR URL = %v, want %s", run.PRURL, wantURL)
+	}
+	if !strings.Contains(readStepLog(t, h, run.ID, "pr"), "PR head proof unavailable for provider plugin:ssm") {
+		t.Fatal("run output did not record unavailable head proof")
 	}
 
 	state, err := fakeplugin.Load(statePath)
@@ -81,6 +82,9 @@ func TestProviderPluginJourney(t *testing.T) {
 	}
 	if strings.TrimSpace(pr.Body) == "" || strings.TrimSpace(pr.Title) == "" {
 		t.Fatalf("PR title/body not published: title=%q body=%q", pr.Title, pr.Body)
+	}
+	if !strings.Contains(pr.Body, "PR head proof unavailable for provider plugin:ssm") {
+		t.Fatalf("published body did not record unavailable head proof: %s", pr.Body)
 	}
 	t.Logf("PR title: %s\nPR body:\n%s", pr.Title, pr.Body)
 

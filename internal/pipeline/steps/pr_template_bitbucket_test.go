@@ -72,9 +72,11 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	defer server.Close()
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Env = fakeBitbucketEnv(server.URL)
+	assertNotice := capturePRProofNotice(t, sctx, "bitbucket")
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(body)
 	if !exists || !strings.Contains(body, "```text\n"+pipelineAttestationCommentPrefix) {
 		t.Fatal("no owned text declaration created")
 	}
@@ -87,9 +89,11 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	suffix := "\nCloses https://example.test/issues/9"
 	body = prefix + wrapPRAppendix(parts.appendix) + suffix
 	sctx.Config.PR.Template = ""
+	assertNotice = capturePRProofNotice(t, sctx, "bitbucket")
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
+	assertNotice(body)
 	newHead := strings.Repeat("bc", 20)
 	if err := attestHeadBeforePush(sctx, newHead, nil); err != nil {
 		t.Fatal(err)
