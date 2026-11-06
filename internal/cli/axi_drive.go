@@ -968,7 +968,7 @@ func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, re
 		return gate.ReconciliationUpstream{}
 	}
 	readConfig := func(commit string) (*config.RepoConfig, error) {
-		entry, err := git.Run(ctx, ".", "ls-tree", commit, "--", ".no-mistakes.yaml")
+		entry, err := git.Run(ctx, ".", "ls-tree", "--full-tree", commit, "--", ".no-mistakes.yaml")
 		if err != nil {
 			return nil, err
 		}

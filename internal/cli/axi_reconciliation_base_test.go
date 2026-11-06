@@ -22,43 +22,52 @@ func TestSubmissionReconciliationBase(t *testing.T) {
 		{name: "invalid", trusted: "pr: [\n", want: ""},
 		{name: "unreadable", want: ""},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			work := t.TempDir()
-			cliGit(t, work, "init", "-b", "main")
-			cliGit(t, work, "config", "user.name", "fixture")
-			cliGit(t, work, "config", "user.email", "fixture@localhost")
-			if tc.trusted != "" {
-				if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte(tc.trusted), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			cliGit(t, work, "add", "-A")
-			cliGit(t, work, "commit", "--allow-empty", "-m", "trusted config")
-			upstream := t.TempDir()
-			cliGit(t, upstream, "init", "--bare")
-			cliGit(t, work, "remote", "add", "origin", upstream)
-			cliGit(t, work, "push", "origin", "main")
-			cliGit(t, work, "checkout", "-b", "feature")
-			if tc.pushed != "" {
-				if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte(tc.pushed), 0o644); err != nil {
-					t.Fatal(err)
+		for _, location := range []string{"root", "subdirectory"} {
+			t.Run(tc.name+"/"+location, func(t *testing.T) {
+				work := t.TempDir()
+				cliGit(t, work, "init", "-b", "main")
+				cliGit(t, work, "config", "user.name", "fixture")
+				cliGit(t, work, "config", "user.email", "fixture@localhost")
+				if tc.trusted != "" {
+					if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte(tc.trusted), 0o644); err != nil {
+						t.Fatal(err)
+					}
 				}
 				cliGit(t, work, "add", "-A")
-				cliGit(t, work, "commit", "-m", "pushed config")
-			}
-			head := cliGit(t, work, "rev-parse", "HEAD")
-			if tc.name == "unreadable" {
-				cliGit(t, work, "remote", "set-url", "origin", filepath.Join(work, "missing.git"))
-			}
-			t.Chdir(work)
-			env := &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}
-			got := submissionReconciliationUpstream(context.Background(), env, head, tc.requested)
-			if got.BaseBranch != tc.want {
-				t.Fatalf("selected base = %q, want %q", got.BaseBranch, tc.want)
-			}
-			if tc.want != "" && got.URL != upstream {
-				t.Fatalf("selected upstream = %q, want %q", got.URL, upstream)
-			}
-		})
+				cliGit(t, work, "commit", "--allow-empty", "-m", "trusted config")
+				upstream := t.TempDir()
+				cliGit(t, upstream, "init", "--bare")
+				cliGit(t, work, "remote", "add", "origin", upstream)
+				cliGit(t, work, "push", "origin", "main")
+				cliGit(t, work, "checkout", "-b", "feature")
+				if tc.pushed != "" {
+					if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte(tc.pushed), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					cliGit(t, work, "add", "-A")
+					cliGit(t, work, "commit", "-m", "pushed config")
+				}
+				head := cliGit(t, work, "rev-parse", "HEAD")
+				if tc.name == "unreadable" {
+					cliGit(t, work, "remote", "set-url", "origin", filepath.Join(work, "missing.git"))
+				}
+				cwd := work
+				if location == "subdirectory" {
+					cwd = filepath.Join(work, "subdirectory")
+					if err := os.Mkdir(cwd, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Chdir(cwd)
+				env := &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}
+				got := submissionReconciliationUpstream(context.Background(), env, head, tc.requested)
+				if got.BaseBranch != tc.want {
+					t.Fatalf("selected base = %q, want %q", got.BaseBranch, tc.want)
+				}
+				if tc.want != "" && got.URL != upstream {
+					t.Fatalf("selected upstream = %q, want %q", got.URL, upstream)
+				}
+			})
+		}
 	}
 }
