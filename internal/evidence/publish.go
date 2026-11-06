@@ -277,17 +277,22 @@ func addToIndex(ctx context.Context, repoDir string, env []string, mode, blob, i
 	return nil
 }
 
-// commitTree builds the evidence commit. The identity falls back to a
-// no-mistakes author when the repository configures none, so publishing never
-// fails on "unable to auto-detect email address".
+// commitTree builds the evidence commit.
 func commitTree(ctx context.Context, repoDir, tree, parent, message string) (string, error) {
-	name := configuredIdentity(ctx, repoDir, "user.name", "no-mistakes")
-	email := configuredIdentity(ctx, repoDir, "user.email", "no-mistakes@localhost")
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name,
-		"GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name,
-		"GIT_COMMITTER_EMAIL=" + email,
+	var env []string
+	if identity, bound := git.CommitIdentityFromContext(ctx); bound {
+		if err := identity.Validate(); err != nil {
+			return "", err
+		}
+	} else {
+		name := configuredIdentity(ctx, repoDir, "user.name", "no-mistakes")
+		email := configuredIdentity(ctx, repoDir, "user.email", "no-mistakes@localhost")
+		env = []string{
+			"GIT_AUTHOR_NAME=" + name,
+			"GIT_AUTHOR_EMAIL=" + email,
+			"GIT_COMMITTER_NAME=" + name,
+			"GIT_COMMITTER_EMAIL=" + email,
+		}
 	}
 	args := []string{"commit-tree", tree}
 	if parent != "" {
