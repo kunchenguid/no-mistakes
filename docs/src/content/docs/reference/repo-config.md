@@ -5,6 +5,24 @@ description: All fields for .no-mistakes.yaml.
 
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
+## `push.external_publisher`
+
+Reserves branch publication for an external gate when any declared path exists in the exact commit proposed for publication. Unset preserves normal publication. This declaration is repository-only and read from the trusted default-branch configuration. A submitted branch cannot replace or remove it, even with `allow_repo_commands: true`.
+
+```yaml
+push:
+  external_publisher:
+    paths: [.shipping-gate.json]
+    reason: The shipping gate must stamp the commit before publication.
+    remedy: Recover the validated head and publish through the shipping gate.
+```
+
+`paths` is a nonempty list of literal repository-relative paths, not globs. Files, directories, and tracked symlinks match by presence in the commit. Untracked worktree files do not match. If the proposed commit's tree cannot be read, publication is refused. Absolute paths and dot segments are rejected. `reason` and `remedy` must both be nonempty. Malformed declarations fail configuration loading, including after a daemon restart.
+
+A match fails publication before any push, PR attestation update, or mirror reconciliation. The refusal names the matching path, commit, reason, and remedy. Both ordinary Push and direct CI-repair publication enforce it. No workflow scanning, automatic bypass, or external publisher invocation occurs.
+
+After refusal, run `no-mistakes axi sync --recover` from the registered working clone to recover the validated head and pipeline corrections through the normal custody path. Follow the declared remedy to publish with the external gate. Recovery does not publish anything or disable the policy, and retrying a matching head still refuses.
+
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
@@ -12,6 +30,7 @@ The daemon also reads `document.instructions`, `review.conversation`, `review.pa
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
+[`push.external_publisher`](#pushexternal_publisher) is also trusted-only, regardless of `allow_repo_commands`.
 Commit the gate-control settings you want to your default branch.
 Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
@@ -100,6 +119,13 @@ ci:
 # Read only from the trusted default branch.
 rebase:
   strategy: rebase # or: merge
+
+# Optional publication reservation, read only from the trusted default branch.
+# push:
+#   external_publisher:
+#     paths: [.shipping-gate.json]
+#     reason: The external gate must stamp the commit before publishing it.
+#     remedy: Recover the validated head and publish through the external gate.
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"

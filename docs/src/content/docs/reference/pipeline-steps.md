@@ -277,6 +277,7 @@ Pushes the validated branch to the configured push target.
 - Commits any uncommitted changes left by pipeline agents or the formatter with message `no-mistakes: apply agent fixes`, or through a non-default [`commit.fix_message`](/no-mistakes/reference/global-config/#commitfix_message) with step `push` and summary `apply agent fixes`
 - Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
+- Applies the trusted [external publisher policy](/no-mistakes/reference/repo-config/#pushexternal_publisher), which owns the refusal and recovery contract for ordinary and direct CI-repair publication.
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
 - Requires the commit proposed for push to equal or descend from the review-approved commit, allowing commits made by later pipeline steps without authorizing unrelated history
 - Re-reads the push target via `git ls-remote` before pushing
