@@ -1002,24 +1002,51 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		} else {
 			consecutiveCheckErrs = 0
-			// A provider resolves the checks against the pull request's live
-			// head, so a rewrite that lands between the state read and this
-			// read surfaces here as green or failing checks for a commit this
-			// run never validated. The same adoption applies before any of
-			// those results can establish readiness.
-			if observed := strings.TrimSpace(observedHead); observed != "" && !s.ciRunOwnsHead(sctx, observed) {
+			// A provider that binds no head to its check read (Bitbucket,
+			// Gitea, Forgejo, Azure DevOps and Origin read statuses against the
+			// pull request rather than a commit) cannot prove these results
+			// describe the head this run validated. The poll's earlier
+			// push-target read is not enough on its own: a rewrite that lands
+			// between that read and this one would hand back the foreign head's
+			// green checks and establish readiness for a commit no step here
+			// saw. Bind the unbound read to the push target's head re-read now,
+			// then apply the same ownership guard to either source. Refusing
+			// every unbound read outright would leave no run on those providers
+			// ever ready.
+			checkHead := strings.TrimSpace(observedHead)
+			var headErr error
+			if checkHead == "" {
+				checkHead, headErr = publishedBranchHead(sctx)
+			}
+			if headErr != nil || !s.ciRunOwnsHead(sctx, checkHead) {
 				lastMonitorLog = ciMonitorStatus{}
-				outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", observed, prOpen)
-				if adoptErr != nil {
-					return nil, adoptErr
+				if strings.TrimSpace(observedHead) == "" {
+					if headErr != nil {
+						sctx.Log(fmt.Sprintf("warning: could not re-read the published branch head after an unbound check read, so no check result is used this poll: %v", headErr))
+					} else {
+						sctx.Log(fmt.Sprintf("the check read binds no head and the push target now serves %s, which this run owns nowhere, so no result from it can establish readiness for %s", shortSHA(checkHead), shortSHA(sctx.Run.HeadSHA)))
+					}
+					if err := clearCIMonitorReadyForIssues(sctx); err != nil {
+						return nil, err
+					}
+				} else {
+					// A provider resolves the checks against the pull request's live
+					// head, so a rewrite that lands between the state read and this
+					// read surfaces here as green or failing checks for a commit this
+					// run never validated. The same adoption applies before any of
+					// those results can establish readiness.
+					outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", checkHead, prOpen)
+					if adoptErr != nil {
+						return nil, adoptErr
+					}
+					if outcome != nil {
+						return outcome, nil
+					}
+					// Nothing was adopted - the push target serves a head this run
+					// owns, or its own read failed. These checks still belong to a
+					// head the run never validated, so none of them may be read.
 				}
-				if outcome != nil {
-					return outcome, nil
-				}
-				// Nothing was adopted - the push target serves a head this run
-				// owns, or its own read failed. These checks still belong to a
-				// head the run never validated, so none of them may be read:
-				// keep polling, on the same bound every other unread poll has.
+				// Keep polling, on the same bound every other unread poll has.
 				consecutiveUnreadPolls++
 				if consecutiveUnreadPolls >= consecutiveCheckErrorLimit {
 					sctx.Log(fmt.Sprintf("no check could be read for a head this run owns on %d consecutive polls, parking for a decision", consecutiveUnreadPolls))
@@ -1029,41 +1056,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					return nil, err
 				}
 				continue
-			}
-			// A provider that binds no head to its check read (Bitbucket,
-			// Gitea, Forgejo, Azure DevOps and Origin read statuses against the
-			// pull request rather than a commit) cannot prove these results
-			// describe the head this run validated. The poll's earlier
-			// push-target read is not enough on its own: a rewrite that lands
-			// between that read and this one would hand back the foreign head's
-			// green checks and establish readiness for a commit no step here
-			// saw. Re-read the push target now and require it to still serve an
-			// owned head, which binds the unbound read to the branch this run
-			// published. Refusing every unbound read outright would leave no
-			// run on those providers ever ready, so this is the smallest binding
-			// that keeps readiness reachable.
-			if strings.TrimSpace(observedHead) == "" {
-				liveHead, readErr := publishedBranchHead(sctx)
-				if readErr != nil || !s.ciRunOwnsHead(sctx, liveHead) {
-					lastMonitorLog = ciMonitorStatus{}
-					if readErr != nil {
-						sctx.Log(fmt.Sprintf("warning: could not re-read the published branch head after an unbound check read, so no check result is used this poll: %v", readErr))
-					} else {
-						sctx.Log(fmt.Sprintf("the check read binds no head and the push target now serves %s, which this run owns nowhere, so no result from it can establish readiness for %s", shortSHA(liveHead), shortSHA(sctx.Run.HeadSHA)))
-					}
-					if err := clearCIMonitorReadyForIssues(sctx); err != nil {
-						return nil, err
-					}
-					consecutiveUnreadPolls++
-					if consecutiveUnreadPolls >= consecutiveCheckErrorLimit {
-						sctx.Log(fmt.Sprintf("no check could be read for a head this run owns on %d consecutive polls, parking for a decision", consecutiveUnreadPolls))
-						return ciTerminalRepairOutcome(ciUnownedHeadStallOutcome(), Findings{}, sctx.DeferredFindings), nil
-					}
-					if _, err := waitForPoll(); err != nil {
-						return nil, err
-					}
-					continue
-				}
 			}
 			// The checks just read belong to a head this run owns, which is the
 			// only thing that clears the unread-poll bound.
