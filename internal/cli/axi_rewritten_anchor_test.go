@@ -71,9 +71,18 @@ func TestTriggerRunAfterRemoteRewrittenRecovery(t *testing.T) {
 		return &ipc.GetRunsResult{}, nil
 	})
 	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		run, err := d.InsertRunWithIntent(repo.ID, "feature/sync", liveHead, f.pushed, &db.RunIntent{
+			Summary: "Validate rewritten branch", Source: db.RunIntentSourceAgent,
+		}, "")
+		if err != nil {
+			return nil, err
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+			return nil, err
+		}
 		return &ipc.GetActiveRunResult{Run: &ipc.RunInfo{
-			ID: "01MREWRITTENTRIGGER000000000", RepoID: repo.ID,
-			Branch: "feature/sync", HeadSHA: liveHead, Status: types.RunRunning,
+			ID: run.ID, RepoID: run.RepoID,
+			Branch: run.Branch, HeadSHA: run.HeadSHA, Status: types.RunRunning,
 		}}, nil
 	})
 	done := make(chan error, 1)
@@ -98,6 +107,10 @@ func TestTriggerRunAfterRemoteRewrittenRecovery(t *testing.T) {
 	runID, err := triggerRun(ctx, env, "feature/sync", nil, "Validate rewritten branch", "", false, "", nil)
 	if err != nil || runID == "" {
 		t.Fatalf("submission after successful recovery refused: run=%q err=%v\n%s", runID, err, out)
+	}
+	run, err := d.GetRun(runID)
+	if err != nil || run == nil || run.ID == f.runID || run.HeadSHA != liveHead || run.Status != types.RunRunning {
+		t.Fatalf("submission did not select the persisted fresh run: run=%+v err=%v", run, err)
 	}
 	for dir, ref := range map[string]string{
 		f.local: anchor,
