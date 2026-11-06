@@ -2,12 +2,16 @@ package gate
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
-	for _, change := range []string{"kept", "missing_edit", "missing_addition", "branch_deletion"} {
+	for _, change := range []string{"kept", "later_edit", "missing_edit", "missing_addition", "branch_deletion", "merge_failure", "tree_failure", "upstream_failure"} {
 		t.Run(change, func(t *testing.T) {
 			work := initReconcileRepo(t)
 			reconcileGit(t, work, "branch", "-M", "main")
@@ -35,6 +39,11 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 				reconcileGit(t, work, "commit", "-m", "advance base without deletion")
 			}
 			newBase := reconcileGit(t, work, "rev-parse", "HEAD")
+			upstream := filepath.Join(t.TempDir(), "upstream.git")
+			reconcileGit(t, "", "init", "--bare", upstream)
+			reconcileGit(t, upstream, "symbolic-ref", "HEAD", "refs/heads/main")
+			reconcileGit(t, work, "push", upstream, newBase+":refs/heads/main")
+			reconcileGit(t, work, "remote", "add", "origin", upstream)
 			reconcileGit(t, work, "checkout", "feature")
 			if change != "branch_deletion" {
 				if _, err := reconcileGitAllowFail(work, "rebase", "main"); err == nil {
@@ -49,6 +58,10 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 				reconcileGit(t, work, "commit", "-m", "branch discards required edit")
 			}
 			switch change {
+			case "later_edit":
+				writeReconcileFile(t, work, "keep.txt", "later private keep\n")
+				reconcileGit(t, work, "add", "keep.txt")
+				reconcileGit(t, work, "commit", "-m", "edit the surviving work later")
 			case "missing_edit":
 				writeReconcileFile(t, work, "keep.txt", "original keep\n")
 				reconcileGit(t, work, "add", "keep.txt")
@@ -65,6 +78,41 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			gateDir := filepath.Join(t.TempDir(), "gate.git")
 			reconcileGit(t, "", "init", "--bare", gateDir)
 			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+			hook := `#!/bin/sh
+[ "$1" = "prepared" ] || exit 0
+while read old new ref; do
+  if [ "$ref" = "refs/heads/feature" ] && [ "$new" = "0000000000000000000000000000000000000000" ]; then
+    archived=$(git --git-dir=. rev-parse --verify "refs/tags/no-mistakes-abandoned/feature/$old") || exit 1
+    [ "$archived" = "$old" ] || exit 1
+    printf '%s' "$archived" > archive-before-delete.observed
+  fi
+done
+`
+			if err := os.WriteFile(filepath.Join(gateDir, "hooks", "reference-transaction"), []byte(hook), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if change == "merge_failure" || change == "tree_failure" {
+				if runtime.GOOS == "windows" {
+					t.Skip("Git command failure injection uses a POSIX shell wrapper")
+				}
+				realGit, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				command := "merge-tree"
+				if change == "tree_failure" {
+					command = "write-tree"
+				}
+				bin := t.TempDir()
+				wrapper := fmt.Sprintf("#!/bin/sh\nfor arg do\n  [ \"$arg\" != %q ] || exit 37\ndone\nexec %q \"$@\"\n", command, realGit)
+				if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+			if change == "upstream_failure" {
+				reconcileGit(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+			}
 			plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "")
 			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
 				t.Fatalf("planning moved mirror to %s, want %s", got, privateHead)
@@ -72,7 +120,7 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
 				t.Fatalf("planning created archive %s", tags)
 			}
-			if change != "kept" {
+			if change != "kept" && change != "later_edit" {
 				if err == nil || plan.Reconcile {
 					t.Fatalf("lost content accepted: plan=%+v err=%v", plan, err)
 				}
@@ -88,6 +136,9 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag+"^{commit}"); got != privateHead {
 				t.Fatalf("archive = %s, want exact old mirror %s", got, privateHead)
 			}
+			if observed, err := os.ReadFile(filepath.Join(gateDir, "archive-before-delete.observed")); err != nil || string(observed) != privateHead {
+				t.Fatalf("deletion did not observe the exact archive: %q, err=%v", observed, err)
+			}
 			if _, err := reconcileGitAllowFail(gateDir, "show-ref", "--verify", "refs/heads/feature"); err == nil {
 				t.Fatal("old mirror ref remains after archival")
 			}
@@ -95,7 +146,11 @@ func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
 			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature^{tree}"); got != liveTree {
 				t.Fatalf("replacement tree = %s, want %s", got, liveTree)
 			}
-			if got := reconcileGit(t, gateDir, "show", "refs/heads/feature:keep.txt"); got != "private keep" {
+			wantKeep := "private keep"
+			if change == "later_edit" {
+				wantKeep = "later private keep"
+			}
+			if got := reconcileGit(t, gateDir, "show", "refs/heads/feature:keep.txt"); got != wantKeep {
 				t.Fatalf("surviving edit = %q", got)
 			}
 			if got := reconcileGit(t, gateDir, "show", "refs/heads/feature:other.txt"); got != "private addition" {

@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -161,6 +162,15 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		for _, commit := range atRiskCommits {
 			if _, ok := preserved[commit]; !ok {
 				remaining = append(remaining, commit)
+			}
+		}
+		if len(remaining) > 0 {
+			contained, err := privateTreeSurvivesBaseDeletion(ctx, gateDir, workDir, liveHead, gateHead)
+			if err != nil {
+				return plan, fmt.Errorf("compare private mirror content across upstream deletions: %w", err)
+			}
+			if contained {
+				remaining = nil
 			}
 		}
 		if len(remaining) > 0 {
@@ -501,6 +511,106 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 		return nil, nil
 	}
 	return privateOnly, nil
+}
+
+// privateTreeSurvivesBaseDeletion handles a rebase that accepted deletions from
+// its upstream base. Neither merge-tree nor -X ours resolves modify/delete
+// conflicts. Only paths deleted by the verified upstream base and still absent
+// from live may be removed from the private tree for this proof. All remaining
+// content must pass the ordinary whole-tree survival proof. In particular, a
+// deletion made only on the branch earns no credit.
+//
+// This fallback runs only after ordinary containment and preservation fail. It
+// pins the default branch from origin's live HEAD, not a local branch name or a
+// stale tracking ref. FetchRemoteRef checks that exact snapshot before use.
+// No branch or archive is changed; the projected commit is an unreferenced
+// proof object, and apply still archives the original private head.
+func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, workDir, liveHead, privateHead string) (bool, error) {
+	hasOrigin, err := git.HasRemote(ctx, workDir, "origin")
+	if err != nil || !hasOrigin {
+		return false, err
+	}
+	urls, err := git.GetConfiguredRemoteURLs(ctx, workDir, "origin")
+	if err != nil {
+		return false, err
+	}
+	if len(urls) != 1 {
+		return false, fmt.Errorf("origin must have exactly one upstream URL")
+	}
+	remoteHead, err := git.Run(ctx, workDir, "ls-remote", "--symref", "--", urls[0], "HEAD")
+	if err != nil {
+		return false, err
+	}
+	var upstreamRef, upstreamHead string
+	for _, line := range strings.Split(remoteHead, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "ref:" && strings.HasPrefix(fields[1], "refs/heads/") && fields[2] == "HEAD" {
+			upstreamRef = fields[1]
+		}
+		if len(fields) == 2 && fields[1] == "HEAD" {
+			upstreamHead = fields[0]
+		}
+	}
+	if upstreamRef == "" || upstreamHead == "" {
+		return false, fmt.Errorf("upstream HEAD does not identify a default branch commit")
+	}
+	if err := git.FetchRemoteRef(ctx, repoDir, urls[0], upstreamRef, upstreamHead); err != nil {
+		return false, err
+	}
+	base, err := git.Run(ctx, repoDir, "merge-base", "--all", liveHead, upstreamHead)
+	if err != nil {
+		return false, err
+	}
+	common, err := git.Run(ctx, repoDir, "merge-base", "--all", liveHead, privateHead)
+	if err != nil {
+		return false, err
+	}
+	// Criss-cross ancestry has no unique deletion boundary.
+	if len(strings.Fields(base)) != 1 || len(strings.Fields(common)) != 1 {
+		return false, nil
+	}
+	deleted, err := git.RunRaw(ctx, repoDir, "diff-tree", "--no-commit-id", "--name-only", "--diff-filter=D", "--no-renames", "-r", "-z", common, base)
+	if err != nil || len(deleted) == 0 {
+		return false, err
+	}
+	livePaths, err := git.RunRaw(ctx, repoDir, "ls-tree", "--name-only", "-r", "-z", liveHead)
+	if err != nil {
+		return false, err
+	}
+	present := make(map[string]bool)
+	for _, path := range strings.Split(string(livePaths), "\x00") {
+		present[path] = true
+	}
+	indexDir, err := os.MkdirTemp("", "no-mistakes-deletion-proof-")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(indexDir)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(indexDir, "index")}
+	if _, err := git.RunWithEnv(ctx, repoDir, env, "read-tree", privateHead); err != nil {
+		return false, err
+	}
+	for _, path := range strings.Split(strings.TrimSuffix(string(deleted), "\x00"), "\x00") {
+		if path == "" || present[path] {
+			continue
+		}
+		if _, err := git.RunWithEnv(ctx, repoDir, env, "update-index", "--force-remove", "--", path); err != nil {
+			return false, err
+		}
+	}
+	tree, err := git.RunWithEnv(ctx, repoDir, env, "write-tree")
+	if err != nil {
+		return false, err
+	}
+	env = append(env, "GIT_AUTHOR_NAME=no-mistakes", "GIT_AUTHOR_EMAIL=no-mistakes@localhost",
+		"GIT_COMMITTER_NAME=no-mistakes", "GIT_COMMITTER_EMAIL=no-mistakes@localhost",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z")
+	projected, err := git.RunWithEnv(ctx, repoDir, env, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", privateHead, "-m", "private mirror proof with upstream deletions")
+	if err != nil {
+		return false, err
+	}
+	absent, err := privateCommitsAbsentFromLive(ctx, repoDir, liveHead, projected)
+	return len(absent) == 0 && err == nil, err
 }
 
 // privateOnlyPaths names the paths the private-only commits touch, bounding
