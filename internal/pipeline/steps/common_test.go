@@ -803,7 +803,7 @@ func TestCommitAgentFixes_EmptyIndexRecordsAgentAdvancedHead(t *testing.T) {
 	gitCmd(t, submodule, "add", "-A")
 	gitCmd(t, submodule, "commit", "-m", "sub base")
 	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "sub")
-	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): apply review fixes")
+	gitCmd(t, dir, "commit", "-s", "-m", "no-mistakes(review): apply review fixes")
 	if err := os.WriteFile(filepath.Join(dir, "sub", "untracked.txt"), []byte("agent scratch\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -892,6 +892,7 @@ func TestCommitAgentFixes_BypassesLegacyHuskyPrepareCommitMsgHook(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantMessage += "\n\nSigned-off-by: test <test@test.com>"
 	if got := gitCmd(t, dir, "log", "-1", "--format=%B"); got != wantMessage {
 		t.Fatalf("commit message = %q, want %q", got, wantMessage)
 	}
@@ -1788,7 +1789,7 @@ func TestCommitAgentFixes_CleanWorktreeRecordsAgentAdvancedHead(t *testing.T) {
 	dir, baseSHA, startingHead := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", startingHead)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, startingHead, config.Commands{})
-	gitCmd(t, dir, "commit", "--allow-empty", "-m", "no-mistakes(review): apply fixes")
+	gitCmd(t, dir, "commit", "--allow-empty", "-s", "-m", "no-mistakes(review): apply fixes")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	if err := commitAgentFixes(sctx, types.StepReview, "", ""); err != nil {
 		t.Fatal(err)
