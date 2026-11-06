@@ -17,13 +17,6 @@ func TestReviewAddedTwinPreservesTheIgnoredGateInstance(t *testing.T) {
   - match: "Fix-round provenance:"
     structured:
       findings:
-        - id: A
-          severity: warning
-          file: deploy.sh
-          line: 10
-          description: missing check
-          action: ask-user
-          review_scope: source
         - id: B
           severity: warning
           file: deploy.sh
@@ -127,12 +120,46 @@ func TestReviewAddedTwinPreservesTheIgnoredGateInstance(t *testing.T) {
 			t.Fatalf("selected addition lost exact protection: %v\n%s", err, out)
 		}
 	}
+	nextBody := `actions:
+  - match: "Investigate previous review findings"
+    structured:
+      findings: []
+      summary: attempted cleanup
+  - match: "Review the code changes and return structured findings"
+    structured:
+      findings:
+        - id: C
+          severity: warning
+          file: deploy.sh
+          line: 30
+          description: missing cleanup
+          action: ask-user
+          review_scope: source
+      summary: incomplete rereview
+      risk_level: medium
+      risk_rationale: review is incomplete
+      risk_scope: source-or-external
+      reviewed_paths: []
+`
+	if err := os.WriteFile(scenario, []byte(nextBody), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := h.Run("axi", "respond", "--step", "review", "--action", "fix", "--findings", "C"); err != nil {
 		t.Fatalf("omit the earlier selected addition: %v\n%s", err, out)
 	}
 	rounds = readRounds()
 	if len(rounds) != 3 || len(rounds[2].Findings) != 2 {
-		t.Fatalf("ignore did not survive another round: %+v", rounds)
+		t.Fatalf("incomplete verification lost the carried finding: %+v", rounds)
+	}
+	carried := false
+	for _, item := range rounds[2].Findings {
+		if item.ID == "A" {
+			t.Fatal("the ignored finding returned during incomplete verification")
+		}
+		carried = carried || item.ID == "B"
+	}
+	if !carried {
+		t.Fatal("the selected addition disappeared without positive verification")
 	}
 	foundIgnore := false
 	for _, inv := range h.AgentInvocations() {

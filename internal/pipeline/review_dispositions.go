@@ -146,13 +146,14 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	if ignored.empty() && external.empty() {
 		return raw, nil
 	}
+	chosen := chosenToFixSettlements(rounds)
 	counts := countFindingFingerprints(current.Items)
 	keyCounts := countFindingKeys(current.Items)
 	filtered := types.FindingsMetadata(current)
 	removed := false
 	filtered.Items = make([]types.Finding, 0, len(current.Items))
 	for _, item := range current.Items {
-		settled := ignored.matches(item, counts) || external.matches(item, counts)
+		settled := !chosen.matchesChosen(item) && (ignored.matches(item, counts) || external.matches(item, counts))
 		if settleableReviewFinding(item) && keyCounts[findingKey(item)] == 1 && settled {
 			removed = true
 			continue
