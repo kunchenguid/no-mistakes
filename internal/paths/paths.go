@@ -221,8 +221,10 @@ func (p *Paths) WorktreeDir(repoID, runID string) string {
 	return filepath.Join(p.root, "worktrees", repoID, runID)
 }
 
-// RunTempRoot holds one private temp directory per run, keyed
-// <repoID>/<runID> underneath it exactly like WorktreesDir.
+// RunTempRoot holds one private temp directory per run, keyed by run ID alone.
+// It is flat, unlike WorktreesDir, because the directory becomes TMPDIR and
+// tools create Unix sockets under it: every byte counts against the AF_UNIX
+// path limit (104 bytes on macOS), and run IDs are already unique.
 //
 // Every agent invocation of a run gets its own directory as TMPDIR (see
 // RunTempDir), so the scratch work an agent and the tools it calls put in the
@@ -234,8 +236,8 @@ func (p *Paths) WorktreeDir(repoID, runID string) string {
 func (p *Paths) RunTempRoot() string { return filepath.Join(p.root, "tmp") }
 
 // RunTempDir is the private temp directory of a single run.
-func (p *Paths) RunTempDir(repoID, runID string) string {
-	return filepath.Join(p.root, "tmp", repoID, runID)
+func (p *Paths) RunTempDir(runID string) string {
+	return filepath.Join(p.root, "tmp", runID)
 }
 
 func (p *Paths) LogsDir() string { return filepath.Join(p.root, "logs") }

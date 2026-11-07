@@ -263,11 +263,11 @@ func (e *Executor) runEvidenceDir(runID string) string {
 
 // runTempDir is the run's private temp directory, or empty in an embedding
 // without an app root (see StepContext.TempDir).
-func (e *Executor) runTempDir(repo *db.Repo, run *db.Run) string {
-	if e.paths == nil || repo == nil || run == nil || repo.ID == "" || run.ID == "" {
+func (e *Executor) runTempDir(run *db.Run) string {
+	if e.paths == nil || run == nil || run.ID == "" {
 		return ""
 	}
-	return e.paths.RunTempDir(repo.ID, run.ID)
+	return e.paths.RunTempDir(run.ID)
 }
 
 // SetGateReconcileTimings overrides the interval between approval-gate
@@ -875,7 +875,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		// conversation directory from it - would otherwise decline on every tick
 		// of a RECOVERED park, which is the daemon-restart window it exists for.
 		EvidenceDir: e.runEvidenceDir(run.ID),
-		TempDir:     e.runTempDir(repo, run),
+		TempDir:     e.runTempDir(run),
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
@@ -1536,7 +1536,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Sessions:             e.sessions,
 		Shared:               e.shared,
 		EvidenceDir:          e.runEvidenceDir(run.ID),
-		TempDir:              e.runTempDir(repo, run),
+		TempDir:              e.runTempDir(run),
 		Fixing:               state.fixing,
 		SkipFixExecution:     state.skipFixExecution,
 		FinalizingAnswers:    state.answering,

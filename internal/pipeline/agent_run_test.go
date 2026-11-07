@@ -1159,7 +1159,7 @@ func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, dr
 // caller supplied explicitly still wins.
 func TestRunAgent_PointsTMPDIRAtTheRunTempDir(t *testing.T) {
 	t.Parallel()
-	tempDir := filepath.Join(t.TempDir(), "tmp", "repo1", "run1")
+	tempDir := filepath.Join(t.TempDir(), "tmp", "run1")
 	callerDir := t.TempDir()
 	for _, tc := range []struct {
 		name    string

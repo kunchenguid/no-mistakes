@@ -19,7 +19,7 @@
 // parent is now. That is the association this package matches on.
 //
 // The same holds for the run's private temp directory,
-// <NM_HOME>/tmp/<repoID>/<runID>, which every agent invocation of the run gets
+// <NM_HOME>/tmp/<runID>, which every agent invocation of the run gets
 // as TMPDIR (Options.TempRoot). An agent that copies a project to a scratch
 // directory and builds there is standing outside the worktree, but by default
 // it is standing in a directory this process owns and can name.
@@ -95,14 +95,14 @@ type Worktree struct {
 
 // Options configures a sweep.
 type Options struct {
-	// WorktreesRoot is <NM_HOME>/worktrees. Required.
+	// WorktreesRoot is <NM_HOME>/worktrees. Empty leaves it out of reach.
 	WorktreesRoot string
 
 	// TempRoot is <NM_HOME>/tmp, the parent of every run's private temp
 	// directory (paths.RunTempDir). Like WorktreesRoot this process owns it
-	// outright, so it is matched by the same <root>/<repoID>/<runID> path shape
-	// and under the same RunActive and MinAge guards. Empty leaves it out of
-	// reach.
+	// outright, so it is matched by path shape, <root>/<runID>, and under the
+	// same RunActive and MinAge guards; RunActive then receives an empty
+	// repository ID. Empty leaves it out of reach.
 	TempRoot string
 
 	// Worktrees are run worktrees that do not live under WorktreesRoot,
@@ -335,10 +335,12 @@ func pathPrefixes(dir string) []string {
 // to belong to a run worktree. A named matcher is one worktree the caller
 // identified outright (Options.Worktrees); an unnamed one is the default
 // worktrees root, which holds a repository level above the run directories and
-// therefore spells the identity out in the path itself.
+// therefore spells the identity out in the path itself. A flat one is the temp
+// root, whose run directories sit directly below it.
 type worktreeMatcher struct {
 	prefix string
 	named  bool
+	flat   bool
 	repoID string
 	runID  string
 }
@@ -347,10 +349,11 @@ type worktreeMatcher struct {
 // under, in both spellings a path can have (see pathPrefixes).
 func worktreeMatchers(opts Options) []worktreeMatcher {
 	var out []worktreeMatcher
-	for _, root := range []string{opts.WorktreesRoot, opts.TempRoot} {
-		for _, prefix := range pathPrefixes(root) {
-			out = append(out, worktreeMatcher{prefix: prefix})
-		}
+	for _, prefix := range pathPrefixes(opts.WorktreesRoot) {
+		out = append(out, worktreeMatcher{prefix: prefix})
+	}
+	for _, prefix := range pathPrefixes(opts.TempRoot) {
+		out = append(out, worktreeMatcher{prefix: prefix, flat: true})
 	}
 	for _, wt := range opts.Worktrees {
 		if strings.TrimSpace(wt.Dir) == "" || strings.TrimSpace(wt.RepoID) == "" || strings.TrimSpace(wt.RunID) == "" {
@@ -368,6 +371,8 @@ func worktreeMatchers(opts Options) []worktreeMatcher {
 // path no longer spells out. Under the default worktrees root the path must
 // reach at least <root>/<repoID>/<runID>, so a process standing in the root
 // itself, or in a repository directory with no run below it, never matches.
+// Under the temp root the run directory sits directly below it, <root>/<runID>,
+// and carries no repository ID.
 func worktreeRef(matchers []worktreeMatcher, path string) (dir, repoID, runID string, ok bool) {
 	if path == "" {
 		return "", "", "", false
@@ -385,6 +390,12 @@ func worktreeRef(matchers []worktreeMatcher, path string) (dir, repoID, runID st
 			continue
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
+		if matcher.flat {
+			if parts[0] == "" {
+				continue
+			}
+			return filepath.Join(matcher.prefix, parts[0]), "", parts[0], true
+		}
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 			continue
 		}

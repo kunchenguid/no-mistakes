@@ -293,14 +293,14 @@ no-mistakes stamps `COMPACT_ADVISER_DISABLE=1` onto every spawned gate agent, in
 
 ## `TMPDIR`
 
-Set on every pipeline agent invocation to the run's own temp directory, `<NM_HOME>/tmp/<repoID>/<runID>`.
+Set on every pipeline agent invocation to the run's own temp directory, `<NM_HOME>/tmp/<runID>`. The path is kept short because tools create Unix sockets under `TMPDIR`, and socket paths are limited to 104 bytes on macOS.
 
 |         |                                                   |
 | ------- | ------------------------------------------------- |
 | Type    | absolute directory path for agent subprocesses     |
 | Default | injected; not a daemon-wide setting                |
 
-An agent's scratch work, and that of the tools it calls (`mktemp`, Xcode, npm, Python's `tempfile`), lands in a directory the run owns instead of the shared system temp dir. Run cleanup terminates any process still standing in that directory, using the same working-directory scoping as the run worktree, and then removes it; startup does the same for a run a crashed daemon left behind, sparing `pending` and `running` runs. A process an agent starts from a hard-coded path outside it (for example `/tmp/...`) is not covered. If the directory cannot be created, the agent keeps the inherited `TMPDIR`. The daemon process itself and repository `commands.*` are unchanged.
+An agent's scratch work, and that of the tools it calls (`mktemp`, Xcode, npm, Python's `tempfile`), lands in a directory the run owns instead of the shared system temp dir. Run cleanup terminates any process still standing in that directory, using the same working-directory scoping as the run worktree, and then removes it; startup does the same for a run a crashed daemon left behind, sparing only `pending` and `running` runs (a run whose worktree is kept by retention still loses its temp directory). A process an agent starts from a hard-coded path outside it (for example `/tmp/...`) is not covered. If the directory cannot be created, the agent keeps the inherited `TMPDIR`. The daemon process itself and repository `commands.*` are unchanged.
 
 ## `NO_MISTAKES_UMAMI_HOST`
 

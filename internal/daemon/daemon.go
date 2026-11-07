@@ -486,6 +486,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// checkout the operator configured to retain.
 	orphanProcStarted := time.Now()
 	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftover, activeWorktrees), retainedDefaultTreeRunIDs(d, p, wtPolicy, now))
+	sweepOrphanRunTempDirProcesses(d, p)
 	cleanupOrphanRunTempDirs(d, p)
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
@@ -603,7 +604,6 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 	}
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: wtRoot,
-		TempRoot:      p.RunTempRoot(),
 		Worktrees:     worktrees,
 		MinAge:        orphanProcessMinAge,
 		RunActive: func(repoID, runID string) bool {
@@ -620,48 +620,54 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 	}, "daemon_startup")
 }
 
+// sweepOrphanRunTempDirProcesses terminates processes a crashed daemon left
+// standing in run temp directories (paths.RunTempDir) whose run no longer owns
+// one, under the same age floor as the worktree sweep. It is a sweep of its own
+// because the worktree sweep's guard also spares runs whose checkout is kept
+// (worktree retention, an unpushed CI auto-fix), and that keeps the checkout,
+// not the scratch: cleanupOrphanRunTempDirs removes the directory right after,
+// and a process left standing in a deleted directory can never be matched again.
+func sweepOrphanRunTempDirProcesses(d *db.DB, p *paths.Paths) {
+	procreap.SweepAndLog(procreap.Options{
+		TempRoot: p.RunTempRoot(),
+		MinAge:   orphanProcessMinAge,
+		RunActive: func(_, runID string) bool {
+			return runOwnsTempDir(d, runID)
+		},
+	}, "daemon_startup")
+}
+
+// runOwnsTempDir reports whether a run still owns its temp directory: it is
+// pending or running, or its record cannot be read.
+func runOwnsTempDir(d *db.DB, runID string) bool {
+	run, err := d.GetRun(runID)
+	return err != nil || (run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning))
+}
+
 // cleanupOrphanRunTempDirs removes the private temp directory
 // (paths.RunTempDir) of every run that no longer owns one: a predecessor daemon
-// that died mid-run never reached that run's cleanup. It runs right after the
-// orphan sweep, which has already terminated anything standing in those
-// directories under the same guard. A run that is still pending or running, or
-// whose record cannot be read, keeps its directory. Best effort.
+// that died mid-run never reached that run's cleanup. It runs right after
+// sweepOrphanRunTempDirProcesses, which has already terminated anything standing
+// in those directories under the same guard. Best effort.
 func cleanupOrphanRunTempDirs(d *db.DB, p *paths.Paths) {
 	root := p.RunTempRoot()
-	repos, err := os.ReadDir(root)
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			slog.Warn("failed to list run temp dirs", "path", root, "error", err)
 		}
 		return
 	}
-	for _, repo := range repos {
-		if !repo.IsDir() {
+	for _, entry := range entries {
+		if !entry.IsDir() || runOwnsTempDir(d, entry.Name()) {
 			continue
 		}
-		repoDir := filepath.Join(root, repo.Name())
-		runs, err := os.ReadDir(repoDir)
-		if err != nil {
-			slog.Warn("failed to list run temp dirs", "path", repoDir, "error", err)
+		dir := filepath.Join(root, entry.Name())
+		if err := os.RemoveAll(dir); err != nil {
+			slog.Warn("failed to remove orphaned run temp dir", "path", dir, "error", err)
 			continue
 		}
-		for _, entry := range runs {
-			if !entry.IsDir() {
-				continue
-			}
-			run, err := d.GetRun(entry.Name())
-			if err != nil || (run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning)) {
-				continue
-			}
-			dir := filepath.Join(repoDir, entry.Name())
-			if err := os.RemoveAll(dir); err != nil {
-				slog.Warn("failed to remove orphaned run temp dir", "path", dir, "error", err)
-				continue
-			}
-			slog.Info("removed orphaned run temp dir", "path", dir)
-		}
-		// Succeeds only once no run directory is left under it.
-		_ = os.Remove(repoDir)
+		slog.Info("removed orphaned run temp dir", "path", dir)
 	}
 }
 

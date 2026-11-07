@@ -752,18 +752,18 @@ func (m *RunManager) broadcast(event ipc.Event) {
 func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 	procreap.SweepRunWorktrees(m.paths.WorktreesDir(), []procreap.Worktree{
 		{Dir: wtDir, RepoID: repoID, RunID: runID},
-		{Dir: m.paths.RunTempDir(repoID, runID), RepoID: repoID, RunID: runID},
+		{Dir: m.paths.RunTempDir(runID), RepoID: repoID, RunID: runID},
 	}, "run_cleanup")
 }
 
 // removeRunTempDir removes a finished run's private temp directory. It is
 // scratch by definition - nothing in it is the run's result - so unlike the
 // worktree it has no protected-path or retention exception. Best effort.
-func (m *RunManager) removeRunTempDir(repoID, runID string) {
-	if strings.TrimSpace(repoID) == "" || strings.TrimSpace(runID) == "" {
+func (m *RunManager) removeRunTempDir(runID string) {
+	if strings.TrimSpace(runID) == "" {
 		return
 	}
-	dir := m.paths.RunTempDir(repoID, runID)
+	dir := m.paths.RunTempDir(runID)
 	if err := os.RemoveAll(dir); err != nil {
 		slog.Warn("failed to remove run temp dir", "run_id", runID, "path", dir, "error", err)
 	}
@@ -831,7 +831,7 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 // different routes. reason distinguishes the routes in the log.
 func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
 	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
-	m.removeRunTempDir(repoID, runID)
+	m.removeRunTempDir(runID)
 	run, err := m.db.GetRun(runID)
 	if err != nil {
 		slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)

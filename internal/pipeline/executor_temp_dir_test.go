@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -23,7 +24,7 @@ func (s *tempDirStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 // TestExecutor_StepsReceiveTheRunTempDir pins the wiring behind issue #1519:
 // every step's agent turns get the run's own temp directory as TMPDIR (see
 // withRunTempDir), which is the directory run cleanup sweeps and removes, so
-// the executor must hand each step exactly paths.RunTempDir for its run.
+// the executor must hand each step exactly <NM_HOME>/tmp/<runID> for its run.
 func TestExecutor_StepsReceiveTheRunTempDir(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	step := &tempDirStep{name: types.StepReview}
@@ -32,7 +33,7 @@ func TestExecutor_StepsReceiveTheRunTempDir(t *testing.T) {
 	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if want := p.RunTempDir(repo.ID, run.ID); step.got != want {
+	if want := filepath.Join(p.Root(), "tmp", run.ID); step.got != want {
 		t.Fatalf("StepContext.TempDir = %q, want %q", step.got, want)
 	}
 }
