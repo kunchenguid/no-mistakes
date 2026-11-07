@@ -591,6 +591,14 @@ func startOrphanInWorktree(t *testing.T, dir string) int {
 	return pid
 }
 
+// startRunTempOrphan is startOrphanInWorktree for a test that also builds on
+// Windows; it returns whether the orphan is gone within the given window.
+func startRunTempOrphan(t *testing.T, dir string) func(time.Duration) bool {
+	t.Helper()
+	pid := startOrphanInWorktree(t, dir)
+	return func(window time.Duration) bool { return pidGoneWithin(pid, window) }
+}
+
 func processIsAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }

@@ -697,7 +697,7 @@ func TestMaxConcurrentRuns_CancelRecoveredRunPreservesUnpublishedHead(t *testing
 				t.Fatal(err)
 			}
 			runTemp := p.RunTempDir(run.ID)
-			leakedPID := startOrphanInWorktree(t, filepath.Join(runTemp, "build"))
+			leakedGone := startRunTempOrphan(t, filepath.Join(runTemp, "build"))
 			plans := m.recoverableParkedRuns(context.Background())
 			if len(plans) != 2 {
 				t.Fatalf("recoverable plans = %d, want two", len(plans))
@@ -740,8 +740,8 @@ func TestMaxConcurrentRuns_CancelRecoveredRunPreservesUnpublishedHead(t *testing
 			}
 			// The temp dir is scratch whether or not the checkout can be removed:
 			// a build left standing in it is terminated and the dir is gone.
-			if !pidGoneWithin(leakedPID, 10*time.Second) {
-				t.Fatalf("orphan %d in the cancelled run's temp dir survived cancellation", leakedPID)
+			if !leakedGone(10 * time.Second) {
+				t.Fatal("orphan in the cancelled run's temp dir survived cancellation")
 			}
 			if _, err := os.Stat(runTemp); !os.IsNotExist(err) {
 				t.Fatalf("cancelled run's temp dir survived cancellation: %v", err)
