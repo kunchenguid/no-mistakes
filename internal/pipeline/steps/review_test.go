@@ -1707,6 +1707,41 @@ func TestReviewStep_PromptClassifiesFindingsByRemedyScope(t *testing.T) {
 	}
 }
 
+// TestReviewStep_PromptReportsEverySubstantiatedIssue pins the coverage rule:
+// importance is expressed through severity, never by omitting a finding, so the
+// reviewer carries no importance bar that a model could apply as a filter.
+func TestReviewStep_PromptReportsEverySubstantiatedIssue(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"Report every issue you can substantiate, including low-severity ones.",
+		"Use the severity field to express importance instead of omitting a finding.",
+		"Do a full review pass before returning.",
+		"Do NOT report styling, formatting, linting, compilation, or type-checking issues.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "genuinely matter") {
+		t.Errorf("review prompt reintroduced an importance filter:\n%s", prompt)
+	}
+}
+
 // TestReviewStep_FixPromptPrefersSimplificationOverMachinery pins the fixer's
 // depth rule as rendered: closing sibling sites with the same small edit or one
 // shared boundary is the fix, and when depth is warranted reach it by
