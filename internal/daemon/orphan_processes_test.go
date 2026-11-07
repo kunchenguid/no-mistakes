@@ -605,3 +605,118 @@ func pidGoneWithin(pid int, window time.Duration) bool {
 	}
 	return !processIsAlive(pid)
 }
+
+// TestRemoveRunWorktreeReapsAndRemovesTheRunTempDir is issue #1519 at run
+// cleanup: a cancelled run's agent had copied a project to a scratch directory
+// and left a build running from there, outside the worktree. That scratch is
+// the run's own temp directory (every agent turn's TMPDIR), so cleanup
+// terminates what is standing in it and removes it, and never reaches another
+// run's temp directory.
+func TestRemoveRunWorktreeReapsAndRemovesTheRunTempDir(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, err := d.InsertRepoWithID("repo1", "/nonexistent/work", "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished, err := d.InsertRun(repo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(finished.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	m := NewRunManager(d, p, nil)
+
+	finishedTemp := p.RunTempDir(repo.ID, finished.ID)
+	otherTemp := p.RunTempDir(repo.ID, "otherRun")
+	leakedPID := startOrphanInWorktree(t, filepath.Join(finishedTemp, "nm-run", "driver"))
+	otherPID := startOrphanInWorktree(t, otherTemp)
+
+	m.removeRunWorktree(repo.ID, finished.ID, p.RepoDir(repo.ID), p.WorktreeDir(repo.ID, finished.ID), "run_finished")
+
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d in the finished run's temp dir survived run cleanup", leakedPID)
+	}
+	if _, err := os.Stat(finishedTemp); !os.IsNotExist(err) {
+		t.Fatalf("finished run's temp dir survived run cleanup: %v", err)
+	}
+	if !processIsAlive(otherPID) {
+		t.Fatalf("run cleanup reached another run's temp dir and killed %d", otherPID)
+	}
+	if _, err := os.Stat(otherTemp); err != nil {
+		t.Fatalf("run cleanup removed another run's temp dir: %v", err)
+	}
+}
+
+// TestStartupReapsAndRemovesOrphanedRunTempDirs covers the run whose daemon died
+// before its cleanup ran: startup terminates what is standing in that run's temp
+// directory and removes it, under the same guard as the worktree sweep - an
+// active run keeps both its processes and its directory.
+func TestStartupReapsAndRemovesOrphanedRunTempDirs(t *testing.T) {
+	orig := orphanProcessMinAge
+	orphanProcessMinAge = 0
+	t.Cleanup(func() { orphanProcessMinAge = orig })
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, err := d.InsertRepoWithID("repo1", "/nonexistent/work", "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeRun, err := d.InsertRun(repo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(activeRun.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	finishedRun, err := d.InsertRun(repo.ID, "old-branch", "headsha2", "basesha2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(finishedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	activeTemp := p.RunTempDir(repo.ID, activeRun.ID)
+	finishedTemp := p.RunTempDir(repo.ID, finishedRun.ID)
+	unknownTemp := p.RunTempDir(repo.ID, "01JZ8XQ7V6K9M3B0T5N2R4C8YF")
+	activePID := startOrphanInWorktree(t, filepath.Join(activeTemp, "driver"))
+	leakedPID := startOrphanInWorktree(t, filepath.Join(finishedTemp, "driver"))
+	if err := os.MkdirAll(unknownTemp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepOrphanRunProcesses(d, p, nil, nil)
+	cleanupOrphanRunTempDirs(d, p)
+
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d in the finished run's temp dir survived the startup sweep", leakedPID)
+	}
+	if !processIsAlive(activePID) {
+		t.Fatalf("orphan %d in an active run's temp dir must not be swept", activePID)
+	}
+	for _, gone := range []string{finishedTemp, unknownTemp} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("orphaned run temp dir %s survived startup: %v", gone, err)
+		}
+	}
+	if _, err := os.Stat(activeTemp); err != nil {
+		t.Fatalf("startup removed an active run's temp dir: %v", err)
+	}
+}

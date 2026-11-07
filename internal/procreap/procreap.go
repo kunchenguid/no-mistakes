@@ -18,6 +18,12 @@
 // <NM_HOME>/worktrees/<repoID>/<runID> belongs to that run, no matter who its
 // parent is now. That is the association this package matches on.
 //
+// The same holds for the run's private temp directory,
+// <NM_HOME>/tmp/<repoID>/<runID>, which every agent invocation of the run gets
+// as TMPDIR (Options.TempRoot). An agent that copies a project to a scratch
+// directory and builds there is standing outside the worktree, but by default
+// it is standing in a directory this process owns and can name.
+//
 // Deliberately NOT matched: the command line. A path can appear in argv for
 // entirely legitimate reasons (the daemon's own `git worktree remove`, a
 // grep, an editor), so argv matching trades a precise signal for a
@@ -33,10 +39,10 @@
 //     started moments ago is never mistaken for a leak.
 //   - SIGTERM first; SIGKILL only for what is still alive after Options.Grace.
 //
-// A process whose cwd is outside <NM_HOME>/worktrees and outside the run
-// worktrees the caller names explicitly (Options.Worktrees) can never match,
-// which is what keeps long-lived unrelated daemons (a user's LaunchAgent
-// worker, an editor, another tool's background job) out of reach by
+// A process whose cwd is outside <NM_HOME>/worktrees, outside <NM_HOME>/tmp, and
+// outside the run worktrees the caller names explicitly (Options.Worktrees) can
+// never match, which is what keeps long-lived unrelated daemons (a user's
+// LaunchAgent worker, an editor, another tool's background job) out of reach by
 // construction rather than by name-based allowlisting.
 package procreap
 
@@ -91,6 +97,13 @@ type Worktree struct {
 type Options struct {
 	// WorktreesRoot is <NM_HOME>/worktrees. Required.
 	WorktreesRoot string
+
+	// TempRoot is <NM_HOME>/tmp, the parent of every run's private temp
+	// directory (paths.RunTempDir). Like WorktreesRoot this process owns it
+	// outright, so it is matched by the same <root>/<repoID>/<runID> path shape
+	// and under the same RunActive and MinAge guards. Empty leaves it out of
+	// reach.
+	TempRoot string
 
 	// Worktrees are run worktrees that do not live under WorktreesRoot,
 	// because the operator placed that repository's runs in a directory of
@@ -148,7 +161,7 @@ var (
 // error is the normal outcome and also what platforms without a process-table
 // reader (Windows, where job objects already contain the whole tree) return.
 func Sweep(opts Options) ([]Victim, error) {
-	if strings.TrimSpace(opts.WorktreesRoot) == "" && len(opts.Worktrees) == 0 {
+	if strings.TrimSpace(opts.WorktreesRoot) == "" && strings.TrimSpace(opts.TempRoot) == "" && len(opts.Worktrees) == 0 {
 		return nil, nil
 	}
 	procs, err := listProcessesFunc()
@@ -334,8 +347,10 @@ type worktreeMatcher struct {
 // under, in both spellings a path can have (see pathPrefixes).
 func worktreeMatchers(opts Options) []worktreeMatcher {
 	var out []worktreeMatcher
-	for _, prefix := range pathPrefixes(opts.WorktreesRoot) {
-		out = append(out, worktreeMatcher{prefix: prefix})
+	for _, root := range []string{opts.WorktreesRoot, opts.TempRoot} {
+		for _, prefix := range pathPrefixes(root) {
+			out = append(out, worktreeMatcher{prefix: prefix})
+		}
 	}
 	for _, wt := range opts.Worktrees {
 		if strings.TrimSpace(wt.Dir) == "" || strings.TrimSpace(wt.RepoID) == "" || strings.TrimSpace(wt.RunID) == "" {

@@ -291,6 +291,17 @@ Kill-switch injected into every pipeline agent subprocess so compact-adviser sta
 
 no-mistakes stamps `COMPACT_ADVISER_DISABLE=1` onto every spawned gate agent, including ACP aliases and managed agent servers that can load host plugins. Forge and profile overlays cannot drop the flag. The daemon process itself is unchanged; this is agent-child policy only, not a user-facing knob for the service environment.
 
+## `TMPDIR`
+
+Set on every pipeline agent invocation to the run's own temp directory, `<NM_HOME>/tmp/<repoID>/<runID>`.
+
+|         |                                                   |
+| ------- | ------------------------------------------------- |
+| Type    | absolute directory path for agent subprocesses     |
+| Default | injected; not a daemon-wide setting                |
+
+An agent's scratch work, and that of the tools it calls (`mktemp`, Xcode, npm, Python's `tempfile`), lands in a directory the run owns instead of the shared system temp dir. Run cleanup terminates any process still standing in that directory, using the same working-directory scoping as the run worktree, and then removes it; startup does the same for a run a crashed daemon left behind, sparing `pending` and `running` runs. A process an agent starts from a hard-coded path outside it (for example `/tmp/...`) is not covered. If the directory cannot be created, the agent keeps the inherited `TMPDIR`. The daemon process itself and repository `commands.*` are unchanged.
+
 ## `NO_MISTAKES_UMAMI_HOST`
 
 Override the telemetry collection host.

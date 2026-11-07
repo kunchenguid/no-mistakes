@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +98,7 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	}
 	if sctx != nil {
 		ag = sctx.Agent
+		opts.Env = withRunTempDir(sctx.TempDir, opts.Env)
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(parent, timeout, working, cause, activity, func(ctx context.Context) (*agent.Result, error) {
@@ -107,6 +110,22 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 		}
 		return ag.Run(ctx, opts)
 	})
+}
+
+// withRunTempDir points TMPDIR at the run's private temp directory, creating
+// it on the first agent turn. It goes first so an entry the caller supplied
+// still wins (RunOpts.Env: later entries override). When the directory cannot
+// be created the invocation keeps its inherited TMPDIR: losing the cleanup
+// scope must never fail a turn.
+func withRunTempDir(dir string, env []string) []string {
+	if strings.TrimSpace(dir) == "" {
+		return env
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		slog.Warn("run temp dir unavailable; agent keeps the inherited TMPDIR", "path", dir, "error", err)
+		return env
+	}
+	return append([]string{"TMPDIR=" + dir}, env...)
 }
 
 func invokeAgent(parent context.Context, timeout, working time.Duration, cause error, activity *agentActivity, run func(context.Context) (*agent.Result, error)) (*agent.Result, error) {

@@ -486,6 +486,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// checkout the operator configured to retain.
 	orphanProcStarted := time.Now()
 	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftover, activeWorktrees), retainedDefaultTreeRunIDs(d, p, wtPolicy, now))
+	cleanupOrphanRunTempDirs(d, p)
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
 	// reapWorktrees applies the operator's retention policy to the default
@@ -602,6 +603,7 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 	}
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: wtRoot,
+		TempRoot:      p.RunTempRoot(),
 		Worktrees:     worktrees,
 		MinAge:        orphanProcessMinAge,
 		RunActive: func(repoID, runID string) bool {
@@ -616,6 +618,51 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 			return skip
 		},
 	}, "daemon_startup")
+}
+
+// cleanupOrphanRunTempDirs removes the private temp directory
+// (paths.RunTempDir) of every run that no longer owns one: a predecessor daemon
+// that died mid-run never reached that run's cleanup. It runs right after the
+// orphan sweep, which has already terminated anything standing in those
+// directories under the same guard. A run that is still pending or running, or
+// whose record cannot be read, keeps its directory. Best effort.
+func cleanupOrphanRunTempDirs(d *db.DB, p *paths.Paths) {
+	root := p.RunTempRoot()
+	repos, err := os.ReadDir(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to list run temp dirs", "path", root, "error", err)
+		}
+		return
+	}
+	for _, repo := range repos {
+		if !repo.IsDir() {
+			continue
+		}
+		repoDir := filepath.Join(root, repo.Name())
+		runs, err := os.ReadDir(repoDir)
+		if err != nil {
+			slog.Warn("failed to list run temp dirs", "path", repoDir, "error", err)
+			continue
+		}
+		for _, entry := range runs {
+			if !entry.IsDir() {
+				continue
+			}
+			run, err := d.GetRun(entry.Name())
+			if err != nil || (run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning)) {
+				continue
+			}
+			dir := filepath.Join(repoDir, entry.Name())
+			if err := os.RemoveAll(dir); err != nil {
+				slog.Warn("failed to remove orphaned run temp dir", "path", dir, "error", err)
+				continue
+			}
+			slog.Info("removed orphaned run temp dir", "path", dir)
+		}
+		// Succeeds only once no run directory is left under it.
+		_ = os.Remove(repoDir)
+	}
 }
 
 // retainedDefaultTreeRunIDs is the run IDs of default-tree worktrees the

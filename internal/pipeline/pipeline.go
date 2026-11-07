@@ -91,7 +91,12 @@ type StepContext struct {
 	// prompt and the PR step's publisher - names the same directory. Empty only
 	// in embeddings that never gather evidence.
 	EvidenceDir string
-	Env         []string // extra environment variables for subprocesses (used in tests)
+	// TempDir is this run's private temp directory (paths.RunTempDir). Every
+	// agent invocation through the shared seam (runAgent) gets it as TMPDIR, so
+	// an agent's scratch work lands in a directory run cleanup sweeps for
+	// leaked processes and then removes. Empty leaves TMPDIR inherited.
+	TempDir string
+	Env     []string // extra environment variables for subprocesses (used in tests)
 	// UserIntent is a short, possibly-empty summary of what the change author
 	// was trying to accomplish. It's surfaced in step prompts so agents have
 	// context beyond the diff. Its authority depends on IntentSource: an
