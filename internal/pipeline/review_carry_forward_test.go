@@ -1397,8 +1397,17 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundCannotWithdrawTheOperatorsOwnF
 	}
 
 	// The same id still clears the ordinary way: the operator's own verdict.
-	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
-		t.Fatal(err)
+	// The round's findings land before the gate re-parks, so the approval may
+	// briefly find no gate to answer.
+	for {
+		err := exec.Respond(types.StepReview, types.ActionApprove, nil)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	waitExecutorDone(t, done)
 }
