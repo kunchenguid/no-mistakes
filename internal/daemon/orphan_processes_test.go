@@ -770,3 +770,60 @@ func TestStartupReapsTheTempDirOfARunWhoseWorktreeIsRetained(t *testing.T) {
 		t.Fatalf("orphan %d in a retained worktree must not be swept", worktreePID)
 	}
 }
+
+// TestStartupReapsAYoungProcessBeforeRemovingItsRunTempDir covers a daemon that
+// crashed and restarted within minutes of an agent starting a build from its
+// run's temp directory. The startup sweep's age floor spares that young process,
+// but startup still removes the directory, so it must terminate what is
+// standing there first or the process is left in a deleted directory no later
+// sweep can match. An active run keeps its process and its directory.
+func TestStartupReapsAYoungProcessBeforeRemovingItsRunTempDir(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, err := d.InsertRepoWithID("repo1", "/nonexistent/work", "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeRun, err := d.InsertRun(repo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(activeRun.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	finishedRun, err := d.InsertRun(repo.ID, "old-branch", "headsha2", "basesha2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(finishedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	activeTemp := p.RunTempDir(activeRun.ID)
+	finishedTemp := p.RunTempDir(finishedRun.ID)
+	activePID := startOrphanInWorktree(t, filepath.Join(activeTemp, "driver"))
+	youngPID := startOrphanInWorktree(t, filepath.Join(finishedTemp, "scratch", "build"))
+
+	sweepOrphanRunTempDirProcesses(d, p)
+	cleanupOrphanRunTempDirs(d, p)
+
+	if !pidGoneWithin(youngPID, 10*time.Second) {
+		t.Fatalf("young orphan %d survived the removal of its run temp dir", youngPID)
+	}
+	if _, err := os.Stat(finishedTemp); !os.IsNotExist(err) {
+		t.Fatalf("finished run's temp dir survived startup: %v", err)
+	}
+	if !processIsAlive(activePID) {
+		t.Fatalf("orphan %d in an active run's temp dir must not be swept", activePID)
+	}
+	if _, err := os.Stat(activeTemp); err != nil {
+		t.Fatalf("startup removed an active run's temp dir: %v", err)
+	}
+}

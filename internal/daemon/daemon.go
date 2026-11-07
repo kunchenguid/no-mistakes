@@ -625,8 +625,7 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 // one, under the same age floor as the worktree sweep. It is a sweep of its own
 // because the worktree sweep's guard also spares runs whose checkout is kept
 // (worktree retention, an unpushed CI auto-fix), and that keeps the checkout,
-// not the scratch: cleanupOrphanRunTempDirs removes the directory right after,
-// and a process left standing in a deleted directory can never be matched again.
+// not the scratch.
 func sweepOrphanRunTempDirProcesses(d *db.DB, p *paths.Paths) {
 	procreap.SweepAndLog(procreap.Options{
 		TempRoot: p.RunTempRoot(),
@@ -646,9 +645,10 @@ func runOwnsTempDir(d *db.DB, runID string) bool {
 
 // cleanupOrphanRunTempDirs removes the private temp directory
 // (paths.RunTempDir) of every run that no longer owns one: a predecessor daemon
-// that died mid-run never reached that run's cleanup. It runs right after
-// sweepOrphanRunTempDirProcesses, which has already terminated anything standing
-// in those directories under the same guard. Best effort.
+// that died mid-run never reached that run's cleanup. Before removing them it
+// sweeps exactly those directories with no age floor, like
+// cleanupOrphanWorktrees: a process the floor spared would otherwise be left
+// standing in a deleted directory no later sweep can match. Best effort.
 func cleanupOrphanRunTempDirs(d *db.DB, p *paths.Paths) {
 	root := p.RunTempRoot()
 	entries, err := os.ReadDir(root)
@@ -658,11 +658,18 @@ func cleanupOrphanRunTempDirs(d *db.DB, p *paths.Paths) {
 		}
 		return
 	}
+	var dirs []string
 	for _, entry := range entries {
 		if !entry.IsDir() || runOwnsTempDir(d, entry.Name()) {
 			continue
 		}
-		dir := filepath.Join(root, entry.Name())
+		dirs = append(dirs, filepath.Join(root, entry.Name()))
+	}
+	if len(dirs) == 0 {
+		return
+	}
+	procreap.SweepAndLog(procreap.Options{TempRoot: root, Scopes: dirs}, "daemon_startup_temp_cleanup")
+	for _, dir := range dirs {
 		if err := os.RemoveAll(dir); err != nil {
 			slog.Warn("failed to remove orphaned run temp dir", "path", dir, "error", err)
 			continue
