@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -575,7 +576,7 @@ func TestCIResumedRepairStaleHeadErrorWaitsInsteadOfFailing(t *testing.T) {
 func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 	t.Parallel()
 	for _, category := range []string{types.FindingCategoryCIMergeConflict, types.FindingCategoryCIBehindBase} {
-		for _, snapshot := range []string{"empty", "partial", "stale-head", "head-error"} {
+		for _, snapshot := range []string{"empty", "partial", "stale-head", "head-error", "read-error", "protocol-error", "plugin-timeout"} {
 			t.Run(category+"/"+snapshot, func(t *testing.T) {
 				t.Parallel()
 				dir, baseSHA, headSHA := setupGitRepo(t)
@@ -601,8 +602,20 @@ func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 					host.observedHead = "other-head"
 				case "head-error":
 					host.err = scm.ErrHeadChanged
+				case "read-error":
+					host.err = errors.New("checks unavailable")
+				case "protocol-error":
+					host.err = plugin.ErrProtocol
+				case "plugin-timeout":
+					host.err = fmt.Errorf("%w: %w", plugin.ErrProtocol, plugin.ErrTimeout)
 				}
 				outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+				if snapshot == "protocol-error" || snapshot == "plugin-timeout" {
+					if !errors.Is(err, plugin.ErrProtocol) || outcome != nil || len(ag.calls) != 0 {
+						t.Fatalf("repair = %#v, %v, calls %d; want plugin failure without repair", outcome, err, len(ag.calls))
+					}
+					return
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -626,8 +639,8 @@ func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 
 func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 	t.Parallel()
-	for _, withRejectedCheck := range []bool{false, true} {
-		t.Run(fmt.Sprint(withRejectedCheck), func(t *testing.T) {
+	for _, snapshot := range []string{"no-check", "empty", "read-error"} {
+		t.Run(snapshot, func(t *testing.T) {
 			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
@@ -641,7 +654,7 @@ func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 			if len(selected.Items) != 1 || selected.Items[0].CheckID != "github-check-run:42" {
 				t.Fatalf("green comment finding = %+v", selected.Items)
 			}
-			if withRejectedCheck {
+			if snapshot != "no-check" {
 				selected.Items = append(selected.Items, Finding{ID: "failed", Category: types.FindingCategoryCICheck, Check: "test", Description: "rejected-check-marker"})
 			}
 			encoded, err := json.Marshal(selected)
@@ -650,6 +663,9 @@ func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 			}
 			sctx.PreviousFindings = string(encoded)
 			host := &completionSnapshotHost{checks: checks}
+			if snapshot == "read-error" {
+				host.err = errors.New("checks unavailable")
+			}
 			outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
 			if err != nil {
 				t.Fatal(err)
@@ -696,6 +712,47 @@ func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
 	outcome, err := f.run(t)
 	if outcome != nil || !errors.Is(err, markErr) {
 		t.Fatalf("outcome = %#v err = %v, want MarkRunning failure", outcome, err)
+	}
+}
+
+func TestCIStep_DiscardedRepairTargetsResumeRunningBeforeGreenChecks(t *testing.T) {
+	t.Parallel()
+	for _, snapshot := range []string{"read-error", "empty", "green", "pending", "no-targets"} {
+		t.Run(snapshot, func(t *testing.T) {
+			t.Parallel()
+			f := newCIRepairFixture(t, false, nil)
+			f.sctx.Fixing = true
+			f.sctx.PreviousFindings = `{"findings":[{"id":"ci-1","category":"ci-check","check":"test","severity":"error","action":"auto-fix","description":"failed"}]}`
+			switch snapshot {
+			case "read-error":
+				f.sctx.Env = fakeCIGHChecksError(t, "OPEN", "MERGEABLE", "temporary provider failure")
+			case "empty":
+				f.sctx.Env = fakeCIGH(t, "OPEN", `[]`)
+			case "green":
+				f.sctx.Env = fakeCIGH(t, "OPEN", behindBaseGreenChecks)
+			case "pending":
+				f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"IN_PROGRESS","bucket":"pending"}]`)
+			case "no-targets":
+				f.sctx.PreviousFindings = `{"findings":[]}`
+			}
+			f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+f.headSHA)
+			greenEnv := append(fakeCIGH(t, "OPEN", behindBaseGreenChecks), "FAKE_CLI_PR_HEAD_SHA="+f.headSHA)
+			marked := 0
+			f.sctx.MarkRunning = func() error {
+				marked++
+				// The next observation succeeds, as after a transient read error.
+				f.sctx.Env = greenEnv
+				return nil
+			}
+			f.sctx.Config.CI.ReleaseAfterChecksPass = true
+			outcome, err := f.run(t)
+			if err != nil || outcome == nil || outcome.NeedsApproval || outcome.CIReadyNoCI == nil {
+				t.Fatalf("outcome = %#v, err = %v; want green release; log:\n%s", outcome, err, f.log())
+			}
+			if marked != 1 || len(f.sctx.Agent.(*mockAgent).calls) != 0 {
+				t.Fatalf("MarkRunning calls = %d, fixer calls = %d; want one transition without a repair", marked, len(f.sctx.Agent.(*mockAgent).calls))
+			}
+		})
 	}
 }
 

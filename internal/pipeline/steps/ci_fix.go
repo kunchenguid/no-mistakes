@@ -102,7 +102,11 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			sctx.Log("selected CI checks are stale; waiting for current checks before repair")
 			failingTargets.Checks = nil
 		case err != nil:
-			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
+			if pluginContractBroken(err) || sctx.Ctx.Err() != nil {
+				return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
+			}
+			sctx.Log(fmt.Sprintf("selected CI checks could not be refreshed; discarding check targets before repair: %v", err))
+			failingTargets.Checks = nil
 		default:
 			for _, target := range failingTargets.Checks {
 				// Only a fresh failure is repairable. A selected check that
@@ -203,15 +207,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		}
 		// The repair was published, so the monitor stays on this run and
 		// waits for the provider to re-run the checks against the new head.
-		// The executor marked the step fixing for this round; it is monitoring
-		// again now, and the readiness consumers (checks-passed, the TUI's
-		// active CI indicator) read a running status.
 		sctx.Log("CI repair published, resuming monitoring for the checks to re-run...")
-		if sctx.MarkRunning != nil {
-			if err := sctx.MarkRunning(); err != nil {
-				return nil, err
-			}
-		}
 		return nil, nil
 	}
 	if repair.NoCodeChangeNeeded {

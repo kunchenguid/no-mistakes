@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -262,6 +263,10 @@ func decodeLastFixedChecks(raw string) (lastFixedIssues, bool) {
 	return issues, true
 }
 
+func (issues lastFixedIssues) conflictBaseChanged(baseSHA string) bool {
+	return issues.ConflictBaseSHA != "" && baseSHA != "" && issues.ConflictBaseSHA != baseSHA
+}
+
 // lastRepairStillUnverified reports whether every issue the last published
 // repair targeted is still terminally failed, meaning the provider has not
 // yet re-run those checks against the repaired head. The two clears that
@@ -280,7 +285,7 @@ func (s *CIStep) lastRepairStillUnverified(checks []scm.Check, mergeConflict boo
 		if !mergeConflict {
 			return false
 		}
-		if issues.ConflictBaseSHA != "" && conflictBaseSHA != "" && issues.ConflictBaseSHA != conflictBaseSHA {
+		if issues.conflictBaseChanged(conflictBaseSHA) {
 			return false
 		}
 	}
@@ -499,4 +504,113 @@ func getCIChecks(ctx context.Context, host scm.Host, pr *scm.PR) ([]scm.Check, s
 		err = fmt.Errorf("%w: %v", scm.ErrHeadChanged, err)
 	}
 	return checks, observedHead, moved, err
+}
+
+// A negative window disables the stall park.
+func pendingCheckIdleWindow(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.CIStallTimeout == 0 {
+		return config.DefaultCIStallTimeout
+	}
+	return cfg.CIStallTimeout
+}
+
+type pendingObservation struct {
+	check scm.Check
+	since time.Time
+}
+
+// pendingObservations belongs to one Execute invocation. Missing, ambiguous, or
+// unavailable evidence never supplies idle credit to a later observation.
+type pendingObservations struct {
+	window time.Duration
+	head   string
+	checks map[string]pendingObservation
+}
+
+func pendingObservationKey(check scm.Check) string {
+	if check.ProviderID != "" {
+		return "id:" + check.ProviderID
+	}
+	return fmt.Sprintf("%q/%d/%q/%q", check.Kind, check.WorkflowID, check.Name, check.Link)
+}
+
+func (p *pendingObservations) observe(head string, checks []scm.Check, reruns checkRerunBudget, now time.Time) []scm.Check {
+	if p.window < 0 {
+		return nil
+	}
+	if p.head != head {
+		p.checks = nil
+		p.head = head
+	}
+	counts := make(map[string]int)
+	for _, check := range checks {
+		counts[pendingObservationKey(check)]++
+	}
+	next := make(map[string]pendingObservation)
+	var stalled []scm.Check
+	for _, check := range checks {
+		key := pendingObservationKey(check)
+		_, rerunning := reruns.rollup[check.Name]
+		if !check.Pending() || check.HeldForHuman() || rerunning || counts[key] != 1 {
+			continue
+		}
+		previous, ok := p.checks[key]
+		old := previous.check
+		if !ok || old.State != check.State || old.ExecutionID != check.ExecutionID ||
+			!old.StartedAt.Equal(check.StartedAt) || old.Link != check.Link ||
+			old.Kind != check.Kind || old.WorkflowID != check.WorkflowID || old.Name != check.Name {
+			previous.since = now
+		}
+		previous.check = check
+		next[key] = previous
+		if now.Sub(previous.since) >= p.window {
+			stalled = append(stalled, check)
+		}
+	}
+	p.checks = next
+	return stalled
+}
+
+// Bound both individual attribution and the aggregate to keep provider-owned
+// strings from overflowing the findings IPC payload. Raw checks stay untouched.
+func stalledCheckFindings(checks, stalled []scm.Check, window time.Duration) Findings {
+	concluded := 0
+	for _, check := range checks {
+		switch check.Bucket {
+		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip, scm.CheckBucketCancel:
+			concluded++
+		}
+	}
+	findings := Findings{Summary: fmt.Sprintf("%d CI checks stalled; %d concluded, %d unresolved", len(stalled), concluded, len(checks)-concluded)}
+	var omitted string
+	for i, check := range stalled {
+		name := boundStalledCheckText(check.Name, 512)
+		id := boundStalledCheckText(check.ProviderID, 512)
+		if i >= 50 {
+			if len(omitted) < 4096 {
+				omitted = boundStalledCheckText(omitted+fmt.Sprintf("%s [%s]; ", name, id), 4096)
+			}
+			continue
+		}
+		findings.Items = append(findings.Items, Finding{
+			Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+			Category: types.FindingCategoryCICheck, Check: name, CheckID: id,
+			Description: fmt.Sprintf("CI check %s [%s] (%s, workflow %d, %s) has remained %s with no observed execution or state transition for %s. It may still finish; decide whether to keep waiting or proceed with an override.", name, id, boundStalledCheckText(string(check.Kind), 128), check.WorkflowID, boundStalledCheckText(check.Link, 512), boundStalledCheckText(check.State, 128), window),
+		})
+	}
+	if len(stalled) > 50 {
+		findings.Items = append(findings.Items, Finding{
+			Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+			Description: fmt.Sprintf("%d additional stalled checks (names and provider identities, bounded): %s", len(stalled)-50, omitted),
+		})
+	}
+	return findings
+}
+
+func boundStalledCheckText(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
