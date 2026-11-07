@@ -34,7 +34,7 @@ func newCalloutContext(t *testing.T, mode string, untested, operatorSkip bool) *
 		data, _ := json.Marshal(prContent{Title: "feat: refunds", Body: "## What Changed\n\n- add refunds"})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.UserIntent = "Let a customer refund an order."
 	sctx.Config.PR.Appendix = mode
 	insertCompletedStep(t, sctx, types.StepReview, "", "")
@@ -164,7 +164,7 @@ func TestPRBody_KeptBodyCarriesTheCalloutInsideTheOwnedAppendix(t *testing.T) {
 func TestPRBody_CalloutListsAnApprovedTestException(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.PR.Appendix = config.PRAppendixMinimal
 	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
 	if err != nil {
@@ -257,7 +257,7 @@ func TestPRBody_HomePathReasonIsPublishedRedacted(t *testing.T) {
 				data, _ := json.Marshal(prContent{Title: "feat: refunds", Body: "## What Changed\n\n- add refunds"})
 				return &agent.Result{Output: data}, nil
 			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Config.PR.Appendix = config.PRAppendixMinimal
 			scenarios := []types.TestScenario{{Name: "refund reaches the provider", Result: types.ScenarioResultUntested, Reason: "missing " + rawPath}}
 			insertCompletedStep(t, sctx, types.StepTest, liveValidatedFindingsJSON(t, scenarios, types.TestVerdictGo, headSHA), "")

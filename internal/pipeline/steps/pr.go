@@ -119,6 +119,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	step := *s
 	s = &step
 	sctx.PublicIntentBrief = ""
+	sctx.PRValidationCallout = nil
 	s.headProofUnavailable = ""
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -163,9 +164,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
-	if _, err := validationCallout(sctx, provider); err != nil {
+	callout, err := readValidationCallout(sctx, provider)
+	if err != nil {
 		return nil, fmt.Errorf("read validation state for PR callout: %w", err)
 	}
+	sctx.PRValidationCallout = &callout
 
 	if _, err := publishedPRPushBinding(sctx, host); err != nil {
 		return nil, err

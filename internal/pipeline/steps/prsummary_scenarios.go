@@ -531,6 +531,13 @@ func requireValidationCallout(body string, sctx *pipeline.StepContext, provider 
 // Intent, outside every fold, in every appendix mode: untested work must be
 // visible to a reviewer who never opens the Validation details.
 func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	if sctx != nil && sctx.PRValidationCallout != nil {
+		return *sctx.PRValidationCallout, nil
+	}
+	return readValidationCallout(sctx, provider)
+}
+
+func readValidationCallout(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
 		return "", nil
 	}

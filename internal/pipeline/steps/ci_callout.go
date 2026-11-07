@@ -48,7 +48,7 @@ func (s *CIStep) PublishGateDecision(sctx *pipeline.StepContext) error {
 // applies: the run's current callout and the Intent section it must follow,
 // both in the form the PR step published them.
 func validationCalloutRefresh(sctx *pipeline.StepContext, provider scm.Provider, bodyLimit int) (func(body string) (string, error), error) {
-	callout, err := validationCallout(sctx, provider)
+	callout, err := readValidationCallout(sctx, provider)
 	if err != nil {
 		return nil, fmt.Errorf("read validation state for PR callout: %w", err)
 	}

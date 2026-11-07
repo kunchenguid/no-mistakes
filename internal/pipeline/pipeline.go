@@ -101,6 +101,11 @@ type StepContext struct {
 	// PublicIntentBrief is the PR-step's bounded rendering of UserIntent when
 	// trusted pr.intent.format is brief. It is never used as review criteria.
 	PublicIntentBrief string
+	// PRValidationCallout caches the PR step's Not validated live callout,
+	// read from step rows before drafting. Validation state cannot change while
+	// the PR step runs, so later renders reuse it instead of querying the DB.
+	// Nil until the PR step reads it; the CI refresh path always reads fresh state.
+	PRValidationCallout *string
 	// IntentSource records the provenance of UserIntent so steps can weigh
 	// its authority. db.RunIntentSourceAgent ("agent") means the driving
 	// agent supplied it explicitly via `axi run --intent`; db.RunIntentSourceRerun
