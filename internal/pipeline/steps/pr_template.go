@@ -234,14 +234,7 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 	if err != nil {
 		return "", err
 	}
-	parts := []string{}
-	if intent := publicPRIntent(sctx); intent != "" {
-		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
-	}
-	if evidence != "" {
-		parts = append(parts, evidence)
-	}
-	return strings.Join(parts, "\n\n"), nil
+	return joinBlocks(prLeadSections(sctx, provider), evidence), nil
 }
 
 func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {

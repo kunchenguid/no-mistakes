@@ -563,6 +563,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		}
 	}
 	fields = append(fields, toon.Field{Key: "steps", Value: rows})
+	if validation, ok := validationField(rv.validationGaps()); ok {
+		fields = append(fields, validation)
+	}
 	if skips := rv.automaticSkips(); len(skips) > 0 {
 		fields = append(fields, toon.Field{Key: "automatic_skips", Value: skips})
 	}
@@ -652,12 +655,90 @@ type quotaSwitchRow struct {
 func (rv runView) automaticSkips() []automaticSkipRow {
 	var rows []automaticSkipRow
 	for _, s := range rv.Steps {
-		if s.Status == string(types.StepStatusSkipped) && s.SkipReason != "" &&
-			(s.Name == string(types.StepPR) || s.Name == string(types.StepCI)) {
+		if s.Status == string(types.StepStatusSkipped) && pipeline.IsAutomaticSkip(s.Name, s.SkipReason) {
 			rows = append(rows, automaticSkipRow{Step: s.Name, Reason: s.SkipReason})
 		}
 	}
 	return rows
+}
+
+type untestedRow struct {
+	Scenario string `toon:"scenario"`
+	Reason   string `toon:"reason"`
+}
+
+type validationExceptionRow struct {
+	Step   string `toon:"step"`
+	Kind   string `toon:"kind"`
+	Reason string `toon:"reason"`
+}
+
+// validationGaps reads the run's live validation and its gaps from the same
+// rows the outcome is qualified from, so the block, the outcome word, and the
+// PR callout never disagree.
+func (rv runView) validationGaps() pipeline.ValidationGaps {
+	in := pipeline.ValidationInput{TestException: rv.TestOverrideReason, CIOverride: rv.CIOverrideReason}
+	for _, s := range rv.Steps {
+		in.Steps = append(in.Steps, pipeline.ValidationStep{Name: s.Name, Status: s.Status, SkipReason: s.SkipReason})
+		if s.Name != string(types.StepTest) || s.FindingsJSON == "" {
+			continue
+		}
+		if parsed, err := types.ParseFindingsJSON(s.FindingsJSON); err == nil {
+			in.Scenarios = parsed.Scenarios
+			in.Verdict = parsed.Verdict
+		}
+	}
+	return pipeline.CollectValidationGaps(in)
+}
+
+// validationField renders the run's validation block: the Test verdict, how
+// many scenarios were driven live, every scenario that was not (with its
+// reason), and every exception or skip that let the run continue without
+// validation. It is omitted only when there is nothing at all to report.
+func validationField(gaps pipeline.ValidationGaps) (toon.Field, bool) {
+	if gaps.Empty() {
+		return toon.Field{}, false
+	}
+	verdict := gaps.Verdict
+	if verdict == "" {
+		verdict = "none"
+	}
+	fields := []toon.Field{
+		{Key: "verdict", Value: verdict},
+		{Key: "live", Value: gaps.Live},
+		{Key: "total", Value: gaps.Total},
+	}
+	if len(gaps.Untested) > 0 {
+		rows := make([]untestedRow, 0, len(gaps.Untested))
+		for _, u := range gaps.Untested {
+			rows = append(rows, untestedRow{Scenario: u.Scenario, Reason: u.Reason})
+		}
+		fields = append(fields, toon.Field{Key: "untested", Value: rows})
+	}
+	if len(gaps.Exceptions) > 0 {
+		rows := make([]validationExceptionRow, 0, len(gaps.Exceptions))
+		for _, e := range gaps.Exceptions {
+			rows = append(rows, validationExceptionRow{Step: e.Step, Kind: e.Kind, Reason: e.Reason})
+		}
+		fields = append(fields, toon.Field{Key: "exceptions", Value: rows})
+	}
+	return toon.Field{Key: "validation", Value: toon.NewObject(fields...)}, true
+}
+
+// validationReportHelp tells the driver how to report what the run did not
+// validate live. It is empty for a fully live run with no exceptions.
+func validationReportHelp(rv runView) []string {
+	gaps := rv.validationGaps()
+	var help []string
+	if n := len(gaps.Untested); n > 0 {
+		help = append(help, fmt.Sprintf("%d of %d scenarios were not validated live (see `run.validation.untested`); report each with its reason, and do not describe this run as fully validated.", n, gaps.Total))
+	}
+	for _, e := range gaps.Exceptions {
+		if e.Kind == pipeline.ValidationKindOperatorSkip {
+			help = append(help, fmt.Sprintf("The %s step was skipped by the operator (%s); report it as not validated.", e.Step, e.Reason))
+		}
+	}
+	return help
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings

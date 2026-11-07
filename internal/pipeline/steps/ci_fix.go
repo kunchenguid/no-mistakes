@@ -1091,10 +1091,39 @@ func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHea
 // from the previous attestation. See attestHeadBeforePush for why a caller
 // picks one steps argument over the other.
 func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string), policy pipelineAttestationPolicy) error {
+	return rewritePRBody(ctx, host, pr, "attestation rebind", fmt.Sprintf("rebound pipeline attestation to %s", shortObjectID(newHeadSHA)), logfn, func(body string) (string, error) {
+		updated, rebound, err := rebindOwnedPRAttestation(body, newHeadSHA, steps, policy)
+		if err != nil {
+			return "", fmt.Errorf("rebind PR appendix: %w", err)
+		}
+		if !rebound {
+			if logfn != nil {
+				logfn("skipping attestation rebind: pull request body carries no attestation marker")
+			}
+			return body, nil
+		}
+		// Azure's adapter clamps ordinary descriptions. Owned writes must
+		// fail before that boundary can cut off author text or the digest.
+		if hasPRAppendixMarkers(updated) {
+			if err := validateOwnedPRBudget(updated, scm.HostMaxPRBodyChars(host)); err != nil {
+				return "", err
+			}
+		}
+		return updated, nil
+	})
+}
+
+// rewritePRBody is the PR body writer for edits made after the PR step: it
+// reads the live body, applies transform, and writes the result back without
+// a title. A transform that returns the body unchanged writes nothing, and a
+// transform error is returned without a retry. A host without PRContentReader
+// is skipped with a log line rather than failed: missing-reader is not a
+// settlement miss.
+func rewritePRBody(ctx context.Context, host scm.Host, pr *scm.PR, label, done string, logfn func(string), transform func(body string) (string, error)) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
 		if logfn != nil && !ok {
-			logfn("skipping attestation rebind: SCM host cannot read PR content")
+			logfn(fmt.Sprintf("skipping %s: SCM host cannot read PR content", label))
 		}
 		return nil
 	}
@@ -1103,29 +1132,16 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps, policy)
-			if rebindErr != nil {
-				return fmt.Errorf("rebind PR appendix: %w", rebindErr)
-			}
-			// Azure's adapter clamps ordinary descriptions. Owned writes must
-			// fail before that boundary can cut off author text or the digest.
-			if rebound && hasPRAppendixMarkers(updated) {
-				if err := validateOwnedPRBudget(updated, scm.HostMaxPRBodyChars(host)); err != nil {
-					return err
-				}
-			}
-			if !rebound {
-				if logfn != nil {
-					logfn("skipping attestation rebind: pull request body carries no attestation marker")
-				}
-				return nil
+			updated, transformErr := transform(content.Body)
+			if transformErr != nil {
+				return transformErr
 			}
 			if updated == content.Body {
 				return nil
 			}
 
 			// UpdatePR replaces the complete body; this is not an atomic
-			// marker-only edit. Confirm that the body is still the version we
+			// partial edit. Confirm that the body is still the version we
 			// prepared before writing it. If someone edited it meanwhile, retry
 			// from their version instead of overwriting their changes.
 			latest, readErr := reader.GetPRContent(ctx, pr)
@@ -1133,7 +1149,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 			case readErr != nil:
 				err = readErr
 			case latest.Body != content.Body:
-				err = errors.New("pull request body changed while preparing attestation update")
+				err = fmt.Errorf("pull request body changed while preparing the %s", label)
 			default:
 				// Do not send title: a body-only write leaves a concurrent title
 				// edit untouched.
@@ -1142,7 +1158,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 		}
 		if err == nil {
 			if logfn != nil {
-				logfn(fmt.Sprintf("rebound pipeline attestation to %s", shortObjectID(newHeadSHA)))
+				logfn(done)
 			}
 			return nil
 		}
@@ -1151,8 +1167,8 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 			return ctx.Err()
 		}
 		if logfn != nil && attempt < attempts {
-			logfn(fmt.Sprintf("attestation rebind attempt %d/%d failed: %v; retrying", attempt, attempts, err))
+			logfn(fmt.Sprintf("%s attempt %d/%d failed: %v; retrying", label, attempt, attempts, err))
 		}
 	}
-	return fmt.Errorf("attestation rebind failed after %d attempts: %w", attempts, lastErr)
+	return fmt.Errorf("%s failed after %d attempts: %w", label, attempts, lastErr)
 }
