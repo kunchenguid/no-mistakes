@@ -26,7 +26,7 @@ func TestResolve_UsesLoginShellAndCapturesEnv(t *testing.T) {
 
 	var gotShell string
 	var gotArgs []string
-	shellCommandOutput = func(shell string, args ...string) ([]byte, error) {
+	shellCommandOutput = func(shell string, _ []string, args ...string) ([]byte, error) {
 		gotShell = shell
 		gotArgs = append([]string(nil), args...)
 		return []byte("PATH=/resolved/bin\x00HOME=/Users/test\x00SPECIAL=1\x00"), nil
@@ -70,7 +70,7 @@ func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
 		resetForTests()
 	}()
 
-	shellCommandOutput = func(shell string, args ...string) ([]byte, error) {
+	shellCommandOutput = func(shell string, _ []string, args ...string) ([]byte, error) {
 		return []byte("PATH=/resolved/bin\x00HOME=/Users/test\x00SPECIAL=1\x00"), nil
 	}
 
@@ -104,7 +104,7 @@ func TestApplyToProcessWithShellRetryExcept_PreservesExcludedEntry(t *testing.T)
 		shellCommandOutput = oldOutput
 		resetForTests()
 	}()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return []byte("PATH=/resolved/bin\x00NM_HOME=/shell/root\x00SPECIAL=1\x00"), nil
 	}
 
@@ -131,7 +131,7 @@ func TestResolve_ReturnsProcessEnvOnWindows(t *testing.T) {
 
 	runtimeGOOS = "windows"
 	t.Setenv("SHELLENV_WINDOWS_RESOLVE", "1")
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		t.Fatal("Resolve should not shell out on Windows")
 		return nil, nil
 	}
@@ -157,7 +157,7 @@ func TestApplyToProcess_UsesProcessEnvOnWindows(t *testing.T) {
 
 	runtimeGOOS = "windows"
 	t.Setenv("SHELLENV_WINDOWS_APPLY", "1")
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		t.Fatal("ApplyToProcess should not shell out on Windows")
 		return nil, nil
 	}
@@ -187,7 +187,7 @@ func TestDefaultShellCommandOutput_TimesOut(t *testing.T) {
 
 	shellCommandTimeout = 20 * time.Millisecond
 	start := time.Now()
-	_, err := defaultShellCommandOutput("/bin/sh", "-c", "sleep 1")
+	_, err := defaultShellCommandOutput("/bin/sh", nil, "-c", "sleep 1")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -207,7 +207,7 @@ func TestDefaultShellCommandOutput_TimesOutWithPipeHoldingChild(t *testing.T) {
 
 	shellCommandTimeout = 20 * time.Millisecond
 	start := time.Now()
-	_, err := defaultShellCommandOutput("/bin/sh", "-c", "sleep 1 & wait")
+	_, err := defaultShellCommandOutput("/bin/sh", nil, "-c", "sleep 1 & wait")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -253,7 +253,7 @@ func TestResolve_AugmentsPathWithWellKnownDirs(t *testing.T) {
 		shellCommandOutput = oldOutput
 		resetForTests()
 	}()
-	shellCommandOutput = func(shell string, args ...string) ([]byte, error) {
+	shellCommandOutput = func(shell string, _ []string, args ...string) ([]byte, error) {
 		return []byte("PATH=/usr/bin:/bin\x00HOME=/Users/test\x00"), nil
 	}
 
@@ -301,7 +301,7 @@ func TestResolve_DoesNotDuplicatePathEntries(t *testing.T) {
 		shellCommandOutput = oldOutput
 		resetForTests()
 	}()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return []byte("PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin\x00"), nil
 	}
 
@@ -338,7 +338,7 @@ func TestResolve_SynthesizesPathWhenMissing(t *testing.T) {
 		shellCommandOutput = oldOutput
 		resetForTests()
 	}()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return []byte("HOME=/Users/test\x00OTHER=1\x00"), nil
 	}
 
@@ -378,7 +378,7 @@ func TestResolve_FallbackOnShellFailure(t *testing.T) {
 		shellCommandOutput = oldOutput
 		resetForTests()
 	}()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return nil, &noSuchFileError{}
 	}
 
@@ -416,7 +416,7 @@ func TestResolve_DoesNotCacheDegradedFallback(t *testing.T) {
 	}()
 
 	fail := true
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		if fail {
 			return nil, &noSuchFileError{}
 		}
@@ -455,14 +455,14 @@ func TestResolve_CachesSuccessfulResolution(t *testing.T) {
 		shellCommandOutput = oldOutput
 		resetForTests()
 	}()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return []byte("PATH=/resolved/bin\x00HOME=/Users/test\x00"), nil
 	}
 	if _, err := Resolve(); err != nil {
 		t.Fatal(err)
 	}
 
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		t.Fatal("Resolve should not re-probe the shell after a successful cache")
 		return nil, nil
 	}
@@ -495,7 +495,7 @@ func TestResolve_LogsWarningOnFallback(t *testing.T) {
 		slog.SetDefault(oldLogger)
 		resetForTests()
 	}()
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		return nil, &noSuchFileError{}
 	}
 

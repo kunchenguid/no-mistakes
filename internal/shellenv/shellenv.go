@@ -50,6 +50,7 @@ const (
 
 var cacheMu sync.Mutex
 var cachedEnv []string
+var cachedOptOutEnv []string
 
 func LoginShell() string {
 	if shell, ok := lookupEnv("SHELL"); ok && strings.TrimSpace(shell) != "" {
@@ -73,8 +74,8 @@ func SupportsInteractive(shell string) bool {
 	return base == "bash" || base == "zsh"
 }
 
-// Resolve returns the login shell environment, probing the shell at most once
-// and falling back to the augmented process environment when the probe fails.
+// Resolve returns the login shell environment, falling back to the augmented
+// process environment when the probe fails.
 func Resolve() ([]string, error) {
 	return ResolveWithShellRetry(0)
 }
@@ -85,28 +86,51 @@ func Resolve() ([]string, error) {
 // environment is not going to heal by waiting, and blocking on it would only
 // delay startup. The retry sleeps add up to at most window.
 func ResolveWithShellRetry(window time.Duration) ([]string, error) {
-	cacheMu.Lock()
-	if cachedEnv != nil {
-		defer cacheMu.Unlock()
-		return append([]string(nil), cachedEnv...), nil
-	}
-	cacheMu.Unlock()
-
-	resolved, resolvedFromShell := resolveUncached(window)
-
-	// Only cache a successful shell resolution. A degraded fallback (the shell
-	// probe failed or returned nothing) must never be cached: one bad daemon
-	// startup would otherwise poison every spawned agent for the daemon's whole
-	// lifetime - the failure mode behind #143. Leaving it uncached lets a later
-	// call retry and recover the real login-shell PATH.
-	if resolvedFromShell {
+	for optOut := runtimeGOOS != "windows" && shellPathAugmentationDisabled(nil); ; optOut, window = true, 0 {
 		cacheMu.Lock()
-		if cachedEnv == nil {
-			cachedEnv = append([]string(nil), resolved...)
+		cached := &cachedEnv
+		if optOut {
+			cached = &cachedOptOutEnv
 		}
+		resolved := append([]string(nil), (*cached)...)
+		hit := *cached != nil
 		cacheMu.Unlock()
+
+		if !hit {
+			var resolvedFromShell bool
+			resolved, resolvedFromShell = resolveUncached(window, optOut)
+			if !resolvedFromShell {
+				return resolved, nil
+			}
+			if runtimeGOOS != "windows" && !optOut {
+				resolved = augmentPath(resolved)
+			}
+			cacheMu.Lock()
+			if *cached == nil {
+				*cached = append([]string(nil), resolved...)
+			}
+			cacheMu.Unlock()
+		}
+		if runtimeGOOS == "windows" || optOut {
+			return resolved, nil
+		}
+		if !shellPathAugmentationDisabled(resolved) {
+			return resolved, nil
+		}
 	}
-	return append([]string(nil), resolved...), nil
+}
+
+func shellPathAugmentationDisabled(env []string) bool {
+	control, _ := lookupEnv("NO_MISTAKES_PATH_AUGMENT")
+	if control == "" {
+		for _, entry := range env {
+			if value, ok := strings.CutPrefix(entry, "NO_MISTAKES_PATH_AUGMENT="); ok {
+				control = value
+				break
+			}
+		}
+	}
+	return control == "0"
 }
 
 func ApplyToProcess() error {
@@ -117,6 +141,11 @@ func ApplyToProcessWithShellRetryExcept(window time.Duration, excluded ...string
 	excludedKeys := make(map[string]struct{}, len(excluded))
 	for _, key := range excluded {
 		excludedKeys[key] = struct{}{}
+	}
+	// A service/launcher-supplied policy outranks the login shell's export,
+	// including on subsequent calls after applying the shell environment.
+	if control, _ := lookupEnv("NO_MISTAKES_PATH_AUGMENT"); control != "" {
+		excludedKeys["NO_MISTAKES_PATH_AUGMENT"] = struct{}{}
 	}
 	env, err := ResolveWithShellRetry(window)
 	if err != nil {
@@ -148,13 +177,13 @@ var errNoEntries = errors.New("login shell printed no environment entries")
 // window for a missing shell binary to appear. The bool return reports whether
 // the result came from a successful shell probe (true) or a degraded fallback
 // (false); callers use it to decide whether the result is safe to cache.
-func resolveUncached(window time.Duration) ([]string, bool) {
+func resolveUncached(window time.Duration, optOut bool) ([]string, bool) {
 	if runtimeGOOS == "windows" {
 		return append([]string(nil), os.Environ()...), true
 	}
 
 	shell := LoginShell()
-	resolved, err := probeLoginShell(shell)
+	resolved, err := probeLoginShell(shell, optOut)
 	backoff := shellRetryInitialBackoff
 	for attempt := 1; shellBinaryMissing(err) && backoff <= window; attempt++ {
 		slog.Warn("login shell binary is missing, waiting for it before resolving the login shell environment (#143)",
@@ -164,7 +193,7 @@ func resolveUncached(window time.Duration) ([]string, bool) {
 		if backoff *= 2; backoff > shellRetryMaxBackoff {
 			backoff = shellRetryMaxBackoff
 		}
-		resolved, err = probeLoginShell(shell)
+		resolved, err = probeLoginShell(shell, optOut)
 	}
 	switch {
 	case errors.Is(err, errNoEntries):
@@ -178,18 +207,29 @@ func resolveUncached(window time.Duration) ([]string, bool) {
 		fallback := append([]string(nil), os.Environ()...)
 		return augmentPath(ensureShellEntry(fallback, shell)), false
 	}
-	return augmentPath(ensureShellEntry(resolved, shell)), true
+	return ensureShellEntry(resolved, shell), true
 }
 
 // probeLoginShell runs the login shell once and returns its environment.
 // Interactive mode is deliberate for bash and zsh: version managers such as
 // nvm, fnm, and volta are sourced from .zshrc/.bashrc, not the profile.
-func probeLoginShell(shell string) ([]string, error) {
+func probeLoginShell(shell string, optOut bool) ([]string, error) {
 	args := []string{"-l", "-c", "env -0"}
 	if SupportsInteractive(shell) {
 		args = []string{"-l", "-i", "-c", "env -0"}
 	}
-	out, err := shellCommandOutput(shell, args...)
+	var env []string
+	if optOut {
+		env = os.Environ()
+		for i, entry := range env {
+			if strings.HasPrefix(entry, "PATH=") {
+				env = append(env[:i], env[i+1:]...)
+				break
+			}
+		}
+		env = append(env, "PATH=/usr/bin:/bin")
+	}
+	out, err := shellCommandOutput(shell, env, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +397,7 @@ func shellFromDSCL() string {
 	if username == "" {
 		return ""
 	}
-	out, err := shellCommandOutput("dscl", ".", "-read", "/Users/"+username, "UserShell")
+	out, err := shellCommandOutput("dscl", nil, ".", "-read", "/Users/"+username, "UserShell")
 	if err != nil {
 		return ""
 	}
@@ -371,7 +411,7 @@ func shellFromGetent() string {
 	if username == "" {
 		return ""
 	}
-	out, err := shellCommandOutput("getent", "passwd", username)
+	out, err := shellCommandOutput("getent", nil, "passwd", username)
 	if err != nil {
 		return ""
 	}
@@ -397,10 +437,11 @@ func currentUsername() string {
 	return strings.TrimSpace(u.Username)
 }
 
-func defaultShellCommandOutput(name string, args ...string) ([]byte, error) {
+func defaultShellCommandOutput(name string, env []string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), shellCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
 	ConfigureShellCommand(cmd)
 	detachFromTerminal(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
@@ -411,4 +452,5 @@ func resetForTests() {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 	cachedEnv = nil
+	cachedOptOutEnv = nil
 }
