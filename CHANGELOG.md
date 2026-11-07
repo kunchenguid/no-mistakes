@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.112.0](https://github.com/kunchenguid/no-mistakes/compare/v1.111.0...v1.112.0) (2026-11-07)
+
+
+### Features
+
+* **cli:** add read-only JSON export of stored run facts ([#1729](https://github.com/kunchenguid/no-mistakes/issues/1729)) ([375ee59](https://github.com/kunchenguid/no-mistakes/commit/375ee5924d228c093e8847d7a6d2ee1b5b08b635))
+* pin reviewer selection independently for each run ([#1635](https://github.com/kunchenguid/no-mistakes/issues/1635)) ([65042c3](https://github.com/kunchenguid/no-mistakes/commit/65042c39f7f0be0283db0d3e956b81db8a517a44))
+* **pipeline:** reserve publication for declared external gates ([#1730](https://github.com/kunchenguid/no-mistakes/issues/1730)) ([d49875b](https://github.com/kunchenguid/no-mistakes/commit/d49875b02099f1f28292c3a7271cdcd84b319d46))
+
+
+### Bug Fixes
+
+* **agent:** allow authentic backing Git metadata reads ([#1720](https://github.com/kunchenguid/no-mistakes/issues/1720)) ([c86ee79](https://github.com/kunchenguid/no-mistakes/commit/c86ee79a2be38400cab93de69d6ec343aafab891))
+* **cli:** keep status readable during SQLite writes ([#1726](https://github.com/kunchenguid/no-mistakes/issues/1726)) ([d950c61](https://github.com/kunchenguid/no-mistakes/commit/d950c619e3b90833f423b62848797116ac4ee604))
+* **cli:** preserve custom waits in AXI reattach hints ([#1724](https://github.com/kunchenguid/no-mistakes/issues/1724)) ([8f46803](https://github.com/kunchenguid/no-mistakes/commit/8f468031bccde2960449b4e24341f1a68f46ad4c))
+* **daemon:** disable Windows task battery and execution-time limits ([#1715](https://github.com/kunchenguid/no-mistakes/issues/1715)) ([474a2d3](https://github.com/kunchenguid/no-mistakes/commit/474a2d3d7a68ecfec2e781c13f34cf2169bc504c))
+* discover intent in the caller's configured account home ([#1721](https://github.com/kunchenguid/no-mistakes/issues/1721)) ([eb3d604](https://github.com/kunchenguid/no-mistakes/commit/eb3d604922aad052f0e201775b56208861c02f08))
+* **gate:** reconcile private mirrors after upstream file deletions ([#1725](https://github.com/kunchenguid/no-mistakes/issues/1725)) ([af6b517](https://github.com/kunchenguid/no-mistakes/commit/af6b5179234122aa0d68ebb8797055e4f38fdf0d))
+* **git:** verify gate identity before configuration writes ([#1719](https://github.com/kunchenguid/no-mistakes/issues/1719)) ([91ee9b6](https://github.com/kunchenguid/no-mistakes/commit/91ee9b69c67b8b58bf39dd5f634fd4b8764f1bac))
+* **pipeline:** bind GitHub PRs to the successfully pushed commit ([#1722](https://github.com/kunchenguid/no-mistakes/issues/1722)) ([35cf603](https://github.com/kunchenguid/no-mistakes/commit/35cf6039b8b95b26e6823875a4226783f1a9fc92))
+* **pipeline:** preserve submitter identity in pipeline commits ([#1728](https://github.com/kunchenguid/no-mistakes/issues/1728)) ([823a4ee](https://github.com/kunchenguid/no-mistakes/commit/823a4ee6a95d1c2e0879f5f94d18bdb039c32e34))
+* **pipeline:** wait for owned PR updates to settle ([#1718](https://github.com/kunchenguid/no-mistakes/issues/1718)) ([36c1de7](https://github.com/kunchenguid/no-mistakes/commit/36c1de76d493f33d92dc646d08513660c0d106be))
+* **skill:** prefer blocking waits over status polling ([#1716](https://github.com/kunchenguid/no-mistakes/issues/1716)) ([32438b9](https://github.com/kunchenguid/no-mistakes/commit/32438b96c4252b15e3b2cd1a16131f70b75ae1f3))
+
 ## [1.111.0](https://github.com/kunchenguid/no-mistakes/compare/v1.110.0...v1.111.0) (2026-11-05)
 
 
