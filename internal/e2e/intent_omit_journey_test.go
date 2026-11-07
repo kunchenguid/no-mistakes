@@ -255,7 +255,7 @@ func TestOmitIntentJourney(t *testing.T) {
 	if running := h.WaitForRunRunning(omitIntentSlowBranch, 60*time.Second); running.OmitIntent {
 		t.Fatalf("plain gate push recorded omit_intent: %+v", running)
 	}
-	out, err := h.RunInDir(reattachWT, "axi", "run", "--intent", "reattach with omission", "--no-publish-intent")
+	out, err := h.RunInDir(reattachWT, "axi", "run", "--no-publish-intent")
 	if err == nil || !strings.Contains(out, "without --no-publish-intent") || !strings.Contains(out, "Omit --no-publish-intent to reattach") {
 		t.Fatalf("axi run --no-publish-intent against a publishing active run should be refused, err=%v output:\n%s", err, out)
 	}

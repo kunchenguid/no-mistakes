@@ -266,7 +266,7 @@ func TestAxiRunReattachesAfterManagedFix(t *testing.T) {
 	runsBefore := len(h.Runs())
 	tracePath := filepath.Join(t.TempDir(), "git-trace.json")
 
-	reattachOut, err := h.RunInDirWithEnv(operator, map[string]string{"GIT_TRACE2_EVENT": tracePath}, "axi", "run", "--intent", "guard the feature and preserve the submitting head")
+	reattachOut, err := h.RunInDirWithEnv(operator, map[string]string{"GIT_TRACE2_EVENT": tracePath}, "axi", "run")
 	if err != nil {
 		t.Fatalf("reattach after managed fix: %v\n%s", err, reattachOut)
 	}
