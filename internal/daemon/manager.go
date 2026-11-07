@@ -236,6 +236,9 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if quotaRecord == nil {
 		cfg.QuotaRouting.Enabled = false
 	}
+	if _, err := m.db.RunCommitIdentity(run.ID); err != nil {
+		return nil, err
+	}
 	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
 	if err != nil {
 		return nil, err
@@ -532,6 +535,12 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		_ = plan.agent.Close()
 		return
 	}
+	identity, err := m.db.RunCommitIdentity(plan.run.ID)
+	if err != nil {
+		_ = plan.agent.Close()
+		m.db.UpdateRunError(plan.run.ID, err.Error())
+		return
+	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	executor.SetCIObservationTransition(m.transitionCIObservation)
@@ -547,6 +556,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		}()
 	})
 	executor.SetForgeContext(plan.forge)
+	executor.SetCommitIdentity(identity)
 	done := make(chan struct{})
 	spawn := func() {
 		m.wg.Add(1)
@@ -995,6 +1005,11 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // handlePushReceived is HandlePushReceived; fromReplay marks a push an
 // earlier daemon held, which replayHeldPushes starts ahead of fresh pushes.
 func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushReceivedParams, fromReplay bool) (string, error) {
+	var identityErr error
+	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
+	if identityErr != nil {
+		return "", identityErr
+	}
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
 	if git.IsZeroSHA(params.New) {
@@ -1059,6 +1074,11 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 // HandleStartFreshRun creates or replays a proof-mode launch only after
 // checking the creation context under the repository/branch lock.
 func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartFreshRunParams) (ipc.LaunchReceipt, error) {
+	var identityErr error
+	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
+	if identityErr != nil {
+		return ipc.LaunchReceipt{}, identityErr
+	}
 	if m.restartPending() {
 		return ipc.LaunchReceipt{}, errRestartPending
 	}
@@ -1854,6 +1874,18 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 	}
 
+	// Resolve provenance before superseding a healthy run. A retry keeps the
+	// original binding even when the checkout or caller environment changed.
+	var identity git.CommitIdentity
+	var identityErr error
+	if retry != nil {
+		identity, identityErr = m.db.RunCommitIdentity(retry.source.ID)
+	} else {
+		identity, identityErr = submissionIdentity(ctx, repo.WorkingPath)
+	}
+	if identityErr != nil {
+		return "", identityErr
+	}
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
@@ -1880,6 +1912,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if err := m.db.BindRunCommitIdentity(run.ID, identity); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("bind commit identity: %s", err))
+		return "", err
 	}
 	if intentCheckJSON != "" {
 		if err := m.db.SetRunIntentCheck(run.ID, intentCheckJSON); err != nil {
@@ -1961,7 +1997,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 	}()
 
-	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
+	if err := git.CopyLocalUserIdentity(ctx, wtDir, identity); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git identity: %w", err)
@@ -2180,6 +2216,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor.SetHandoffPending(m.handoffPending)
 	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetForgeContext(forgeCtx)
+	executor.SetCommitIdentity(identity)
 	executor.SetSkippedSteps(skipSteps)
 	if retry != nil {
 		executor.SetRetrySource(retry.source.ID)

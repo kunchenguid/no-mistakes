@@ -165,7 +165,9 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			}
 			defer d.Close()
 			cliGit(t, dir, "init", "-b", "main")
-			cliGit(t, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
+			cliGit(t, dir, "config", "--local", "user.name", "Test")
+			cliGit(t, dir, "config", "--local", "user.email", "test@example.com")
+			cliGit(t, dir, "commit", "--allow-empty", "-m", "initial")
 			chdir(t, dir)
 			root, err := git.FindGitRoot(dir)
 			if err != nil {

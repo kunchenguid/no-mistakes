@@ -373,6 +373,7 @@ func TestRecoveredRunCleanupRemovesItsEmptyEvidenceDir(t *testing.T) {
 	m := NewRunManager(f.db, f.p, func() []pipeline.Step { return nil })
 
 	runID := f.seed("recovered", types.RunRunning, time.Minute, nil)
+	bindFixtureCommitIdentity(t, f.db, runID)
 	run, err := f.db.GetRun(runID)
 	if err != nil {
 		t.Fatal(err)

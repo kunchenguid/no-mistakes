@@ -647,7 +647,7 @@ For a GitHub fork, no-mistakes considers both the parent and fork remotes. A mat
 
 Deliberate scope boundaries, so profiles never duplicate what other layers own:
 
-- **Commit identity stays with Git.** Author and committer for pipeline fix commits come from the effective Git configuration (for example remote-keyed `includeIf` sections), which resolves naturally inside run worktrees. Profiles carry no name/email fields.
+- **Commit identity is independent of forge profiles.** Profiles carry no name/email fields. See the [pipeline commit identity policy](/no-mistakes/reference/pipeline-steps/) for submission binding and author preservation.
 - **Two accounts on the same host are distinguished by remote host token or repository owner.** Either give each account its own SSH alias (`github-personal`, `github-work`) and key a profile per alias, or key GitHub profiles by `host/owner` with `gh_user`; a profile cannot disambiguate two accounts behind one identical remote URL.
 - **Executable selection stays with the machine.** Which `gh`, `glab`, or `git` runs is owned by `PATH` and the existing command resolution, not by profile configuration.
 - **Credential-helper context stays with Git configuration.** Profiles point at provider CLI config directories or name a login, and never model or store credential material; credentials remain in the CLI's own store, and a `gh_user` token is only read from it for the run.

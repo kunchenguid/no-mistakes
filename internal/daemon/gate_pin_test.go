@@ -66,6 +66,7 @@ func gatePinFixture(t *testing.T, defaultBranchYAML string, pinnedGates []config
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindFixtureCommitIdentity(t, d, run.ID)
 	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}

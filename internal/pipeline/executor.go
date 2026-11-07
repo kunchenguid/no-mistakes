@@ -83,13 +83,14 @@ type approvalResponse struct {
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
-	db     *db.DB
-	paths  *paths.Paths
-	config *config.Config
-	forge  *forgecontext.Context
-	agent  agent.Agent
-	steps  []Step
-	skips  map[types.StepName]bool
+	db             *db.DB
+	paths          *paths.Paths
+	config         *config.Config
+	forge          *forgecontext.Context
+	commitIdentity *git.CommitIdentity
+	agent          agent.Agent
+	steps          []Step
+	skips          map[types.StepName]bool
 	// retrySource is the failed run Execute continues instead of starting the
 	// pipeline from the beginning (SetRetrySource).
 	retrySource string
@@ -1075,11 +1076,19 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	}
 }
 
+// SetCommitIdentity binds every Git call in this executor, including recovery.
+func (e *Executor) SetCommitIdentity(identity git.CommitIdentity) {
+	e.commitIdentity = &identity
+}
+
 func (e *Executor) runContext(ctx context.Context) context.Context {
-	if e.forge == nil {
-		return ctx
+	if e.forge != nil {
+		ctx = git.WithEnvironment(ctx, e.forge.Environment)
 	}
-	return git.WithEnvironment(ctx, e.forge.Environment)
+	if e.commitIdentity != nil {
+		ctx = git.WithCommitIdentity(ctx, *e.commitIdentity)
+	}
+	return ctx
 }
 
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {

@@ -832,12 +832,17 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		return "", err
 	}
 	homes := runenv.CaptureTranscriptHomes()
+	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
+	if err != nil {
+		return "", err
+	}
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -927,6 +932,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	var rr ipc.RerunResult
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
 	params.TranscriptHomes = homes
+	params.CommitIdentity = identity
 	params.OmitIntent = omitIntent
 	params.FreshLaunch = true
 	params.PiProfile = profile
@@ -1024,11 +1030,16 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
+	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
+	if err != nil {
+		return nil, err
+	}
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),
@@ -1057,6 +1068,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		CommitIdentity:  identity,
 		TranscriptHomes: homes,
 		RepoID:          env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,

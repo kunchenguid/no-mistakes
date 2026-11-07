@@ -758,9 +758,6 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return err
 }
 
-// CopyLocalUserIdentity copies local user.name and user.email from srcDir into
-// dstDir. Missing values in srcDir are ignored.
-//
 // The write into dstDir uses per-worktree scope when
 // the repository has worktree config enabled. dstDir is typically a linked
 // worktree of the shared gate bare repo, where an unscoped `git config --local`
@@ -771,7 +768,15 @@ func CommitAll(ctx context.Context, dir, message string) error {
 // <bare>/worktrees/<id>/config.worktree, so concurrent startups never contend.
 // Resolve the config file directly: `git config --worktree` enumerates sibling
 // worktrees and can fail while another run removes its Git metadata.
-func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
+func CopyLocalUserIdentity(ctx context.Context, dstDir string, identity CommitIdentity) error {
+	if err := identity.Validate(); err != nil {
+		return err
+	}
+	values := map[string]string{
+		"user.name": identity.CommitterName, "user.email": identity.CommitterEmail,
+		"author.name": identity.AuthorName, "author.email": identity.AuthorEmail,
+		"committer.name": identity.CommitterName, "committer.email": identity.CommitterEmail,
+	}
 	isolated, err := Run(ctx, dstDir, "config", "--local", "--type=bool", "--get", "--default", "false", "extensions.worktreeConfig")
 	if err != nil {
 		return err
@@ -784,14 +789,7 @@ func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 		}
 		scope = []string{"--file", path}
 	}
-	for _, key := range []string{"user.name", "user.email"} {
-		value, err := Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
-		if err != nil {
-			return err
-		}
-		if value == "" {
-			continue
-		}
+	for key, value := range values {
 		args := append([]string{"config"}, scope...)
 		if _, err := Run(ctx, dstDir, append(args, key, value)...); err != nil {
 			return err

@@ -166,7 +166,7 @@ func stepCmdContext(sctx *pipeline.StepContext, ctx context.Context, name string
 	cmd := exec.CommandContext(ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	winproc.Harden(cmd)
-	if env := stepEnvironment(sctx); env != nil {
+	if env := pipelineCommandEnvironment(sctx); env != nil {
 		cmd.Env = env
 	}
 	if missingFromPath {
@@ -175,7 +175,7 @@ func stepCmdContext(sctx *pipeline.StepContext, ctx context.Context, name string
 	return cmd
 }
 
-func stepEnvironment(sctx *pipeline.StepContext) []string {
+func pipelineCommandEnvironment(sctx *pipeline.StepContext) []string {
 	var env []string
 	if len(sctx.Env) > 0 {
 		env = mergeEnv(sctx.Env)
@@ -184,6 +184,10 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 		env = sctx.ForgeContext.Environment.Apply(env)
 	}
 	return env
+}
+
+func configuredCommandEnvironment(sctx *pipeline.StepContext) []string {
+	return git.SubprocessEnvironment(pipelineCommandEnvironment(sctx))
 }
 
 // stepGitRun runs git with the StepContext's environment plus the standard
@@ -197,7 +201,7 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 // stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
+	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -217,7 +221,7 @@ func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 // and the read hangs. shellenv ends the whole process tree on cancellation.
 func stepGitRunTree(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
+	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
 	// OutputShellCommand never fills ExitError.Stderr, so capture it here.
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -233,7 +237,7 @@ func stepGitRunTree(sctx *pipeline.StepContext, args ...string) (string, error) 
 // the step environment, for commands that read identity from GIT_* variables.
 func stepGitRunEnv(sctx *pipeline.StepContext, extraEnv []string, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = append(git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir), extraEnv...)
+	cmd.Env = append(git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir), extraEnv...)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -336,7 +340,7 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 }
 
 func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
-	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmdStr)
+	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, configuredCommandEnvironment(sctx), cmdStr)
 }
 
 func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {

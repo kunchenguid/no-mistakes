@@ -109,8 +109,12 @@ func newRerunCmd() *cobra.Command {
 					return err
 				}
 				homes := runenv.CaptureTranscriptHomes()
+				identity, err := captureSubmissionIdentity(cmd.Context(), client, ".")
+				if err != nil {
+					return err
+				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{CommitIdentity: identity, TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
