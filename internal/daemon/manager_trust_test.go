@@ -41,6 +41,89 @@ func TestStartRunTrustedFetchFailureAdmitsThenFailsBeforeAgent(t *testing.T) {
 	}
 }
 
+func TestStartRunTrustedFetchUsesForgeProfileEnvironment(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ambient-wrong-account")
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return nil })
+	repo, head := setupTestGitRepo(t, p, d, "trusted-fetch-forge-profile")
+
+	profileDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    users:\n        test-user:\n    user: test-user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalConfig = append(globalConfig, []byte("\nforge_profiles:\n  github.com:\n    gh_config_dir: "+profileDir+"\n")...)
+	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldFetch := fetchIntentTrustedDefaultBranchSHA
+	var fetchEnvironment string
+	fetchIntentTrustedDefaultBranchSHA = func(ctx context.Context, gateDir string, _ *db.Repo, _ string) (string, error) {
+		got, err := git.Run(ctx, gateDir,
+			"-c", `alias.show-profile=!printf '%s|%s' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}"`,
+			"show-profile")
+		fetchEnvironment = got
+		return head, err
+	}
+	t.Cleanup(func() { fetchIntentTrustedDefaultBranchSHA = oldFetch })
+
+	if _, err := NewRunManager(d, p, nil).startRun(context.Background(), repo, "main", head, head, "push", nil, "", "", false, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := profileDir + "|"; fetchEnvironment != want {
+		t.Fatalf("trusted fetch environment = %q, want %q", fetchEnvironment, want)
+	}
+}
+
+func TestLoadRecoveredConfigTrustedFetchUsesForgeProfileEnvironment(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ambient-wrong-account")
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return nil })
+	repo, head := setupTestGitRepo(t, p, d, "recovered-trusted-fetch-forge-profile")
+	gitCmd(t, repo.WorkingPath, "update-ref", "refs/remotes/origin/main", head)
+
+	profileDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    users:\n        test-user:\n    user: test-user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalConfig = append(globalConfig, []byte("\nforge_profiles:\n  github.com:\n    gh_config_dir: "+profileDir+"\n")...)
+	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := d.InsertRun(repo.ID, "main", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldFetch := fetchRecoveredRemoteBranch
+	var fetchEnvironment string
+	fetchRecoveredRemoteBranch = func(ctx context.Context, workDir, _, _ string) error {
+		got, err := git.Run(ctx, workDir,
+			"-c", `alias.show-profile=!printf '%s|%s' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}"`,
+			"show-profile")
+		fetchEnvironment = got
+		return err
+	}
+	t.Cleanup(func() { fetchRecoveredRemoteBranch = oldFetch })
+
+	_, forgeCtx, err := NewRunManager(d, p, nil).loadRecoveredConfigWithForge(context.Background(), run, repo, repo.WorkingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forgeCtx == nil {
+		t.Fatal("recovered config did not retain its resolved forge profile")
+	}
+	if want := profileDir + "|"; fetchEnvironment != want {
+		t.Fatalf("recovered trusted fetch environment = %q, want %q", fetchEnvironment, want)
+	}
+}
+
 func TestLoadRecoveredConfigUsesPinnedIntentCheck(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return nil })
 	repo, head := setupTestGitRepo(t, p, d, "recovered-intent-check")

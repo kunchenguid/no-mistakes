@@ -210,20 +210,13 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, fmt.Errorf("worktree does not belong to its gate repository")
 	}
 
-	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
+	cfg, forgeCtx, err := m.loadRecoveredConfigWithForge(ctx, run, repo, workDir)
 	if err != nil {
 		return nil, err
 	}
 	execSteps := steps.WithCustomGates(m.steps(), cfg.Gates)
 	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
-	}
-	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
-	if err == nil {
-		err = forgecontext.RefuseProviderPluginOverlap(ctx, forgeCtx, cfg.ProviderPlugins, repo.UpstreamURL)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("resolve forge profile: %w", err)
 	}
 	// A recovered run replays the quota-routing record its original setup
 	// persisted: an unusable one fails recovery closed, because silently
@@ -281,13 +274,23 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.A
 }
 
 func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) (*config.Config, error) {
+	cfg, _, err := m.loadRecoveredConfigWithForge(ctx, run, repo, workDir)
+	return cfg, err
+}
+
+func (m *RunManager) loadRecoveredConfigWithForge(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) (*config.Config, *forgecontext.Context, error) {
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
-		return nil, fmt.Errorf("load global config: %w", err)
+		return nil, nil, fmt.Errorf("load global config: %w", err)
 	}
+	forgeCtx, err := resolveForgeContext(ctx, globalCfg.ForgeProfiles, globalCfg.ProviderPlugins, repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx = git.WithEnvironment(ctx, forgeEnvironment(forgeCtx))
 	repoCfg, err := config.LoadRepo(workDir)
 	if err != nil {
-		return nil, fmt.Errorf("load repo config: %w", err)
+		return nil, nil, fmt.Errorf("load repo config: %w", err)
 	}
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
@@ -304,17 +307,17 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
 	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
 	if err := assertGateTrustedConfigReadable(ctx, workDir, repo.DefaultBranch, trustedSHA); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
 	if err := applyPinnedIntentCheck(cfg, run); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := cfg.Review.ValidatePathInstructionsBudget(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Gates are read back from the run, never re-resolved. Everything else here
 	// is deliberately re-read from the live default branch, but a gate decides
@@ -324,25 +327,25 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	// it never executed - failing a healthy parked run as a crash.
 	gates, err := m.pinnedRunGates(run.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.Gates = gates
 	if err := cfg.ApplyPiProfile(run.PiProfile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := cfg.ApplyReviewerProfile(run.ReviewerProfile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.TrustedConfigSHA = trustedSHA
 	if globalCfg.Eval.CaptureProvenance {
 		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return cfg, nil
+	return cfg, forgeCtx, nil
 }
 
 // pinnedRunGates reads back the gate list a run resolved at creation. An absent
@@ -494,6 +497,17 @@ func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
 		return runenv.Overlay{}
 	}
 	return ctx.Environment
+}
+
+func resolveForgeContext(ctx context.Context, profiles config.ForgeProfiles, plugins config.ProviderPlugins, repo *db.Repo) (*forgecontext.Context, error) {
+	forgeCtx, err := forgecontext.Resolve(ctx, profiles, repo.UpstreamURL, repo.ForkURL)
+	if err == nil {
+		err = forgecontext.RefuseProviderPluginOverlap(ctx, forgeCtx, plugins, repo.UpstreamURL)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve forge profile: %w", err)
+	}
+	return forgeCtx, nil
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -1768,6 +1782,16 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		storedIntent = strings.TrimSpace(storedIntent)
 	}
 	globalCfg, globalCfgErr := config.LoadGlobal(m.paths.ConfigFile())
+	var forgeCtx *forgecontext.Context
+	if globalCfgErr == nil {
+		resolved, resolveErr := resolveForgeContext(ctx, globalCfg.ForgeProfiles, globalCfg.ProviderPlugins, repo)
+		if resolveErr != nil {
+			trackStartFailure("resolve_forge_profile")
+			return "", resolveErr
+		}
+		forgeCtx = resolved
+		ctx = git.WithEnvironment(ctx, forgeEnvironment(forgeCtx))
+	}
 	var reviewer *agentcfg.ReviewerProfile
 	if request := agentcfg.OptionalReviewerProfile(profiles); request != nil {
 		if globalCfgErr != nil {
@@ -2152,16 +2176,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			return "", err
 		}
 	}
-	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
-	if err == nil {
-		err = forgecontext.RefuseProviderPluginOverlap(ctx, forgeCtx, cfg.ProviderPlugins, repo.UpstreamURL)
-	}
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("resolve forge profile: %s", err))
-		trackStartFailure("resolve_forge_profile")
-		return "", fmt.Errorf("resolve forge profile: %w", err)
-	}
-
 	// Create agent. In demo mode, newPipelineAgent returns a no-op agent, and it
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
 	// fail-closed check. The quota-aware record is fresh-read here (a nil
