@@ -37,10 +37,12 @@ const (
 // branches, repositories, or roles.
 //
 // Correctness always wins over reuse: adapters without session support run
-// cold, a failed resume drops the identity and re-runs the same turn in a
-// fresh same-role session, and any persistence failure degrades to cold
-// invocations. A nil *RunSessions runs everything cold, preserving the
-// pre-session behavior for steps outside the review loop and for tests.
+// cold, a failed resume normally drops the identity and re-runs the same turn
+// in a fresh same-role session, and any persistence failure degrades to cold
+// invocations. A completed result-format failure returns without that fallback
+// so completed work is not replayed. A nil *RunSessions runs everything cold,
+// preserving the pre-session behavior for steps outside the review loop and
+// for tests.
 type RunSessions struct {
 	db      *db.DB
 	runID   string
