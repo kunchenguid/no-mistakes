@@ -987,6 +987,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					if emptyChecksSince.IsZero() {
 						emptyChecksSince = now()
 					}
+					// The probe reads the live PR head the empty check list
+					// belongs to (observedHead), never the recorded run head:
+					// a head that advanced past it may have added a workflow.
+					// An unknown or locally unreadable head is a probe error,
+					// so the monitor keeps waiting.
 					if waited := now().Sub(emptyChecksSince); waited >= noChecksGracePeriod {
 						baseTip := pollBaseTip
 						if baseTip == "" {
@@ -996,7 +1001,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 							}
 							cancel()
 						}
-						if parked := s.noChecksConfiguredPark(sctx, host, baseBranch, sctx.Run.HeadSHA, baseTip, prURL, waited); parked != nil {
+						if parked := s.noChecksConfiguredPark(sctx, host, baseBranch, observedHead, baseTip, prURL, waited); parked != nil {
 							return parked, nil
 						}
 					}

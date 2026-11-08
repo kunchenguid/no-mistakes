@@ -113,7 +113,7 @@ var nonPRWorkflowEvents = map[string]bool{
 // from every source it reads; anything it cannot read is an error, which the
 // monitor treats as "keep waiting".
 //
-// The workflow and configuration files are read from both the delivered head
+// The workflow and configuration files are read from both the live PR head
 // and the PR base's current tip: a pull_request workflow runs from the merge
 // of the two, and pull_request_target from the base. The forge side is the
 // set of checks the base branch requires before merge.
@@ -154,22 +154,21 @@ func probeCIPresence(sctx *pipeline.StepContext, host scm.Host, baseBranch, head
 // ciConfiguredInTree returns a description of the first thing in the commit's
 // tree able to report a check on a PR, or "" when there is nothing.
 func ciConfiguredInTree(sctx *pipeline.StepContext, commit string) (string, error) {
-	root, err := stepGitRun(sctx, "ls-tree", "--name-only", commit)
+	root, err := treeNames(sctx, "ls-tree", "-z", "--name-only", commit)
 	if err != nil {
 		return "", err
 	}
-	for _, name := range strings.Split(root, "\n") {
-		if thirdPartyCIConfigs[strings.TrimSpace(name)] {
-			return fmt.Sprintf("third-party CI configuration %s at %s", strings.TrimSpace(name), shortSHA(commit)), nil
+	for _, name := range root {
+		if thirdPartyCIConfigs[name] {
+			return fmt.Sprintf("third-party CI configuration %s at %s", name, shortSHA(commit)), nil
 		}
 	}
-	listing, err := stepGitRun(sctx, "ls-tree", "-r", "--name-only", commit, "--", ".github/workflows")
+	listing, err := treeNames(sctx, "ls-tree", "-z", "-r", "--name-only", commit, "--", ".github/workflows")
 	if err != nil {
 		return "", err
 	}
 	var workflows []string
-	for _, file := range strings.Split(listing, "\n") {
-		file = strings.TrimSpace(file)
+	for _, file := range listing {
 		switch strings.ToLower(path.Ext(file)) {
 		case ".yml", ".yaml":
 			workflows = append(workflows, file)
@@ -186,6 +185,23 @@ func ciConfiguredInTree(sctx *pipeline.StepContext, commit string) (string, erro
 		}
 	}
 	return "", nil
+}
+
+// treeNames runs a NUL-delimited `git ls-tree -z` and returns its raw paths:
+// without -z git quotes a non-ASCII path, so its extension or name no longer
+// matches and a real workflow would be skipped.
+func treeNames(sctx *pipeline.StepContext, args ...string) ([]string, error) {
+	out, err := stepGitRunRaw(sctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, name := range strings.Split(out, "\x00") {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 // workflowReportsOnPR reports whether a GitHub Actions workflow file has a

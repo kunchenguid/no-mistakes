@@ -49,12 +49,17 @@ type noChecksRun struct {
 }
 
 // runNoChecksMonitor drives the CI step on a 30s poll with a fake clock until
-// it returns, stop reports true, or limit elapses (then it is cancelled).
-func runNoChecksMonitor(t *testing.T, dir, baseSHA, headSHA string, env []string, limit time.Duration, stop func(logs []string) bool) noChecksRun {
+// it returns, stop reports true, or limit elapses (then it is cancelled). The
+// run records headSHA; GitHub reports liveHead as the PR head ("" means the
+// PR head is still headSHA).
+func runNoChecksMonitor(t *testing.T, dir, baseSHA, headSHA, liveHead string, env []string, limit time.Duration, stop func(logs []string) bool) noChecksRun {
 	t.Helper()
+	if liveHead == "" {
+		liveHead = headSHA
+	}
 	prURL := "https://github.com/test/repo/pull/1"
 	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_HEAD_SHA="+liveHead)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 168 * time.Hour
 	sctx.Config.NoCI = false
@@ -136,7 +141,7 @@ func TestCIStep_NoCIConfiguredParksPromptlyAsNotApplicable(t *testing.T) {
 		"FAKE_CLI_BRANCH_RULES="+noRulesets,
 	)
 
-	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, env, time.Hour, nil)
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "", env, time.Hour, nil)
 
 	assertParkedAsNoChecksConfigured(t, run)
 	if run.elapsed < 5*time.Minute || run.elapsed > 6*time.Minute {
@@ -156,7 +161,7 @@ func TestCIStep_IssueOnlyWorkflowStillParks(t *testing.T) {
 		"FAKE_CLI_BRANCH_RULES_ERR=gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)",
 	)
 
-	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, env, time.Hour, nil)
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "", env, time.Hour, nil)
 
 	assertParkedAsNoChecksConfigured(t, run)
 }
@@ -182,7 +187,7 @@ func TestCIStep_PRWorkflowSlowToRegisterKeepsWaiting(t *testing.T) {
 		"FAKE_CLI_BRANCH_RULES="+noRulesets,
 	)
 
-	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, env, time.Hour, cimonitor.ChecksPassed)
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "", env, time.Hour, cimonitor.ChecksPassed)
 
 	assertStillWaiting(t, run, 10*time.Minute)
 	if !cimonitor.ChecksPassed(run.logs) {
@@ -204,7 +209,7 @@ func TestCIStep_RequiredCheckWithoutWorkflowKeepsWaiting(t *testing.T) {
 		`FAKE_CLI_BRANCH_RULES=[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"buildkite/pipeline"}]}}]]`,
 	)
 
-	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, env, 30*time.Minute, nil)
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "", env, 30*time.Minute, nil)
 
 	assertStillWaiting(t, run, 30*time.Minute)
 	if !logContains(run.logs, "main requires checks before merge: buildkite/pipeline") {
@@ -222,11 +227,69 @@ func TestCIStep_UnreadableBranchRequirementsKeepsWaiting(t *testing.T) {
 		"FAKE_CLI_BRANCH_RULES_ERR=gh: API rate limit exceeded (HTTP 403)",
 	)
 
-	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, env, 30*time.Minute, nil)
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "", env, 30*time.Minute, nil)
 
 	assertStillWaiting(t, run, 30*time.Minute)
 	if !logContains(run.logs, "warning: could not check whether CI is configured") {
 		t.Fatalf("expected the failed probe to be logged; logs=%v", run.logs)
+	}
+}
+
+// TestCIStep_ProbeReadsTheLivePRHead covers a branch that advanced past the
+// run's recorded head to a commit adding a pull_request workflow: the empty
+// check list belongs to that live head, so the probe must read its tree and
+// keep waiting rather than park on the recorded head's workflow-free tree.
+func TestCIStep_ProbeReadsTheLivePRHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	liveHead := commitWorkflow(t, dir, "ci.yml", "name: CI\non: pull_request\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n")
+	env := append(stepstest.FakeCIGH(t, "OPEN", "[]"),
+		"FAKE_CLI_BRANCH_PROTECTION="+unprotectedBranch,
+		"FAKE_CLI_BRANCH_RULES="+noRulesets,
+	)
+
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, liveHead, env, 30*time.Minute, nil)
+
+	assertStillWaiting(t, run, 30*time.Minute)
+	if !logContains(run.logs, "CI is configured (workflow .github/workflows/ci.yml") {
+		t.Fatalf("expected the probe to find the live head's workflow; logs=%v", run.logs)
+	}
+}
+
+// TestCIStep_UnreadableLivePRHeadKeepsWaiting proves a live PR head this
+// clone does not have is never probed as "no CI": the monitor keeps waiting.
+func TestCIStep_UnreadableLivePRHeadKeepsWaiting(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	env := append(stepstest.FakeCIGH(t, "OPEN", "[]"),
+		"FAKE_CLI_BRANCH_PROTECTION="+unprotectedBranch,
+		"FAKE_CLI_BRANCH_RULES="+noRulesets,
+	)
+
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "0123456789abcdef0123456789abcdef01234567", env, 30*time.Minute, nil)
+
+	assertStillWaiting(t, run, 30*time.Minute)
+	if !logContains(run.logs, "warning: could not check whether CI is configured") {
+		t.Fatalf("expected the unreadable head to be logged as a failed probe; logs=%v", run.logs)
+	}
+}
+
+// TestCIStep_NonASCIIWorkflowNameIsRecognised covers a workflow whose path
+// git quotes in a default listing: it must still be read as CI.
+func TestCIStep_NonASCIIWorkflowNameIsRecognised(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := stepstest.SetupGitRepo(t)
+	headSHA := commitWorkflow(t, dir, "测试.yml", "name: CI\non: pull_request\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n")
+	env := append(stepstest.FakeCIGH(t, "OPEN", "[]"),
+		"FAKE_CLI_BRANCH_PROTECTION="+unprotectedBranch,
+		"FAKE_CLI_BRANCH_RULES="+noRulesets,
+	)
+
+	run := runNoChecksMonitor(t, dir, baseSHA, headSHA, "", env, 30*time.Minute, nil)
+
+	assertStillWaiting(t, run, 30*time.Minute)
+	if !logContains(run.logs, "CI is configured (workflow .github/workflows/测试.yml") {
+		t.Fatalf("expected the non-ASCII workflow to be recognised; logs=%v", run.logs)
 	}
 }
 
