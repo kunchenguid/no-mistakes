@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -32,7 +34,7 @@ func TestAxiRunRefusesAnOlderDaemonOnlyWhenAProfileIsSet(t *testing.T) {
 		{name: "current daemon with a profile", profile: absTestPath("/caller/.claude1"), current: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var configure []func(*ipc.Server)
+			configure := []func(*ipc.Server){serveTranscriptHomesProbe}
 			if tc.current {
 				configure = append(configure, currentDaemonHealth)
 			}
@@ -64,7 +66,7 @@ func TestRerunRefusesAnOlderDaemonOnlyWhenAProfileIsSet(t *testing.T) {
 		{name: "current daemon with a profile", profile: absTestPath("/caller/.claude1"), current: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			configure := []func(*ipc.Server){}
+			configure := []func(*ipc.Server){serveTranscriptHomesProbe}
 			if tc.current {
 				configure = append(configure, currentDaemonHealth)
 			}
@@ -97,28 +99,42 @@ func TestPushHookRefusesAnOlderDaemonOnlyWhenAProfileIsSet(t *testing.T) {
 		{name: "current daemon with a profile", profile: absTestPath("/caller/.claude1"), current: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := paths.WithRoot(makeSocketSafeTempDir(t))
-			t.Setenv("NM_HOME", p.Root())
-			if err := p.EnsureDirs(); err != nil {
+			var pushed []ipc.PushReceivedParams
+			configure := []func(*ipc.Server){serveTranscriptHomesProbe, func(srv *ipc.Server) {
+				srv.Handle(ipc.MethodPushReceived, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+					var params ipc.PushReceivedParams
+					if err := json.Unmarshal(raw, &params); err != nil {
+						return nil, err
+					}
+					pushed = append(pushed, params)
+					return &ipc.PushReceivedResult{}, nil
+				})
+			}}
+			if tc.current {
+				configure = append(configure, currentDaemonHealth)
+			}
+			olderDaemonFixture(t, nil, configure...)
+			t.Setenv(runenv.ClaudeConfigDirEnvVar, tc.profile)
+			p, err := paths.New()
+			if err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv(runenv.ClaudeConfigDirEnvVar, tc.profile)
-			srv := ipc.NewServer()
-			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
-				return &ipc.HealthResult{Status: "ok", ClaudeConfigDir: tc.current}, nil
-			})
-			var pushed []ipc.PushReceivedParams
-			srv.Handle(ipc.MethodPushReceived, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-				var params ipc.PushReceivedParams
-				if err := json.Unmarshal(raw, &params); err != nil {
-					return nil, err
-				}
-				pushed = append(pushed, params)
-				return &ipc.PushReceivedResult{}, nil
-			})
-			startIPCServer(t, srv, p.Socket())
+			d, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			repo, err := findRepo(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			local, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cliGit(t, local, "clone", "--bare", local, p.RepoDir(repo.ID))
 
-			out, err := executeCmd("daemon", "notify-push", "--gate", p.RepoDir("repo"), "--ref", "refs/heads/x", "--old", "0", "--new", "1")
+			out, err := executeCmd("daemon", "notify-push", "--gate", p.RepoDir(repo.ID), "--ref", "refs/heads/x", "--old", "0", "--new", "1")
 			refused := err != nil && strings.Contains(err.Error(), restartGuidance)
 			if refused != tc.refused {
 				t.Fatalf("restart guidance in error = %v, want %v: %v\n%s", refused, tc.refused, err, out)
