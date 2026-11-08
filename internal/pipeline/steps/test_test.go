@@ -1586,3 +1586,46 @@ func TestBudgetCutGuidanceSection_LabelsDriverInstructions(t *testing.T) {
 		})
 	}
 }
+
+func TestTestStep_AgentTurnsRaiseTheForegroundCommandLimitToTheirBudget(t *testing.T) {
+	t.Parallel()
+	const want = "420000"
+	wantEnv := []string{"BASH_DEFAULT_TIMEOUT_MS=" + want, "BASH_MAX_TIMEOUT_MS=" + want}
+	goVerdict := json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"user runs the command","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)
+
+	for _, fixing := range []bool{false, true} {
+		name := "evidence turn"
+		if fixing {
+			name = "repair turn"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+			var seen [][]string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					seen = append(seen, opts.Env)
+					return &agent.Result{Output: goVerdict}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+			sctx.Fixing = fixing
+			sctx.Config.TestAgentTimeout = 7 * time.Minute
+			sctx.Config.TestAgentWorkingTimeout = 2 * time.Minute
+
+			if _, err := (&TestStep{}).Execute(sctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(seen) == 0 {
+				t.Fatal("agent was never invoked")
+			}
+			for i, env := range seen {
+				if !slices.Equal(env, wantEnv) {
+					t.Errorf("agent call %d env = %v, want %v", i, env, wantEnv)
+				}
+			}
+		})
+	}
+}
