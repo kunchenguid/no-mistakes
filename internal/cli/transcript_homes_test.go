@@ -65,6 +65,7 @@ func TestProofRunCarriesTranscriptHomesWithCapableDaemon(t *testing.T) {
 func TestNotifyPushCarriesTranscriptHomes(t *testing.T) {
 	requests := make(chan ipc.PushReceivedParams, 2)
 	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+		currentDaemonHealth(srv)
 		serveTranscriptHomesProbe(srv)
 		srv.Handle(ipc.MethodPushReceived, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
 			var p ipc.PushReceivedParams
@@ -136,7 +137,7 @@ func TestTranscriptHomesRefuseOlderDaemonBeforeLaunch(t *testing.T) {
 		t.Run(launch, func(t *testing.T) {
 			launched := olderDaemonFixture(t, func() (interface{}, error) {
 				return &ipc.ProbeOmitIntentResult{OK: true}, nil
-			})
+			}, currentDaemonHealth)
 			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "selected claude"))
 			t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "selected codex"))
 			env, err := openAxiRunEnv()

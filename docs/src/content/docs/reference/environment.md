@@ -198,7 +198,7 @@ Update checks run on every CLI invocation except `update` itself and version que
 
 ## `CLAUDE_CONFIG_DIR`
 
-Claude Code account directory used for intent transcript discovery.
+Claude Code profile directory. It selects the account for intent transcript discovery and the profile a run's pipeline agents use.
 
 |         |             |
 | ------- | ----------- |
@@ -209,7 +209,17 @@ no-mistakes reads Claude Code transcripts from `$CLAUDE_CONFIG_DIR/projects`.
 
 For both `CLAUDE_CONFIG_DIR` and [`CODEX_HOME`](#codex_home), CLI launches, push-hook notifications, and TUI reruns capture the caller's values, using the caller's home directory for defaults when a variable is unset or empty. The selected roots are stored with the run and survive daemon recovery, independently of the daemon's environment. A rerun captures the current caller's selection. A retry continuation retains the failed run's selection. Historical runs without recorded roots retain default-path discovery.
 
-Each selected root must be an absolute path. Relative paths, literal unexpanded `~` paths, and unresolved defaults disable only that provider's discovery and log the rejection in the Intent step. They do not prevent the run from starting or disable discovery for the other provider. Missing or unreadable selected homes never fall back to another account. These settings select transcripts and do not change pipeline-agent authentication.
+Each selected root must be an absolute path. Relative paths, literal unexpanded `~` paths, and unresolved defaults disable only that provider's discovery and log the rejection in the Intent step. They do not prevent the run from starting or disable discovery for the other provider. Missing or unreadable selected homes never fall back to another account. `CODEX_HOME` selects transcripts only and does not change pipeline-agent authentication.
+
+### Pipeline agent profile
+
+The daemon reads [its own environment](#environment-the-daemon-sees) once at startup, so it does not see the `CLAUDE_CONFIG_DIR` of the session that starts a run. Each run therefore carries the value from the process that started it: `git push` to the gate, `axi run`, `rerun`, or a rerun from the TUI. A rerun uses the value of the process that requests it, not the value of the run it repeats. A retry of a failed run keeps the value of the run it continues. The run stores the value, and every agent subprocess of that run (including retries and recovery after a daemon restart) gets it. The value must be an absolute path: a relative one, or a quoted `~/...`, is refused before the run starts. When the variable is unset, the run keeps the daemon's own environment. This is the behavior from before per-run profiles.
+
+A daemon that started before you upgraded the CLI does not read the field and would run Claude under its own profile. The daemon advertises the capability in its health response. When the variable is set and the running daemon does not advertise it, `git push`, `axi run`, `rerun`, and a rerun from the TUI refuse before the run starts and tell you to run `no-mistakes daemon restart`. With the variable unset, nothing changes.
+
+`axi status` shows a run's profile as `claude_config_dir`. `axi run` refuses to reattach to an active run bound to a different profile; a run started with the variable unset counts as a different profile. To reattach, set the variable to the run's value, or unset it when the run has none. Abort that run to start one with your profile. With the variable unset, `axi run` reattaches to any active run, as it does without `--model`/`--effort`.
+
+This refusal applies only when `axi run` reattaches by branch. A replay with `--launch-nonce` ([strict launch receipts](/no-mistakes/reference/cli/#strict-launch-receipts)) does not compare the profile: it reattaches to the run that owns the nonce, and that run keeps the profile it started with.
 
 ## `CODEX_HOME`
 
@@ -279,23 +289,6 @@ Config directory used to locate glab's `config.yml` for self-hosted GitLab detec
 When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts at `$XDG_CONFIG_HOME/glab-cli/config.yml`, falling back to `~/.config/glab-cli/config.yml` when `XDG_CONFIG_HOME` is unset.
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
 tea 0.x has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. When `TEA_CONFIG_DIR` is unset, tea 1.0's configured instances are read from `hosts.yml` in that same directory. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
-
-## `CLAUDE_CONFIG_DIR`
-
-Claude Code profile directory that a run's pipeline agents use.
-
-|         |                                   |
-| ------- | --------------------------------- |
-| Type    | `string`                          |
-| Default | (none): the daemon's own value    |
-
-The daemon reads [its own environment](#environment-the-daemon-sees) once at startup, so it does not see the `CLAUDE_CONFIG_DIR` of the session that starts a run. Each run therefore carries the value from the process that started it: `git push` to the gate, `axi run`, `rerun`, or a rerun from the TUI. A rerun uses the value of the process that requests it, not the value of the run it repeats. A retry of a failed run keeps the value of the run it continues. The run stores the value, and every agent subprocess of that run (including retries and recovery after a daemon restart) gets it. The value must be an absolute path: a relative one, or a quoted `~/...`, is refused before the run starts. When the variable is unset, the run keeps the daemon's own environment. This is the behavior from before per-run profiles.
-
-A daemon that started before you upgraded the CLI does not read the field and would run Claude under its own profile. The daemon advertises the capability in its health response. When the variable is set and the running daemon does not advertise it, `git push`, `axi run`, `rerun`, and a rerun from the TUI refuse before the run starts and tell you to run `no-mistakes daemon restart`. With the variable unset, nothing changes.
-
-`axi status` shows a run's profile as `claude_config_dir`. `axi run` refuses to reattach to an active run bound to a different profile; a run started with the variable unset counts as a different profile. To reattach, set the variable to the run's value, or unset it when the run has none. Abort that run to start one with your profile. With the variable unset, `axi run` reattaches to any active run, as it does without `--model`/`--effort`.
-
-This refusal applies only when `axi run` reattaches by branch. A replay with `--launch-nonce` ([strict launch receipts](/no-mistakes/reference/cli/#strict-launch-receipts)) does not compare the profile: it reattaches to the run that owns the nonce, and that run keeps the profile it started with.
 
 ## `COMPACT_ADVISER_DISABLE`
 
