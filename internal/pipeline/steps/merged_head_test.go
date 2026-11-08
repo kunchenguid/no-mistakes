@@ -220,3 +220,35 @@ type fallbackFromReaderHost struct {
 func (h *fallbackFromReaderHost) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	return h.fallback.GetChecks(ctx, pr)
 }
+
+func TestVerifyMergedHead_PrimaryFailureNeedsFallbackEvidence(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("a", 40)
+	for _, tc := range []struct {
+		name     string
+		readErr  error
+		fallback string
+		wantErr  error
+	}{
+		{name: "transient primary error", readErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded},
+		{name: "successful response missing head", readErr: scm.ErrPRHeadMissing, wantErr: errMergedHeadUnproven},
+		{name: "unsupported primary read", readErr: scm.ErrUnsupported, wantErr: errMergedHeadUnproven},
+		{name: "fallback identifies foreign head", readErr: context.DeadlineExceeded, fallback: strings.Repeat("b", 40), wantErr: scm.ErrHeadChanged},
+		{name: "fallback identifies owned head", readErr: context.DeadlineExceeded, fallback: head},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := &fallbackFromReaderHost{
+				headReportingHost: &headReportingHost{err: tc.readErr},
+				fallback:          &mergedHeadTestHost{observedHead: tc.fallback},
+			}
+			got, err := verifyMergedHead(context.Background(), host, &scm.PR{Number: "7"}, []string{head})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("merged head = %q, %v; want error %v", got, err, tc.wantErr)
+			}
+			if tc.wantErr == nil && got != head {
+				t.Fatalf("merged head = %q, want %q", got, head)
+			}
+		})
+	}
+}

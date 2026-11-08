@@ -571,7 +571,7 @@ func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
 	}
 	head := strings.TrimSpace(mr.sourceRevision())
 	if head == "" {
-		return "", errors.New("glab mr view: merge request reports no source commit")
+		return "", fmt.Errorf("glab mr view: merge request reports no source commit: %w", scm.ErrPRHeadMissing)
 	}
 	return head, nil
 }

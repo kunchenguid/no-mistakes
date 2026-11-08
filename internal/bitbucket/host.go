@@ -98,7 +98,7 @@ func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
 		return "", err
 	}
 	if got == nil || strings.TrimSpace(got.SourceCommitHash) == "" {
-		return "", errors.New("bitbucket pull request reports no source commit")
+		return "", fmt.Errorf("bitbucket pull request reports no source commit: %w", scm.ErrPRHeadMissing)
 	}
 	return strings.TrimSpace(got.SourceCommitHash), nil
 }

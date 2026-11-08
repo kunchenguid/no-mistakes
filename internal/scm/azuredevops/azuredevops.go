@@ -406,7 +406,7 @@ func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
 	}
 	head := strings.TrimSpace(got.LastMergeSourceCommit.CommitID)
 	if head == "" {
-		return "", errors.New("az repos pr show: pull request reports no source commit")
+		return "", fmt.Errorf("az repos pr show: pull request reports no source commit: %w", scm.ErrPRHeadMissing)
 	}
 	return head, nil
 }

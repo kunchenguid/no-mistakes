@@ -392,7 +392,7 @@ func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
 	}
 	head := strings.TrimSpace(view.HeadSHA)
 	if head == "" {
-		return "", errors.New("origin pr view: pull request reports no head commit")
+		return "", fmt.Errorf("origin pr view: pull request reports no head commit: %w", scm.ErrPRHeadMissing)
 	}
 	return head, nil
 }

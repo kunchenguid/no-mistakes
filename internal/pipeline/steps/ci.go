@@ -398,8 +398,11 @@ func observedMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads
 	// same head the check read would bind to, without paying for a check read of
 	// a merged pull request; a host that cannot, or that fails after all, falls
 	// through to the check observation.
+	var headReadErr error
 	if reader, ok := host.(scm.PRHeadReader); ok {
-		if head, err := reader.GetPRHeadSHA(ctx, pr); err == nil {
+		head, readErr := reader.GetPRHeadSHA(ctx, pr)
+		headReadErr = readErr
+		if readErr == nil {
 			if head = strings.TrimSpace(head); head != "" {
 				if !containsFold(ownHeads, head) {
 					return "", fmt.Errorf("verify merged PR proof: %w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), head)
@@ -415,6 +418,9 @@ func observedMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads
 	}
 	observed = strings.TrimSpace(observed)
 	if observed == "" {
+		if headReadErr != nil && !errors.Is(headReadErr, scm.ErrPRHeadMissing) && !errors.Is(headReadErr, scm.ErrUnsupported) {
+			return "", fmt.Errorf("reading the merged head failed: %w", headReadErr)
+		}
 		return "", fmt.Errorf("%w: the %s provider reported no head for the pull request", errMergedHeadUnproven, host.Provider())
 	}
 	if !containsFold(ownHeads, observed) {
@@ -859,7 +865,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		} else if state == scm.PRStateMerged {
 			mergedHead, err := verifyMergedHead(ctx, host, pr, s.ownValidatedHeads(sctx))
 			if err != nil {
-				return nil, err
+				if errors.Is(err, scm.ErrHeadChanged) || errors.Is(err, errMergedHeadUnproven) || pluginContractBroken(err) {
+					return nil, err
+				}
+				sctx.Log(fmt.Sprintf("warning: could not verify the merged PR head: %v", err))
+				if clearErr := clearCIMonitorReady(sctx); clearErr != nil {
+					return nil, clearErr
+				}
+				if _, waitErr := waitForPoll(); waitErr != nil {
+					return nil, waitErr
+				}
+				continue
 			}
 			if err := s.recordHeadRewriteOverride(sctx, mergedHead); err != nil {
 				return nil, err

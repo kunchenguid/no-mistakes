@@ -252,7 +252,7 @@ func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
 	}
 	head := strings.TrimSpace(response.PullRequest.HeadSHA)
 	if head == "" {
-		return "", errors.New("forgejo-axi returned no head commit for the pull request")
+		return "", fmt.Errorf("forgejo-axi returned no head commit for the pull request: %w", scm.ErrPRHeadMissing)
 	}
 	return head, nil
 }

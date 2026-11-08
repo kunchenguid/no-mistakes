@@ -365,7 +365,8 @@ var (
 	// ErrHeadChanged rejects results for a different PR head than the run is
 	// monitoring. It prevents a late status or already-merged race from proving
 	// the wrong commit.
-	ErrHeadChanged = errors.New("pull request head changed")
+	ErrHeadChanged   = errors.New("pull request head changed")
+	ErrPRHeadMissing = errors.New("pull request response reports no head commit")
 )
 
 // ReviewComment represents a code review comment or bot finding on a pull request.
