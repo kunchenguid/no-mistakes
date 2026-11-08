@@ -747,9 +747,16 @@ func TestModel_RerunRefusesAnOlderDaemonOnlyWhenAProfileIsSet(t *testing.T) {
 		{name: "no profile"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(tuiIdentityCheckout(t))
 			t.Setenv(runenv.ClaudeConfigDirEnvVar, tc.profile)
 			sock := testSocketPath(t)
 			srv := startTestIPCServer(t, sock)
+			srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
+				return map[string]bool{"ok": true}, nil
+			})
+			srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+			})
 			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
 				return &ipc.HealthResult{Status: "ok"}, nil
 			})
@@ -776,8 +783,8 @@ func TestModel_RerunRefusesAnOlderDaemonOnlyWhenAProfileIsSet(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected rerunErrMsg, got %T", msg)
 			}
-			if got := strings.Contains(msg.err.Error(), "no-mistakes daemon restart"); got != tc.refused {
-				t.Fatalf("restart guidance in %q = %v, want %v", msg.err, got, tc.refused)
+			if got := strings.Contains(msg.err.Error(), "honor CLAUDE_CONFIG_DIR"); got != tc.refused {
+				t.Fatalf("Claude profile refusal in %q = %v, want %v", msg.err, got, tc.refused)
 			}
 			if tc.refused && rerunCalls != 0 {
 				t.Fatalf("rerun reached a daemon that ignores the profile")
