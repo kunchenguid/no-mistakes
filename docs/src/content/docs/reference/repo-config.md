@@ -234,7 +234,9 @@ Declare that this repository intentionally has no CI.
 
 When `true` and the forge reports **zero** checks on the PR head, the CI monitor treats that empty result as all-checks-passed and `axi run` may return `outcome: checks-passed`. The monitor log names the declaration (`no_ci: true`) so the positive evidence stays inspectable rather than silently equating every empty forge response with green.
 
-Absence of this field means CI is expected. A zero-length check result then stays not-ready for as long as the forge reports no checks - elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence.
+Absence of this field means CI is expected. A zero-length check result then stays not-ready for as long as the forge reports no checks - elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence of green.
+
+On GitHub the monitor does not wait out `ci_timeout` on a repository that has nothing able to report a check. Once a PR head has reported zero checks for 5 minutes, it checks whether anything could still report one: a GitHub Actions workflow at the PR head or the base tip with a trigger GitHub can attach to a pull request's head (anything but bookkeeping events such as `issues`, `issue_comment`, `schedule`, or `workflow_dispatch`; an unfamiliar or unparseable trigger counts as able to report), a known third-party CI configuration file at the repository root, or a status check the base branch requires through branch protection or a ruleset. If none exists, the step parks at an `ask-user` gate with the `ci-no-checks-configured` finding instead of reporting `checks-passed`. Approving it finishes the CI step as an override that records the missing checks; declaring `no_ci: true` is the durable answer for later runs. If any of those sources cannot be read, or any of them can report, the monitor keeps waiting as before.
 
 If checks still appear on a declared no-CI repository, their actual states are processed normally. The declaration never waives a registered pending or failing check.
 

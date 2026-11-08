@@ -831,6 +831,41 @@ func fakeGHStorePRBody(args []string) {
 	}
 }
 
+// fakeGHHandleBranchRequirements answers the base branch's merge requirements
+// (`gh api repos/<slug>/branches/<b>` and `.../rules/branches/<b>`) from
+// FAKE_CLI_BRANCH_PROTECTION and FAKE_CLI_BRANCH_RULES, failing the rules read
+// with FAKE_CLI_BRANCH_RULES_ERR when set. Unset, the read falls through to the
+// handler's unexpected-command exit, so a test that never configured them sees
+// an unreadable requirement set.
+func fakeGHHandleBranchRequirements(args []string) {
+	if len(args) == 0 || args[0] != "api" {
+		return
+	}
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "repos/") {
+			continue
+		}
+		if strings.Contains(arg, "/rules/branches/") {
+			if rulesErr := os.Getenv("FAKE_CLI_BRANCH_RULES_ERR"); rulesErr != "" {
+				fmt.Fprintln(os.Stderr, rulesErr)
+				os.Exit(1)
+			}
+			if rules := os.Getenv("FAKE_CLI_BRANCH_RULES"); rules != "" {
+				fmt.Println(rules)
+				os.Exit(0)
+			}
+			return
+		}
+		if strings.Contains(arg, "/branches/") {
+			if protection := os.Getenv("FAKE_CLI_BRANCH_PROTECTION"); protection != "" {
+				fmt.Println(protection)
+				os.Exit(0)
+			}
+			return
+		}
+	}
+}
+
 func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	stateErr := os.Getenv("FAKE_CLI_STATE_ERR")
@@ -848,6 +883,7 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	fakeGHHandleBranchRequirements(args)
 	if strings.Contains(joined, "pr list") {
 		if prListJSON := os.Getenv("FAKE_CLI_PR_LIST_JSON"); prListJSON != "" {
 			fmt.Print(prListJSON)
@@ -948,6 +984,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	fakeGHHandleBranchRequirements(args)
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
 			fmt.Fprintln(os.Stderr, mergeableErr)

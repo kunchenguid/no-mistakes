@@ -64,6 +64,11 @@ const (
 // carries the trusted default-branch `no_ci: true` declaration (config.Config.NoCI).
 // A feature branch cannot self-declare that value. When checks exist, their
 // actual states are always processed normally - even on a declared no-CI repo.
+// Without the declaration, a head that keeps reporting zero checks past
+// noChecksGracePeriod is probed (probeCIPresence): when nothing in the
+// repository or the forge's merge requirements can report a check, the step
+// parks for a decision instead of waiting out ci_timeout. That park is never
+// a pass.
 type CIStep struct {
 	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
@@ -85,6 +90,8 @@ type CIStep struct {
 	// set only for the duration of that repair's recording. recordRepair
 	// proves a pure replay against exactly this commit and nothing else.
 	replayBase string
+	// presence caches the last CI presence probe for an empty check list.
+	presence *ciPresenceProbe
 }
 
 // SetPollIntervalOverride is a test hook; production leaves the override unset.
@@ -535,6 +542,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	lastMonitorLog := ciMonitorStatus{}
 	consecutiveCheckErrs := 0
 	consecutiveBotCommentErrs := 0
+	// emptyChecksSince is when the current head was first seen reporting no
+	// checks at all; it resets whenever a check appears or the head moves.
+	var emptyChecksSince time.Time
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		if handoffPending(sctx) {
 			if err := clearCIMonitorReady(sctx); err != nil {
@@ -703,6 +713,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if observedHead != "" && observedHead != lastCheckHeadSHA {
 			timeoutFailingChecks = nil
 			lastCheckHeadSHA = observedHead
+			emptyChecksSince = time.Time{}
 		}
 		if err == nil {
 			checks, err = requiredReviewChecks(sctx, host, pr, checks)
@@ -749,6 +760,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		} else {
 			consecutiveCheckErrs = 0
 			timeoutExternalReviews = nil
+			if len(checks) > 0 {
+				emptyChecksSince = time.Time{}
+			}
 			for _, check := range checks {
 				if check.ExternalReview != "" && check.Bucket != scm.CheckBucketPass {
 					check.Bucket = scm.CheckBucketFail
@@ -962,12 +976,30 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// evidence from trusted default-branch config (no_ci: true).
 					// Without that declaration, keep waiting - delayed registration
 					// is common and must never look green. Elapsed time is not
-					// evidence; there is no grace-period promotion path.
+					// evidence and there is no grace-period promotion path: past
+					// the grace period the monitor only asks whether anything can
+					// report a check, and parks for a decision when nothing can.
 					if err := clearCIMonitorReady(sctx); err != nil {
 						return nil, err
 					}
 					lastMonitorLog = ciMonitorStatus{}
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
+					if emptyChecksSince.IsZero() {
+						emptyChecksSince = now()
+					}
+					if waited := now().Sub(emptyChecksSince); waited >= noChecksGracePeriod {
+						baseTip := pollBaseTip
+						if baseTip == "" {
+							tipCtx, cancel := context.WithTimeout(ctx, defaultBaseBranchTipResolveWindow)
+							if tip, resolved := baseBranchTip(tipCtx); resolved {
+								baseTip = tip
+							}
+							cancel()
+						}
+						if parked := s.noChecksConfiguredPark(sctx, host, baseBranch, sctx.Run.HeadSHA, baseTip, prURL, waited); parked != nil {
+							return parked, nil
+						}
+					}
 				case len(checks) == 0 || allChecksPassed(checks):
 					// Under ci.review_bot_comments: always, a review bot that
 					// concluded its check green, or has not registered one on
