@@ -143,7 +143,9 @@ func TestCIStep_MergedHeadPollingRetriesPrimaryReadFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/2.0/repositories/test/repo/pullrequests/42":
-			if prReads.Add(1)%2 == 0 && !recovered.Load() {
+			// Execute reads the base before polling state, then verifies the
+			// merged head. Fail that third read, leaving state readable.
+			if prReads.Add(1) == 3 && !recovered.Load() {
 				http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
