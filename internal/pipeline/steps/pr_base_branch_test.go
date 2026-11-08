@@ -673,60 +673,72 @@ func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
 	}
 }
 
-func TestPRStep_ExistingTargetSurvivesObservation(t *testing.T) {
+func TestPRStep_ExistingPRKeepsValidatedBase(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{config.PRUpdateTextRegenerate, config.PRUpdateTextKeep} {
-		t.Run(mode, func(t *testing.T) {
-			dir, baseSHA, layerSHA := setupGitRepo(t)
-			gitCmd(t, dir, "branch", "layer1", layerSHA)
-			if err := os.WriteFile(filepath.Join(dir, "layer2.txt"), []byte("layer two\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			gitCmd(t, dir, "add", "layer2.txt")
-			gitCmd(t, dir, "commit", "-m", "add layer two")
-			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-			owned := "https://github.com/test/repo/pull/42"
-			env, logFile := fakeGHWithBase(t, owned, "main")
-			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-				return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
-			}}
-			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-			sctx.Env = env
-			sctx.Config.PR.UpdateText = mode
-			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
-			sctx.Run.PRURL = &owned
-			target, observed := "layer1", "main"
-			sctx.Run.PRBaseBranch = &target
-			sctx.Run.ObservedBaseBranch = &observed
-			review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
-				t.Fatal(err)
-			}
+		for _, observed := range []string{"", "layer1", "main"} {
+			t.Run(mode+"/observed="+observed, func(t *testing.T) {
+				dir, baseSHA, layerSHA := setupGitRepo(t)
+				gitCmd(t, dir, "branch", "layer1", layerSHA)
+				if err := os.WriteFile(filepath.Join(dir, "layer2.txt"), []byte("layer two\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "layer2.txt")
+				gitCmd(t, dir, "commit", "-m", "add layer two")
+				headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+				owned := "https://github.com/test/repo/pull/42"
+				liveBase, target := "main", "layer1"
+				if observed != "" {
+					liveBase, target = observed, "main"
+				}
+				wantBase, wantSHA := "layer1", layerSHA
+				if observed == "main" {
+					target, wantBase, wantSHA = "layer1", "main", baseSHA
+				}
+				env, logFile := fakeGHWithBase(t, owned, liveBase)
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
+				}}
+				sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				sctx.Env = env
+				sctx.Config.PR.UpdateText = mode
+				sctx.Config.PR.TitleFormat = "Use a conventional commit title"
+				sctx.Run.PRURL = &owned
+				sctx.Run.PRBaseBranch = &target
+				if observed != "" {
+					sctx.Run.ObservedBaseBranch = &observed
+				}
+				review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+					t.Fatal(err)
+				}
 
-			outcome, err := (&PRStep{}).Execute(sctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if outcome.PRURL != owned || len(ag.calls) == 0 {
-				t.Fatalf("expected an updated draft for %s, got %+v and %d agent calls", owned, outcome, len(ag.calls))
-			}
-			prompt := ag.calls[0].Prompt
-			if !strings.Contains(prompt, "- base commit: "+layerSHA) || !strings.Contains(prompt, "- PR base branch: layer1") || !strings.Contains(prompt, "layer2.txt") || strings.Contains(prompt, "feature.txt") {
-				t.Fatalf("draft must compare against the existing explicit target:\n%s", prompt)
-			}
-			data, err := os.ReadFile(logFile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(data), "pr edit 42 --repo test/repo --base layer1") || strings.Contains(string(data), "--base main") || strings.Contains(string(data), "pr create") {
-				t.Fatalf("expected retargeting only to the operator's target:\n%s", data)
-			}
-			if runPRBaseBranch(sctx) != "layer1" || observedBaseBranch(sctx) != "main" {
-				t.Fatal("publication changed recorded base intent or observation")
-			}
-		})
+				outcome, err := (&PRStep{}).Execute(sctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome.PRURL != owned || len(ag.calls) == 0 {
+					t.Fatalf("expected an updated draft for %s, got %+v and %d agent calls", owned, outcome, len(ag.calls))
+				}
+				prompt := ag.calls[0].Prompt
+				if !strings.Contains(prompt, "- base commit: "+wantSHA) || !strings.Contains(prompt, "- PR base branch: "+wantBase) || !strings.Contains(prompt, "layer2.txt") || strings.Contains(prompt, "feature.txt") != (observed == "main") {
+					t.Fatalf("draft must compare against %s:\n%s", wantBase, prompt)
+				}
+				data, err := os.ReadFile(logFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				retargeted := strings.Contains(string(data), "pr edit 42 --repo test/repo --base layer1")
+				if retargeted != (observed == "") || strings.Contains(string(data), "--base main") || strings.Contains(string(data), "pr create") {
+					t.Fatalf("only a run without an adopted base may retarget to its explicit target:\n%s", data)
+				}
+				if runPRBaseBranch(sctx) != target || observedBaseBranch(sctx) != observed {
+					t.Fatal("publication changed recorded base intent or observation")
+				}
+			})
+		}
 	}
 }

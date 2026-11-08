@@ -69,7 +69,7 @@ func (s *identityCorrectionStep) Execute(sctx *pipeline.StepContext) (*pipeline.
 		return nil, err
 	}
 	s.commits <- got
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: head}, nil
 }
 
 func TestCommitIdentityTwoRunsSurvivePrivateDaemonRestart(t *testing.T) {

@@ -197,6 +197,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	requestedBaseBranch := runPRBaseBranch(sctx)
+	if existing != nil && observedBaseBranch(sctx) != "" {
+		// Restarted validation used the adopted base. Preserve that scope
+		// instead of restoring the original target after Review and Test.
+		baseBranch = observedBaseBranch(sctx)
+		requestedBaseBranch = ""
+	}
 	if existing != nil && !sctx.EvalReplay {
 		liveBase := strings.TrimSpace(existing.BaseBranch)
 		if liveBase != "" && liveBase != baseBranch {

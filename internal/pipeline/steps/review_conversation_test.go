@@ -200,6 +200,9 @@ func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
 
 	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}}, enableReviewConversation)
 	convDir = exec.ReviewConversationDir(run.ID)
+	// This test drives explicit answer delivery. Keep the automatic resumer
+	// from claiming the same gate between AppendAnswer and Respond.
+	exec.SetGateClaimGuard(func() (func(), bool) { return nil, false })
 
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
@@ -629,6 +632,8 @@ func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T)
 
 	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}}, enableReviewConversation)
 	convDir = exec.ReviewConversationDir(run.ID)
+	// Reserve this gate for the explicit answer response, as above.
+	exec.SetGateClaimGuard(func() (func(), bool) { return nil, false })
 
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
