@@ -45,6 +45,7 @@ export default defineConfig({
             { label: "Provider Integration", slug: "guides/provider-integration" },
             { label: "Setup Wizard", slug: "guides/setup-wizard" },
             { label: "Using the TUI", slug: "guides/tui" },
+            { label: "Fix missing tools in Test", slug: "guides/test-command-setup" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
           ],
         },
