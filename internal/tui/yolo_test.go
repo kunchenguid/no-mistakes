@@ -30,6 +30,7 @@ func TestModel_Yolo_RefusalGatesSendNoAutomaticResponse(t *testing.T) {
 	}{
 		{types.StepDocument, pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "ledger.json", Rule: "ledger.json"}).Findings},
 		{types.StepTest, unvalidatedWork},
+		{types.StepTest, `{"findings":[{"id":"validation-refused","severity":"error","action":"ask-user","description":"Validation refused","requires_operator_stop":true},{"id":"test-verdict","severity":"error","action":"auto-fix","description":"Live validation failed"}]}`},
 		{types.StepReview, `{"findings":[{"id":"review-fix-rounds-exhausted","severity":"warning","action":"ask-user","description":"Review used 1/1 fix rounds"}]}`},
 	} {
 		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {

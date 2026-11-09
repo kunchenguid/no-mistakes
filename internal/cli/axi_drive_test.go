@@ -416,6 +416,7 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 	}{
 		{types.StepCI, protectedPath, "1 awaiting", "package.lock"},
 		{types.StepTest, unvalidatedWork, "2 awaiting", "fix_test.go"},
+		{types.StepTest, `{"findings":[{"id":"validation-refused","severity":"error","action":"ask-user","description":"Validation refused","requires_operator_stop":true},{"id":"test-verdict","severity":"error","action":"auto-fix","description":"Live validation failed"}]}`, "1 awaiting, 1 auto-fix", "Validation refused"},
 		{types.StepReview, `{"findings":[{"id":"review-fix-rounds-exhausted","severity":"warning","action":"ask-user","description":"Review used 1/1 fix rounds"}]}`, "1 awaiting", "Review used 1/1 fix rounds"},
 	} {
 		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
@@ -433,9 +434,10 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				var progress bytes.Buffer
+				before := responses.Load()
 				run, ciReady, err := driveRunWithReconciler(ctx, &progress, client, reconciler, parked.ID, true)
-				if err != nil || run != parked || ciReady || responses.Load() != 0 {
-					t.Fatalf("--yes resolved a refusal gate: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, responses.Load(), err)
+				if delta := responses.Load() - before; err != nil || run != parked || ciReady || delta != 0 {
+					t.Fatalf("--yes resolved a refusal gate: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, delta, err)
 				}
 				if !strings.Contains(progress.String(), "explicit response") {
 					t.Fatalf("missing explicit-response guidance: %s", progress.String())
@@ -451,7 +453,7 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 						t.Errorf("parked output missing %q: %s", want, output.String())
 					}
 				}
-				t.Logf("AXI output with --yes (automatic IPC responses: %d):\n%s%s", responses.Load(), progress.String(), output.String())
+				t.Logf("AXI output with --yes (automatic IPC responses: %d):\n%s%s", responses.Load()-before, progress.String(), output.String())
 			})
 		}
 	}
