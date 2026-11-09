@@ -74,7 +74,7 @@ func TestMissingTool_ConfiguredCommandParksForSetup(t *testing.T) {
 				t.Fatalf("configured command and its output were lost: %+v", findings)
 			}
 			persistTestStepFindings(t, sctx, outcome.ExitCode, outcome.Findings)
-			if reason, err := (&TestStep{}).VerifyApprovalOverride(sctx); err != nil || reason != fmt.Sprintf("configured test command failed with exit code %d", tc.code) {
+			if reason, err := (&TestStep{}).VerifyApprovalOverride(sctx); err != nil || reason != findings.Items[0].Description || !strings.HasPrefix(reason, fmt.Sprintf("configured test command failed with exit code %d", tc.code)) {
 				t.Fatalf("approval override = %q, %v, want the failed test preserved", reason, err)
 			}
 			if _, err := os.Stat(tool); tc.mode == 0 && !os.IsNotExist(err) {
