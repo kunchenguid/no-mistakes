@@ -9,7 +9,7 @@ Run this explicit read-only check to see whether publication accepts a PR's owne
 no-mistakes axi pr-verify --repo https://github.com/owner/repo.git --pr 123
 ```
 
-Supply the destination repository's full remote URL and the PR number. The command uses the configured provider adapter and machine-local forge profile. It requires the provider's PR-content read support and authentication, but does not require an initialized gate or a run.
+Supply the destination repository's full remote URL and the PR number. An scp-style remote such as `git@github.com:owner/repo.git` is also accepted. The command uses the configured provider adapter and machine-local forge profile. It requires authentication and a numbered PR read that reports the destination repository's identity, but does not require an initialized gate or a run. Missing or mismatched repository identity returns an error without a verdict.
 
 The TOON result contains `pr`, `verdict`, and `reason`. Inspect `verdict` to decide whether to start another run:
 
