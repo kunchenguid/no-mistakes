@@ -20,12 +20,28 @@ import (
 type copilotAgent struct {
 	bin       string
 	extraArgs []string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs adds --no-custom-instructions so copilot does not load the
+	// target checkout's AGENTS.md/CLAUDE.md project instructions.
+	disableProjectSettings bool
 	subprocessContext
 }
 
 func (a *copilotAgent) Name() string { return "copilot" }
 
 func (a *copilotAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether copilot is currently launched with
+// the target repo's project agent-instruction files suppressed. It is meaningful
+// only under the opt-out (disableProjectSettings): the gate only consults it when
+// the repo opted out. Copilot's --no-custom-instructions disables loading of
+// custom instructions from AGENTS.md and related files. The CLI exposes no flag
+// that re-enables them, so an agent_args_override pin cannot defeat the opt-out.
+// Verified against current copilot --help: "--no-custom-instructions Disable
+// loading of custom instructions from AGENTS.md and related files".
+func (a *copilotAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings
+}
 
 func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "copilot", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -145,7 +161,17 @@ func copilotErrorDetail(copilotErr, stderr string) string {
 // added; --no-ask-user is always added so the agent never blocks waiting for
 // interactive input.
 func (a *copilotAgent) buildArgs() []string {
-	args := make([]string, 0, len(a.extraArgs)+6)
+	args := make([]string, 0, len(a.extraArgs)+7)
+	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
+	// disable AGENTS.md/CLAUDE.md loading so an agent-orchestration target
+	// (firstmate) cannot install a fleet-captain identity on the gate agent.
+	// Placed before user arguments so it cannot be consumed as the value of a
+	// trailing operator flag, and an operator pin is preserved rather than
+	// duplicated. When the repo did not opt out, nothing is added and copilot
+	// loads project instructions exactly as before (backward-compat).
+	if a.disableProjectSettings && !copilotUserSetNoCustomInstructions(a.extraArgs) {
+		args = append(args, "--no-custom-instructions")
+	}
 	args = append(args, a.extraArgs...)
 	args = append(args,
 		"--output-format", "json",
@@ -158,6 +184,17 @@ func (a *copilotAgent) buildArgs() []string {
 		args = append(args, "--allow-all-tools")
 	}
 	return args
+}
+
+// copilotUserSetNoCustomInstructions reports whether extraArgs already pin the
+// project-instruction opt-out, in which case buildArgs does not add its own.
+func copilotUserSetNoCustomInstructions(extraArgs []string) bool {
+	for _, arg := range extraArgs {
+		if arg == "--no-custom-instructions" {
+			return true
+		}
+	}
+	return false
 }
 
 // copilotUserSetPermissionMode reports whether extraArgs already grant tool
