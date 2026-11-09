@@ -364,9 +364,9 @@ Rules:
 	findings.Items = append(findings.Items, unselectedTestFindings(sctx, findings.Items)...)
 
 	needsApproval := hasBlockingFindings(findings.Items)
-	// Keep all automatic repairs parked until the configured checks can run.
-	// The evidence turn above remains unconditional, and its verdict never
-	// clears the failed configured command or spends a setup repair round.
+	// Suppress the executor's automatic fix loop while setup is missing.
+	// Explicit fixes, including --yes and TUI yolo responses, remain allowed.
+	// The unconditional evidence turn never clears the failed configured check.
 	autoFixable := needsApproval && !baselineSetupFailure
 
 	// Record any new test files the agent wrote as informational (no-op)
