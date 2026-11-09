@@ -49,7 +49,7 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	tea := t.TempDir()
 	t.Setenv("TEA_CONFIG_DIR", tea)
-	if err := os.WriteFile(filepath.Join(tea, "hosts.yml"), []byte("https://gitea.example:\n  token: synthetic\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(tea, "hosts.yml"), []byte("hosts:\n  https://gitea.example:\n    token: synthetic\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "synthetic@example.test")
