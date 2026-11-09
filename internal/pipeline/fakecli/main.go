@@ -70,6 +70,10 @@ func handleFakeCLI(mode string) {
 		fakeAzureEmptyPRHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
+	case "pr-appendix-verify":
+		fakePRAppendixVerifyHandler(args)
+	case "pr-appendix-identity":
+		fakePRAppendixIdentityHandler(args)
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
 	case "git-move-head-passthrough":
@@ -111,6 +115,47 @@ func handleFakeCLI(mode string) {
 		} else {
 			fakeCIGHHandler(args)
 		}
+	default:
+		os.Exit(1)
+	}
+}
+
+func fakePRAppendixIdentityHandler(args []string) {
+	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+	joined := strings.Join(args, " ")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		if (name == "gh" && strings.Contains(joined, "github.com")) || (name == "glab" && strings.Contains(joined, "gitlab.com")) || name == "origin" {
+			return
+		}
+		os.Exit(1)
+	}
+	if len(args) > 0 && args[0] == "status" {
+		fmt.Println(os.Getenv("FAKE_CLI_STATUS_JSON"))
+		return
+	}
+	if name == "az" && len(args) > 0 && (args[0] == "extension" || args[0] == "devops") {
+		return
+	}
+	if name == "tea" && (strings.Contains(joined, "--help") || strings.HasSuffix(joined, "/user")) {
+		fmt.Println("{}")
+		return
+	}
+	if (len(args) >= 2 && ((args[0] == "pr" && args[1] == "view") || (args[0] == "mr" && args[1] == "view"))) ||
+		(name == "az" && strings.HasPrefix(joined, "repos pr show ")) ||
+		(len(args) > 0 && args[0] == "api" && (name == "tea" || name == "forgejo-axi")) {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_CONTENT_JSON"))
+		return
+	}
+	os.Exit(1)
+}
+
+func fakePRAppendixVerifyHandler(args []string) {
+	switch {
+	case len(args) > 0 && args[0] == "status":
+		fmt.Println(os.Getenv("FAKE_CLI_STATUS_JSON"))
+	case len(args) >= 3 && args[0] == "api" && args[1] == "GET",
+		len(args) >= 3 && args[0] == "pr" && args[1] == "view":
+		fmt.Println(os.Getenv("FAKE_CLI_PR_CONTENT_JSON"))
 	default:
 		os.Exit(1)
 	}
