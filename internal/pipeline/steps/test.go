@@ -467,24 +467,29 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 
 func reportedTestOperatorStops(raw json.RawMessage) []Finding {
 	var payload struct {
-		Findings []json.RawMessage `json:"findings"`
-		Items    []json.RawMessage `json:"items"`
+		Findings json.RawMessage `json:"findings"`
+		Items    json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil
 	}
-	items := payload.Findings
-	if len(items) == 0 {
-		items = payload.Items
-	}
-	var stops []Finding
-	for _, raw := range items {
-		var item Finding
-		if json.Unmarshal(raw, &item) == nil && item.RequiresOperatorStop && validateAnalyzerFinding(item) == nil {
-			stops = append(stops, item)
+	for _, candidate := range []json.RawMessage{payload.Findings, payload.Items} {
+		var items []json.RawMessage
+		if err := json.Unmarshal(candidate, &items); err != nil {
+			continue
+		}
+		var stops []Finding
+		for _, raw := range items {
+			var item Finding
+			if json.Unmarshal(raw, &item) == nil && item.RequiresOperatorStop && validateAnalyzerFinding(item) == nil {
+				stops = append(stops, item)
+			}
+		}
+		if len(stops) > 0 {
+			return stops
 		}
 	}
-	return stops
+	return nil
 }
 
 // The common RunOpts contract has no invocation-scoped, cross-adapter tool
