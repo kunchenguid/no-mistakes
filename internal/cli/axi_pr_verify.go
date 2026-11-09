@@ -1,0 +1,62 @@
+package cli
+
+import (
+	"context"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/spf13/cobra"
+	toon "github.com/toon-format/toon-go"
+)
+
+func newAxiPRVerifyCmd() *cobra.Command {
+	return newAxiPRVerifyCmdWithReader(func(ctx context.Context, repo string) (scm.PRContentReader, error) {
+		p, err := paths.New()
+		if err != nil {
+			return nil, err
+		}
+		global, err := config.LoadGlobal(p.ConfigFile())
+		if err != nil {
+			return nil, err
+		}
+		return steps.NewPRAppendixReader(ctx, config.Merge(global, &config.RepoConfig{}), repo)
+	})
+}
+
+func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (scm.PRContentReader, error)) *cobra.Command {
+	var repo, pr string
+	cmd := &cobra.Command{
+		Use: "pr-verify", Short: "Read a live PR and verify its owned appendix without writing",
+		Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repo, pr = strings.TrimSpace(repo), strings.TrimSpace(pr)
+			if repo == "" || scm.RepoPath(repo) == "" || !strings.ContainsAny(repo, ":/") {
+				return emitError(cmd, 2, "--repo requires the repository's full remote URL")
+			}
+			if n, err := strconv.ParseUint(pr, 10, 64); err != nil || n == 0 {
+				return emitError(cmd, 2, "--pr requires a positive PR number")
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+			defer cancel()
+			reader, err := resolve(ctx, repo)
+			if err != nil {
+				return emitError(cmd, 1, err.Error())
+			}
+			content, err := reader.GetPRContent(ctx, &scm.PR{Number: pr})
+			if err != nil {
+				return emitError(cmd, 1, err.Error())
+			}
+			result := steps.VerifyPRAppendix(content.Body)
+			emitDoc(cmd, toon.F("pr", pr), toon.F("verdict", result.Verdict), toon.F("reason", result.Reason))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&repo, "repo", "", "full repository remote URL (required)")
+	cmd.Flags().StringVar(&pr, "pr", "", "PR number to read (required)")
+	return cmd
+}

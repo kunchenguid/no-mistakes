@@ -41,6 +41,8 @@ type prOwnedBody struct {
 
 var errUnownedLegacyAttestation = errors.New("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
 
+var errPRAppendixMismatch = errors.New("PR appendix was edited or is malformed; refusing to overwrite possible author content")
+
 // The digest is an accidental-edit/ownership guard, NOT authentication. PR
 // authors can edit every byte, including the attestation. We never infer
 // ownership from headings: only an intact, unchanged, explicitly delimited
@@ -64,8 +66,11 @@ func parsePROwnedBody(body string) (prOwnedBody, error) {
 		return prOwnedBody{}, fmt.Errorf("malformed PR appendix ownership markers")
 	}
 	parts := prOwnedBody{before: body[:start], appendix: body[contentStart : end-1], after: body[afterEnd:], managed: true}
-	if markdownFenceOpen(parts.appendix) || !appendixDigestMatches(parts.appendix, body[digestStart:digestStart+64]) {
+	if markdownFenceOpen(parts.appendix) {
 		return prOwnedBody{}, fmt.Errorf("PR appendix was edited or is malformed; refusing to overwrite possible author content")
+	}
+	if !appendixDigestMatches(parts.appendix, body[digestStart:digestStart+64]) {
+		return prOwnedBody{}, errPRAppendixMismatch
 	}
 	if strings.Contains(parts.before+parts.after, pipelineAttestationCommentPrefix) || strings.Count(parts.appendix, pipelineAttestationCommentPrefix) != 1 {
 		return prOwnedBody{}, fmt.Errorf("ambiguous PR attestation ownership")

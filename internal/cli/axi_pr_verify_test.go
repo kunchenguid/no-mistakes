@@ -22,6 +22,9 @@ type appendixReadOnlyForge struct {
 
 func (f *appendixReadOnlyForge) GetPRContent(_ context.Context, pr *scm.PR) (scm.PRContent, error) {
 	f.reads++
+	if pr.Number != "7" {
+		return scm.PRContent{}, fmt.Errorf("read wrong PR: %s", pr.Number)
+	}
 	return scm.PRContent{Body: f.body}, nil
 }
 
@@ -52,7 +55,7 @@ func TestPRAppendixVerifyCommandIsReadOnly(t *testing.T) {
 		return fmt.Sprintf("<!-- no-mistakes-pr-appendix:v1 sha256=%x -->\n%s\n<!-- /no-mistakes-pr-appendix:v1 -->", sha256.Sum256([]byte(s)), s)
 	}
 	valid := wrap(appendix)
-	for _, body := range []string{valid, strings.Replace(valid, "evidence", "Evidence", 1), "author", "<!-- no-mistakes-pr-appendix", valid + valid, strings.ReplaceAll(wrap(appendix+"\x1b ^ERROR"), "\x1b", "^[")} {
+	for _, body := range []string{valid, strings.Replace(valid, "evidence", "Evidence", 1), "author", appendix, "<!-- no-mistakes-pr-appendix", valid + valid, strings.ReplaceAll(valid, "<!-- /no-mistakes-pr-appendix:v1 -->", ""), strings.ReplaceAll(valid, "<!-- no-mistakes-pr-appendix:v1 sha256=", ""), strings.ReplaceAll(wrap(appendix+"\x1b ^ERROR"), "\x1b", "^["), strings.ReplaceAll(wrap(appendix+strings.Repeat("\x1b", 13)), "\x1b", "^[")} {
 		before, err := os.ReadFile(dbPath)
 		if err != nil {
 			t.Fatal(err)
