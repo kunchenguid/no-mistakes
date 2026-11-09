@@ -84,6 +84,66 @@ func TestMissingTool_ConfiguredCommandParksForSetup(t *testing.T) {
 	}
 }
 
+func TestMissingTool_BaseAttributionStillRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell exit 126/127 fixtures")
+	}
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		code int
+		mode os.FileMode
+	}{
+		{"absent", 127, 0},
+		{"not-executable", 126, 0o644},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			fixtures := t.TempDir()
+			tool := filepath.Join(fixtures, "missing-tool-fixture")
+			trace := filepath.Join(fixtures, "executions")
+			if tc.mode != 0 {
+				if err := os.WriteFile(tool, []byte("#!/bin/sh\nexit 0\n"), tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+			}}
+			command := fmt.Sprintf("pwd >> '%s'; '%s'", trace, tool)
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{Test: command})
+			sctx.Config.Test.BaseAttribution = true
+			outcome, err := (&TestStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !outcome.NeedsApproval || outcome.AutoFixable || outcome.Skipped || outcome.ExitCode != tc.code {
+				t.Fatalf("attribution changed the setup gate: %+v", outcome)
+			}
+			executions, err := os.ReadFile(trace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkouts := strings.Split(strings.TrimSuffix(string(executions), "\n"), "\n")
+			if len(checkouts) != 2 || checkouts[0] == checkouts[1] {
+				t.Fatalf("command execution directories = %q, want the head and a separate base checkout", executions)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("Base attribution unavailable (test command could not run on the base checkout (exit code %d))", tc.code)
+			if !strings.Contains(findings.Summary, want) {
+				t.Fatalf("summary = %q, want %q", findings.Summary, want)
+			}
+			if len(ag.calls) != 1 || !strings.Contains(ag.calls[0].Prompt, want) {
+				t.Fatalf("agent calls = %+v, want one evidence turn carrying the base attribution", ag.calls)
+			}
+		})
+	}
+}
+
 func TestMissingTool_OrdinaryConfiguredCommandKeepsRepairFlow(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
