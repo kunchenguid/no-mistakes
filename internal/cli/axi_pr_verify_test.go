@@ -20,10 +20,10 @@ type appendixReadOnlyForge struct {
 	reads int
 }
 
-func (f *appendixReadOnlyForge) GetPRContent(_ context.Context, pr *scm.PR) (scm.PRContent, error) {
+func (f *appendixReadOnlyForge) GetPRContent(_ context.Context, pr string) (scm.PRContent, error) {
 	f.reads++
-	if pr.Number != "7" {
-		return scm.PRContent{}, fmt.Errorf("read wrong PR: %s", pr.Number)
+	if pr != "7" {
+		return scm.PRContent{}, fmt.Errorf("read wrong PR: %s", pr)
 	}
 	return scm.PRContent{Body: f.body}, nil
 }
@@ -55,21 +55,34 @@ func TestPRAppendixVerifyCommandIsReadOnly(t *testing.T) {
 		return fmt.Sprintf("<!-- no-mistakes-pr-appendix:v1 sha256=%x -->\n%s\n<!-- /no-mistakes-pr-appendix:v1 -->", sha256.Sum256([]byte(s)), s)
 	}
 	valid := wrap(appendix)
-	for _, body := range []string{valid, strings.Replace(valid, "evidence", "Evidence", 1), "author", appendix, "<!-- no-mistakes-pr-appendix", valid + valid, strings.ReplaceAll(valid, "<!-- /no-mistakes-pr-appendix:v1 -->", ""), strings.ReplaceAll(valid, "<!-- no-mistakes-pr-appendix:v1 sha256=", ""), strings.ReplaceAll(wrap(appendix+"\x1b ^ERROR"), "\x1b", "^["), strings.ReplaceAll(wrap(appendix+strings.Repeat("\x1b", 13)), "\x1b", "^[")} {
+	for _, tc := range []struct{ body, verdict string }{
+		{valid, "match"},
+		{strings.Replace(valid, "evidence", "Evidence", 1), "mismatch"},
+		{"author", "absent"},
+		{appendix, "absent"},
+		{"<!-- no-mistakes-pr-appendix", "malformed"},
+		{valid + valid, "malformed"},
+		{strings.ReplaceAll(valid, "<!-- /no-mistakes-pr-appendix:v1 -->", ""), "malformed"},
+		{strings.ReplaceAll(valid, "<!-- no-mistakes-pr-appendix:v1 sha256=", ""), "malformed"},
+		{strings.ReplaceAll(wrap(appendix+"\x1b ^ERROR"), "\x1b", "^["), "match"},
+		{strings.ReplaceAll(wrap(appendix+strings.Repeat("\x1b", 13)), "\x1b", "^["), "match"},
+	} {
+		body := tc.body
 		before, err := os.ReadFile(dbPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		forge := &appendixReadOnlyForge{body: body}
-		cmd := newAxiPRVerifyCmdWithReader(func(context.Context, string) (scm.PRContentReader, error) { return forge, nil })
+		cmd := newAxiPRVerifyCmdWithReader(func(context.Context, string) (steps.PRAppendixReader, error) {
+			return forge.GetPRContent, nil
+		})
 		cmd.SetArgs([]string{"--repo", "https://github.com/example/repo.git", "--pr", "7"})
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("command: %v: %s", err, &out)
 		}
-		want := steps.VerifyPRAppendix(body)
-		if !strings.Contains(out.String(), "verdict: "+want.Verdict) || !strings.Contains(out.String(), "reason:") || forge.reads != 1 {
+		if !strings.Contains(out.String(), "verdict: "+tc.verdict) || !strings.Contains(out.String(), "reason:") || forge.reads != 1 {
 			t.Fatalf("output %s, reads %d", &out, forge.reads)
 		}
 		after, err := os.ReadFile(dbPath)

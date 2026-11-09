@@ -70,6 +70,8 @@ func handleFakeCLI(mode string) {
 		fakeAzureEmptyPRHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
+	case "pr-appendix-verify":
+		fakePRAppendixVerifyHandler(args)
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
 	case "git-move-head-passthrough":
@@ -111,6 +113,18 @@ func handleFakeCLI(mode string) {
 		} else {
 			fakeCIGHHandler(args)
 		}
+	default:
+		os.Exit(1)
+	}
+}
+
+func fakePRAppendixVerifyHandler(args []string) {
+	switch {
+	case len(args) > 0 && args[0] == "status":
+		fmt.Println(os.Getenv("FAKE_CLI_STATUS_JSON"))
+	case len(args) >= 3 && args[0] == "api" && args[1] == "GET",
+		len(args) >= 3 && args[0] == "pr" && args[1] == "view":
+		fmt.Println(os.Getenv("FAKE_CLI_PR_CONTENT_JSON"))
 	default:
 		os.Exit(1)
 	}

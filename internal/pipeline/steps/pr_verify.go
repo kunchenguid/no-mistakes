@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/forgejo"
 )
 
 // PRAppendixVerification reports the publication parser's ownership decision.
@@ -42,9 +43,11 @@ func VerifyPRAppendix(body string) PRAppendixVerification {
 	}
 }
 
+type PRAppendixReader func(context.Context, string) (scm.PRContent, error)
+
 // NewPRAppendixReader uses the publication provider adapters without opening a
 // run, database, or daemon connection. Only the read interface escapes.
-func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string) (scm.PRContentReader, error) {
+func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string) (PRAppendixReader, error) {
 	forge, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repoURL, "")
 	if err != nil {
 		return nil, err
@@ -60,9 +63,17 @@ func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string
 	if host == nil {
 		return nil, fmt.Errorf("cannot read PR content: %s", reason)
 	}
+	if err := host.Available(ctx); err != nil {
+		return nil, fmt.Errorf("cannot read PR content: %w", err)
+	}
+	if host, ok := host.(*forgejo.Host); ok {
+		return host.GetPRContentByNumber, nil
+	}
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
 		return nil, fmt.Errorf("provider does not support reading PR content")
 	}
-	return reader, nil
+	return func(ctx context.Context, number string) (scm.PRContent, error) {
+		return reader.GetPRContent(ctx, &scm.PR{Number: number})
+	}, nil
 }

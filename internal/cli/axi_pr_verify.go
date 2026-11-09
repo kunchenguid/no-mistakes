@@ -15,7 +15,7 @@ import (
 )
 
 func newAxiPRVerifyCmd() *cobra.Command {
-	return newAxiPRVerifyCmdWithReader(func(ctx context.Context, repo string) (scm.PRContentReader, error) {
+	return newAxiPRVerifyCmdWithReader(func(ctx context.Context, repo string) (steps.PRAppendixReader, error) {
 		p, err := paths.New()
 		if err != nil {
 			return nil, err
@@ -28,7 +28,7 @@ func newAxiPRVerifyCmd() *cobra.Command {
 	})
 }
 
-func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (scm.PRContentReader, error)) *cobra.Command {
+func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (steps.PRAppendixReader, error)) *cobra.Command {
 	var repo, pr string
 	cmd := &cobra.Command{
 		Use: "pr-verify", Short: "Read a live PR and verify its owned appendix without writing",
@@ -47,7 +47,7 @@ func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (scm.PRCo
 			if err != nil {
 				return emitError(cmd, 1, err.Error())
 			}
-			content, err := reader.GetPRContent(ctx, &scm.PR{Number: pr})
+			content, err := reader(ctx, pr)
 			if err != nil {
 				return emitError(cmd, 1, err.Error())
 			}

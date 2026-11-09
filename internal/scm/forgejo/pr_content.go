@@ -3,10 +3,19 @@ package forgejo
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+func (h *Host) GetPRContentByNumber(ctx context.Context, number string) (scm.PRContent, error) {
+	n, err := strconv.Atoi(number)
+	if err != nil || n <= 0 {
+		return scm.PRContent{}, fmt.Errorf("invalid Forgejo PR number %q", number)
+	}
+	return h.GetPRContent(ctx, &scm.PR{Number: strconv.Itoa(n), URL: h.canonicalPRURL(n)})
+}
 
 // forgejo-axi 1.3.0 (source bb2d38c9803dd6ee841ffc84a4627be6b4de6474,
 // src/cli.ts handleApi / src/forgejo.ts rawApi) emits {status,data} for

@@ -88,9 +88,13 @@ func TestGetMergeableStateTreatsBlockedStatusesAsResolved(t *testing.T) {
 // checksFixture is the command map a project-scoped GitLab checks read needs:
 // the merge request view carrying the head pipeline, the pipeline's job page,
 // the pipeline's trigger jobs, and the merge request's external status checks.
-func checksFixture(headPipeline, jobs, triggerJobs, statusChecks string) map[string]gitlabTestResponse {
+func checksFixture(headPipeline, jobs, triggerJobs, statusChecks string, host ...string) map[string]gitlabTestResponse {
+	repo := "group/project"
+	if len(host) > 0 {
+		repo = "https://" + host[0] + "/" + repo
+	}
 	return map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo " + repo: {
 			stdout: `{"iid":123,"head_pipeline":` + headPipeline + `}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
@@ -148,7 +152,7 @@ func TestGetChecksReturnsNoChecksWithoutAHeadPipeline(t *testing.T) {
 	// no error either, so the CI step keeps waiting for registration instead of
 	// reading a failure.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo group/project": {
 			stdout: `{"iid":123,"head_pipeline":null}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
@@ -176,14 +180,14 @@ func TestGetChecksSurfacesReadErrors(t *testing.T) {
 		{
 			name: "invalid mr json",
 			mutate: func(responses map[string]gitlabTestResponse) {
-				responses["glab mr view 123 --output json"] = gitlabTestResponse{stdout: "notice\nnot json\n"}
+				responses["glab mr view 123 --output json --repo group/project"] = gitlabTestResponse{stdout: "notice\nnot json\n"}
 			},
 			wantErrSub: "invalid JSON output",
 		},
 		{
 			name: "mr view fails",
 			mutate: func(responses map[string]gitlabTestResponse) {
-				responses["glab mr view 123 --output json"] = gitlabTestResponse{stderr: "gitlab unavailable\n", code: 1}
+				responses["glab mr view 123 --output json --repo group/project"] = gitlabTestResponse{stderr: "gitlab unavailable\n", code: 1}
 			},
 			wantErrSub: "glab mr view",
 		},
@@ -435,7 +439,7 @@ func TestGetChecksReadsExternalStatusChecksWithoutAHeadPipeline(t *testing.T) {
 	// at all; dropping its status checks with the pipeline would read a failed
 	// requirement as no checks registered.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo group/project": {
 			stdout: `{"iid":123,"head_pipeline":null}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
@@ -491,7 +495,7 @@ func TestGetChecksBoundNoPipelineReportsOnlyNonPassingExternalStatusChecks(t *te
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-				"glab mr view 123 --output json": {
+				"glab mr view 123 --output json --repo group/project": {
 					stdout: fmt.Sprintf(`{"iid":123,"sha":%q,"head_pipeline":null}`+"\n", deliveredSHA),
 				},
 				"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
@@ -522,7 +526,7 @@ func TestGetChecksStabilityReReadRunsAfterEveryProviderRead(t *testing.T) {
 	// read with a moved revision and fails the status-check read: the read
 	// failure is what surfaces only if the status-check read happened first.
 	host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": {
 			gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
 			gitlabMRAtHead(movedSHA, deliveredSHA, "refs/heads/feature"),
 		},
@@ -1250,6 +1254,7 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 		`[{"id":9,"name":"test","status":"success","web_url":"https://gitlab.example.com/group/project/-/jobs/9","finished_at":"2026-04-24T04:15:00.000Z"}]`,
 		"[]",
 		"[]",
+		"gitlab.example.com",
 	)), nil, "gitlab.example.com", "group/project")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
@@ -1387,8 +1392,12 @@ func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
 // porcelain one. The REST route also answers the trigger-job and external
 // status-check reads the composed observation makes.
 func unboundChecksFixture(jobsOutput string, rest bool) map[string]gitlabTestResponse {
+	view := "glab mr view 123 --output json"
+	if rest {
+		view += " --repo group/project"
+	}
 	responses := map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": {stdout: `{"iid":123,"head_pipeline":{"id":77,"status":"success"}}`},
+		view: {stdout: `{"iid":123,"head_pipeline":{"id":77,"status":"success"}}`},
 	}
 	if rest {
 		responses["glab api --paginate projects/group%2Fproject/pipelines/77/jobs"] = gitlabTestResponse{stdout: jobsOutput}
@@ -1575,7 +1584,7 @@ func TestGetChecksRejectsAHeadPipelineThatRanAtADifferentCommit(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, otherSHA, "refs/heads/feature"),
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": gitlabMRAtHead(deliveredSHA, otherSHA, "refs/heads/feature"),
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
 		},
@@ -1601,7 +1610,7 @@ func TestGetChecksReadsJobsOfAHeadPipelineThatRanAtTheDeliveredCommit(t *testing
 	// A head pipeline that ran at the delivered commit is the pipeline to read;
 	// no other pipeline's jobs may appear among the checks.
 	host := New(gitlabTestCmdFactory(withEmptyCoverageRoutes(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
 		},
@@ -1646,7 +1655,7 @@ func TestGetChecksRejectsAMoveOfTheSourceCommitDuringCheckDiscovery(t *testing.T
 	// adapter rejects, because the observation no longer describes the commit
 	// that will be certified.
 	host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": {
 			gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
 			gitlabMRAtHead(movedSHA, deliveredSHA, "refs/heads/feature"),
 		},
@@ -1685,7 +1694,7 @@ func TestGetChecksAcceptsAMergedResultsPipelineThatIncludesTheDeliveredCommit(t 
 	// commit; that provenance - not the SHA difference - is what binds the
 	// pipeline to the delivered commit.
 	host := New(gitlabTestCmdFactory(withEmptyCoverageRoutes(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
 		"glab api projects/group%2Fproject/repository/commits/" + mergeRefSHA: {
 			stdout: fmt.Sprintf(`{"id":%q,"parent_ids":[%q,%q]}`, mergeRefSHA, targetSHA, deliveredSHA) + "\n",
 		},
@@ -1710,7 +1719,7 @@ func TestGetChecksRejectsAMergedResultsPipelineThatDoesNotIncludeTheDeliveredCom
 	// temporary commit carries an older source revision, so a green run there
 	// says nothing about the delivered commit.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
 		"glab api projects/group%2Fproject/repository/commits/" + mergeRefSHA: {
 			stdout: fmt.Sprintf(`{"id":%q,"parent_ids":[%q,%q]}`, mergeRefSHA, targetSHA, otherSHA) + "\n",
 		},
@@ -1756,7 +1765,7 @@ func TestGetChecksFailsClosedWhenTheHeadPipelineReportsNoCommit(t *testing.T) {
 	// An omitted commit is not an absent pipeline: the binding cannot be shown,
 	// so the read fails closed instead of grading jobs whose commit is unknown.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": {
 			stdout: fmt.Sprintf(`{"iid":123,"sha":%q,"head_pipeline":{"id":77}}`+"\n", deliveredSHA),
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
@@ -1790,7 +1799,7 @@ func TestGetChecksUsesTheDiffHeadCommitWhenTheMergeRequestReportsNoSHA(t *testin
 	// documented head of the merge request's latest diff version; a merge
 	// request that has not reported its own sha yet is still bound through it.
 	host := New(gitlabTestCmdFactory(withEmptyCoverageRoutes(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": {
 			stdout: fmt.Sprintf(`{"iid":123,"sha":"","diff_refs":{"head_sha":%q},"head_pipeline":{"id":77,"sha":%q,"ref":"refs/heads/feature","status":"success"}}`+"\n", deliveredSHA, deliveredSHA),
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
@@ -1856,7 +1865,7 @@ func TestFetchFailedCheckTargetLogsBindsToTheDeliveredCommit(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: `[{"id":55,"name":"lint","status":"failed"}]` + "\n",
 		},
@@ -1943,7 +1952,7 @@ func TestGetChecksRejectsAMergedResultsPipelineWhoseCommitIsNotACommitID(t *test
 	// The merge-result commit is interpolated into a repository API path, so a
 	// value that is not a commit id is refused before any request is built.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, "not-a-commit", "refs/merge-requests/123/merge"),
+		"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": gitlabMRAtHead(deliveredSHA, "not-a-commit", "refs/merge-requests/123/merge"),
 	}), nil, "gitlab.example.com", "group/project")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
@@ -1966,7 +1975,7 @@ func TestGetChecksRejectsAHeadPipelineStrandedByAHeadMoveWithoutAPipeline(t *tes
 	// The delivered commit has no pipeline; the head pipeline belongs to the
 	// commit before it, where one job passed and one failed.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 1 --output json": {
+		"glab mr view 1 --output json --repo https://gitlab.example.com/group/project": {
 			stdout: fmt.Sprintf(`{"iid":1,"sha":%q,"head_pipeline":{"id":174,"sha":%q,"ref":"refs/merge-requests/1/head"}}`+"\n", deliveredSHA, otherSHA),
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/174/jobs": {
@@ -2009,7 +2018,7 @@ func TestFetchFailedCheckTargetLogsRejectsAHeadMoveDuringLogRetrieval(t *testing
 	t.Parallel()
 
 	host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
-		"glab mr view 1 --output json": {
+		"glab mr view 1 --output json --repo https://gitlab.example.com/group/project": {
 			gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
 			gitlabMRAtHead(movedSHA, deliveredSHA, "refs/heads/feature"),
 		},
@@ -2193,7 +2202,7 @@ func TestFinalSourceReadWithoutRevisionIsAProviderError(t *testing.T) {
 	for _, operation := range []string{"checks", "selected logs", "combined logs"} {
 		t.Run(operation, func(t *testing.T) {
 			host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
-				"glab mr view 123 --output json": {
+				"glab mr view 123 --output json --repo https://gitlab.example.com/group/project": {
 					gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
 					{stdout: `{"iid":123}`},
 				},
