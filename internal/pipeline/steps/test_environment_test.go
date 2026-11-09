@@ -127,7 +127,7 @@ func TestMissingTool_PrepareMaterializesToolForLaterCommands(t *testing.T) {
 	calls := 0
 	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		calls++
-		if !strings.Contains(opts.Prompt, "Do not remove dependencies materialized by commands.prepare") {
+		if !strings.Contains(strings.ToLower(opts.Prompt), "do not remove dependencies materialized by commands.prepare") {
 			t.Fatal("evidence cleanup must preserve prepared dependencies")
 		}
 		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
