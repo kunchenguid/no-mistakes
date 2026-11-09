@@ -52,7 +52,7 @@ func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (scm.PRCo
 				return emitError(cmd, 1, err.Error())
 			}
 			result := steps.VerifyPRAppendix(content.Body)
-			emitDoc(cmd, toon.F("pr", pr), toon.F("verdict", result.Verdict), toon.F("reason", result.Reason))
+			emitDoc(cmd, toon.Field{Key: "pr", Value: pr}, toon.Field{Key: "verdict", Value: result.Verdict}, toon.Field{Key: "reason", Value: result.Reason})
 			return nil
 		},
 	}
