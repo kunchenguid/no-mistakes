@@ -29,8 +29,12 @@ func (h *Host) GetPRRepositoryContent(ctx context.Context, number string) (scm.P
 			return scm.PRRepositoryContent{}, fmt.Errorf("az repository identity is malformed")
 		}
 	}
-	identity := scm.RepositoryIdentity{Host: "dev.azure.com", Path: azureOrganizationName(org) + "/" + project + "/" + repo}
+	identity := RepositoryIdentity(org, project, repo)
 	return scm.PRRepositoryContent{Content: scm.PRContent{Title: got.Title, Body: *got.Description}, Repository: identity}, nil
+}
+
+func RepositoryIdentity(org, project, repo string) scm.RepositoryIdentity {
+	return scm.RepositoryIdentity{Host: "dev.azure.com", Path: azureOrganizationName(org) + "/" + project + "/" + repo}
 }
 
 var _ scm.PRRepositoryContentReader = (*Host)(nil)

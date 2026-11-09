@@ -65,64 +65,107 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", server.URL)
-	for _, provider := range []string{"github", "gitlab", "origin", "forgejo", "gitea", "azure", "bitbucket", "plugin"} {
-		for _, kind := range []string{"match", "wrong repository", "absent", "wrong project"} {
-			if kind == "wrong project" && provider != "azure" {
-				continue
+	for _, tc := range []struct {
+		provider, name, repo, webBase, path string
+	}{
+		{"github", "https", "https://github.com/team/target.git", "https://github.com", "team/target"},
+		{"github", "case", "https://github.com/team/target.git", "https://github.com", "Team/Target"},
+		{"github", "scp web port", "git@enterprise.github.com:team/target.git", "https://enterprise.github.com:3000", "team/target"},
+		{"github", "ssh web port", "ssh://git@enterprise.github.com:2222/team/target.git", "https://enterprise.github.com:3000", "team/target"},
+		{"github", "https web port", "https://enterprise.github.com:3000/team/target.git", "https://enterprise.github.com:3000", "team/target"},
+		{"gitlab", "https", "https://gitlab.com/team/target.git", "https://gitlab.com", "team/target"},
+		{"gitlab", "case", "https://gitlab.com/team/target.git", "https://gitlab.com", "Team/Target"},
+		{"gitlab", "scp web port", "git@enterprise.gitlab.com:team/target.git", "https://enterprise.gitlab.com:3000", "team/target"},
+		{"gitlab", "ssh web port", "ssh://git@enterprise.gitlab.com:2222/team/target.git", "https://enterprise.gitlab.com:3000", "team/target"},
+		{"gitlab", "https web port", "https://enterprise.gitlab.com:3000/team/target.git", "https://enterprise.gitlab.com:3000", "team/target"},
+		{"origin", "https", "https://origin.cursor.com/team/target.git", "https://cursor.com/codebase", "team/target"},
+		{"forgejo", "https", "https://forgejo.example/team/target.git", "https://forgejo.example", "team/target"},
+		{"forgejo", "scp web port", "git@forgejo.example:team/target.git", "https://forgejo.example:3000", "team/target"},
+		{"forgejo", "https web port", "https://forgejo.example:3000/team/target.git", "https://forgejo.example:3000", "team/target"},
+		{"gitea", "https", "https://gitea.example/team/target.git", "https://gitea.example", "team/target"},
+		{"gitea", "scp web port", "git@gitea.example:team/target.git", "https://gitea.example:3000", "team/target"},
+		{"gitea", "ssh web port", "ssh://git@gitea.example:2222/team/target.git", "https://gitea.example:3000", "team/target"},
+		{"gitea", "https web port", "https://gitea.example:3000/team/target.git", "https://gitea.example:3000", "team/target"},
+		{"azure", "https", "https://dev.azure.com/org/proj/_git/target", "https://dev.azure.com/org", "proj/target"},
+		{"azure", "case", "https://dev.azure.com/org/PROJ/_git/target", "https://dev.azure.com/ORG", "proj/TARGET"},
+		{"azure", "legacy https", "https://myorg.visualstudio.com/proj/_git/target", "https://myorg.visualstudio.com", "proj/target"},
+		{"azure", "legacy scp", "git@vs-ssh.visualstudio.com:v3/myorg/proj/target", "https://myorg.visualstudio.com", "proj/target"},
+		{"azure", "scp", "git@ssh.dev.azure.com:v3/org/proj/target", "https://dev.azure.com/org", "proj/target"},
+		{"bitbucket", "https", "https://bitbucket.org/team/target.git", "https://bitbucket.org", "team/target"},
+		{"plugin", "https", "https://plugin.example/team/target.git", "https://plugin.example", "team/target"},
+		{"plugin", "https port", "https://plugin.example:8443/team/target.git", "https://plugin.example:8443", "team/target"},
+		{"plugin", "web alias", "https://plugin.example:8443/team/target.git", "https://web.example:3000", "Team/Target"},
+	} {
+		kinds := []string{"match", "wrong repository", "absent"}
+		if tc.provider == "azure" {
+			kinds = append(kinds, "wrong project")
+		}
+		if tc.provider == "github" || tc.provider == "gitlab" || tc.provider == "gitea" || tc.provider == "forgejo" {
+			kinds = append(kinds, "wrong host")
+			if strings.HasPrefix(tc.repo, "https://") {
+				kinds = append(kinds, "wrong port")
 			}
-			t.Run(provider+"/"+kind, func(t *testing.T) {
+		}
+		for _, kind := range kinds {
+			t.Run(tc.provider+"/"+tc.name+"/"+kind, func(t *testing.T) {
 				cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
-				repo := "https://" + provider + ".example/team/target.git"
-				path := "team/target"
+				path, webBase := tc.path, tc.webBase
 				if kind == "wrong repository" {
-					path = "team/other"
+					owner, _, _ := strings.Cut(path, "/")
+					path = owner + "/other"
 				}
-				link := func(prefix, suffix string) string {
+				if kind == "wrong host" {
+					webBase = "https://other.example:3000"
+				}
+				if kind == "wrong port" {
+					webBase = strings.TrimSuffix(webBase, ":3000") + ":4000"
+				}
+				link := func(suffix string) string {
 					if kind == "absent" {
 						return ""
 					}
-					return prefix + path + suffix
+					return webBase + "/" + path + suffix
 				}
 				payload := map[string]any{"number": 7, "title": "PR", "body": "author"}
-				switch provider {
+				switch tc.provider {
 				case "github":
-					repo = "https://github.com/team/target.git"
-					payload["url"] = link("https://github.com/", "/pull/7")
+					payload["url"] = link("/pull/7")
 				case "gitlab":
-					repo = "https://gitlab.com/team/target.git"
-					payload = map[string]any{"iid": 7, "title": "PR", "description": "author", "web_url": link("https://gitlab.com/", "/-/merge_requests/7")}
+					payload = map[string]any{"iid": 7, "title": "PR", "description": "author", "web_url": link("/-/merge_requests/7")}
 				case "origin":
-					repo = "https://origin.cursor.com/team/target.git"
-					payload = map[string]any{"number": 7, "title": "PR", "description": "author", "url": link("https://cursor.com/codebase/", "/pull/7")}
+					payload = map[string]any{"number": 7, "title": "PR", "description": "author", "url": link("/pull/7")}
 				case "forgejo":
-					t.Setenv("FORGEJO_BASE_URL", "https://forgejo.example")
-					t.Setenv("FAKE_CLI_STATUS_JSON", `{"host":{"url":"https://forgejo.example","api_url":"https://forgejo.example/api/v1"},"auth":{"configured":true,"authenticated":true,"source":"test"},"capabilities":{"pull_requests":true,"probe":{"source":"swagger","complete":true}}}`)
-					payload["html_url"] = link("https://forgejo.example/", "/pulls/7")
+					t.Setenv("FORGEJO_BASE_URL", tc.webBase)
+					status := map[string]any{
+						"host":         map[string]string{"url": tc.webBase, "api_url": tc.webBase + "/api/v1"},
+						"auth":         map[string]any{"configured": true, "authenticated": true, "source": "test"},
+						"capabilities": map[string]any{"pull_requests": true, "probe": map[string]any{"source": "swagger", "complete": true}},
+					}
+					data, err := json.Marshal(status)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("FAKE_CLI_STATUS_JSON", string(data))
+					payload["html_url"] = link("/pulls/7")
 					payload = map[string]any{"status": 200, "data": payload}
 				case "gitea":
-					payload["html_url"] = link("https://gitea.example/", "/pulls/7")
+					payload["html_url"] = link("/pulls/7")
 				case "azure":
-					repo = "https://dev.azure.com/org/proj/_git/target"
-					name, project := "target", "proj"
-					if kind == "wrong repository" {
-						name = "other"
-					}
+					project, name, _ := strings.Cut(path, "/")
 					if kind == "wrong project" {
 						project = "other"
 					}
-					identity := map[string]any{"name": name, "project": map[string]string{"name": project}, "webUrl": "https://dev.azure.com/org/" + project + "/_git/" + name}
+					identity := map[string]any{"name": name, "project": map[string]string{"name": project}, "webUrl": webBase + "/" + project + "/_git/" + name}
 					if kind == "absent" {
 						identity = nil
 					}
 					payload = map[string]any{"pullRequestId": 7, "title": "PR", "description": "author", "repository": identity}
 				case "bitbucket":
-					repo = "https://bitbucket.org/team/target.git"
-					payload = map[string]any{"id": 7, "title": "PR", "summary": map[string]string{"raw": "author"}, "links": map[string]any{"html": map[string]string{"href": link("https://bitbucket.org/", "/pull-requests/7")}}}
+					payload = map[string]any{"id": 7, "title": "PR", "summary": map[string]string{"raw": "author"}, "links": map[string]any{"html": map[string]string{"href": link("/pull-requests/7")}}}
 				case "plugin":
-					repo = "https://plugin.example/team/target.git"
 					cfg.ProviderPlugins = config.ProviderPlugins{"identity": {Command: "appendix-provider", Hosts: []string{"plugin.example"}}}
 					t.Setenv("FAKE_CLI_STATUS_JSON", `{"protocol_version":1,"max_pr_body_chars":0,"capabilities":{}}`)
-					payload = map[string]any{"pr": map[string]string{"number": "7", "url": link("https://plugin.example/", "/pulls/7")}, "title": "PR", "body": "author"}
+					payload = map[string]any{"pr": map[string]string{"number": "7", "url": link("/pulls/7")}, "title": "PR", "body": "author"}
 				}
 				data, err := json.Marshal(payload)
 				if err != nil {
@@ -133,7 +176,7 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 				cmd := newAxiPRVerifyCmdWithReader(func(ctx context.Context, repo string) (steps.PRAppendixReader, error) {
 					return steps.NewPRAppendixReader(ctx, cfg, repo)
 				})
-				cmd.SetArgs([]string{"--repo", repo, "--pr", "7"})
+				cmd.SetArgs([]string{"--repo", tc.repo, "--pr", "7"})
 				var out bytes.Buffer
 				cmd.SetOut(&out)
 				err = cmd.Execute()

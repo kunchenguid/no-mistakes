@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -75,8 +76,11 @@ func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string
 		return nil, fmt.Errorf("provider does not support repository-bound numbered PR reads")
 	}
 	expected := scm.RepositoryIdentity{Host: resolvedHost(sctx, repoURL), Path: scm.RepoPath(repoURL)}
-	if web := scm.RepositoryIdentityFromURL(repoURL); web.Host != "" {
-		expected.Host = web.Host
+	remote, _ := url.Parse(repoURL)
+	compareWebAuthority := !provider.IsPlugin() && remote != nil && (remote.Scheme == "http" || remote.Scheme == "https")
+	if compareWebAuthority {
+		remote.User = nil
+		expected.Host = scm.RepositoryIdentityFromURL(remote.String()).Host
 	}
 	switch provider {
 	case scm.ProviderAzureDevOps:
@@ -84,7 +88,7 @@ func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string
 		if !ok {
 			return nil, fmt.Errorf("cannot resolve requested Azure repository identity")
 		}
-		expected = scm.RepositoryIdentity{Host: "dev.azure.com", Path: scm.RepoPath(org) + "/" + project + "/" + repo}
+		expected = azuredevops.RepositoryIdentity(org, project, repo)
 	case scm.ProviderOrigin:
 		expected = scm.RepositoryIdentity{Host: "origin.cursor.com", Path: origin.RepoSlug(repoURL)}
 	case scm.ProviderForgejo:
@@ -107,7 +111,12 @@ func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string
 		if result.Repository.Host == "" || result.Repository.Path == "" {
 			return scm.PRContent{}, fmt.Errorf("PR read did not report a repository identity")
 		}
-		if !strings.EqualFold(result.Repository.Host, expected.Host) || result.Repository.Path != expected.Path {
+		observedHost, expectedHost := result.Repository.Host, expected.Host
+		if !compareWebAuthority {
+			observedHost = scm.ExtractHost("https://" + observedHost)
+			expectedHost = scm.ExtractHost("https://" + expectedHost)
+		}
+		if !strings.EqualFold(observedHost, expectedHost) || !strings.EqualFold(result.Repository.Path, expected.Path) {
 			return scm.PRContent{}, fmt.Errorf("PR repository identity does not match --repo")
 		}
 		return result.Content, nil
