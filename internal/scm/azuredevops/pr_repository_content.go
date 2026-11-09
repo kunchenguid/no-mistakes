@@ -18,7 +18,7 @@ func (h *Host) GetPRRepositoryContent(ctx context.Context, number string) (scm.P
 	}
 	// Reuse the adapter's existing proof of organization/project/repository,
 	// including contradictory metadata. Publication's raw read is unchanged.
-	if err := h.validateListedPR(got); err != nil {
+	if err := h.validateListedPR(*got); err != nil {
 		return scm.PRRepositoryContent{}, fmt.Errorf("az repository identity: %w", err)
 	}
 	org, project, repo := h.org, got.Repository.Project.Name, got.Repository.Name
