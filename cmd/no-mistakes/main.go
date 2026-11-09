@@ -15,11 +15,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
-	"github.com/kunchenguid/no-mistakes/internal/update"
 )
 
-var cleanupOldExecutable = update.CleanupOldExecutable
-var maybeHandleBackgroundCheck = update.MaybeHandleBackgroundCheck
 var prepareDaemonRunStdio = daemon.PrepareRunStdio
 var runDaemon = daemon.RunRestartable
 
@@ -35,13 +32,10 @@ func run() int {
 		return exitCode
 	}
 
-	// Export is a storage-only probe, including in release builds. Dispatch
-	// before executable cleanup, background update checks and CLI log creation.
+	// Export is a storage-only probe. Dispatch before CLI log creation.
 	if len(os.Args) > 1 && os.Args[1] == "export" {
 		return cli.Execute()
 	}
-
-	_ = cleanupOldExecutable()
 
 	if root, ok, err := daemonLogSinkRootFromArgs(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -80,16 +74,6 @@ func run() int {
 		}
 		return 0
 	}
-
-	if handled, err := maybeHandleBackgroundCheck(os.Args[1:]); handled {
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		return 0
-	}
-
-	update.MaybeNotifyAndCheck(os.Args[1:], os.Stderr)
 
 	// Redirect slog to a file for interactive CLI commands so logs never
 	// leak into user-facing output. The daemon process sets up its own

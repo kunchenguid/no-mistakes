@@ -180,10 +180,6 @@ func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("daemon restart --force failed: %v\n%s", err, out)
 	}
-	out, err = executeCmd("update", "--force")
-	if err != nil {
-		t.Fatalf("update --force failed: %v\n%s", err, out)
-	}
 	out, err = executeCmd("daemon", "uninstall", "--force")
 	if err != nil {
 		t.Fatalf("daemon uninstall --force failed: %v\n%s", err, out)
@@ -198,7 +194,6 @@ func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
 		"lifecycle FORCE command=daemon.stop",
 		"lifecycle FORCE command=daemon.restart",
 		"lifecycle FORCE command=daemon.uninstall",
-		"lifecycle FORCE command=update",
 		"force=true",
 		"pid=",
 		"ppid=",

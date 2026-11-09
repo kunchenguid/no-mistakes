@@ -87,7 +87,6 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newSkillCmd())
 	cmd.AddCommand(newCIWorkflowCmd())
 	cmd.AddCommand(newEjectCmd())
-	cmd.AddCommand(newUpdateCmd())
 	cmd.AddCommand(newDaemonCmd())
 	cmd.AddCommand(newAttachCmd())
 	cmd.AddCommand(newRerunCmd())

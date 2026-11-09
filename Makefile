@@ -1,52 +1,30 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-DEFAULT_UMAMI_HOST := https://a.kunchenguid.com
-DEFAULT_UMAMI_WEBSITE_ID := f959e889-92f5-4121-8a1f-571b10861198
-DOTENV_UMAMI_HOST := $(shell [ -f .env ] && perl -ne 'next if /^\s*(?:\#|$$)/; s/^\s*export\s+//; next unless /^\s*NO_MISTAKES_UMAMI_HOST\s*=\s*(.*)$$/; $$v=$$1; $$v =~ s/^\s+|\s+$$//g; if ($$v =~ /^( ["\x27] )(.*)\1$$/x) { $$v=$$2; } else { $$v =~ s/\s+\#.*$$//; $$v =~ s/\s+$$//; } $$out=$$v; END { print $$out if defined $$out }' .env)
-DOTENV_UMAMI_WEBSITE_ID := $(shell [ -f .env ] && perl -ne 'next if /^\s*(?:\#|$$)/; s/^\s*export\s+//; next unless /^\s*NO_MISTAKES_UMAMI_WEBSITE_ID\s*=\s*(.*)$$/; $$v=$$1; $$v =~ s/^\s+|\s+$$//g; if ($$v =~ /^(["\x27])(.*)\1$$/) { $$v=$$2; } else { $$v =~ s/\s+\#.*$$//; $$v =~ s/\s+$$//; } $$out=$$v; END { print $$out if defined $$out }' .env)
-override UMAMI_HOST := $(if $(DOTENV_UMAMI_HOST),$(DOTENV_UMAMI_HOST),$(if $(UMAMI_HOST),$(UMAMI_HOST),$(DEFAULT_UMAMI_HOST)))
-override UMAMI_WEBSITE_ID := $(if $(DOTENV_UMAMI_WEBSITE_ID),$(DOTENV_UMAMI_WEBSITE_ID),$(if $(UMAMI_WEBSITE_ID),$(UMAMI_WEBSITE_ID),$(DEFAULT_UMAMI_WEBSITE_ID)))
+
+# Target platform: the host by default; cross-build just the platform you
+# need, e.g. `make build GOOS=windows GOARCH=amd64`.
+GOOS   ?= $(shell go env GOOS)
+GOARCH ?= $(shell go env GOARCH)
+BIN    := bin/no-mistakes$(if $(filter windows,$(GOOS)),.exe)
+
+# Telemetry stays unconfigured: no Umami host or website ID is embedded, and
+# an empty config means the telemetry client never makes a network request.
 LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VERSION) \
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=$(COMMIT) \
-           -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=$(DATE) \
-           -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryHost=$(UMAMI_HOST) \
-           -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=$(UMAMI_WEBSITE_ID)
+           -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=$(DATE)
 
-.PHONY: build dist install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo skill skill-check winres winres-check
+.PHONY: build install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo skill skill-check winres winres-check
 
-DIST_DIR ?= dist
-INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
+BINDIR ?= $(HOME)/.local/bin
+INSTALL_BIN := $(BINDIR)/$(notdir $(BIN))
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o bin/no-mistakes ./cmd/no-mistakes
-
-dist:
-	rm -rf $(DIST_DIR)
-	mkdir -p $(DIST_DIR)
-	for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do \
-		os=$${target%/*}; \
-		arch=$${target#*/}; \
-		bin=no-mistakes; \
-		out="$(DIST_DIR)/$$bin"; \
-		if [ "$$os" = "windows" ]; then \
-			bin="$$bin.exe"; \
-			out="$(DIST_DIR)/$$bin"; \
-		fi; \
-		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -ldflags "$(LDFLAGS)" -o "$$out" ./cmd/no-mistakes; \
-		if [ "$$os" = "windows" ]; then \
-			( cd "$(DIST_DIR)" && zip -q "no-mistakes-$(VERSION)-$$os-$$arch.zip" "$$bin" ); \
-		else \
-			tar -C "$(DIST_DIR)" -czf "$(DIST_DIR)/no-mistakes-$(VERSION)-$$os-$$arch.tar.gz" "$$bin"; \
-		fi; \
-		rm -f "$$out"; \
-	done
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/no-mistakes
 
 install: build
-	mkdir -p $(dir $(INSTALL_BIN))
-	install -m 755 bin/no-mistakes $(INSTALL_BIN)
-	$(INSTALL_BIN) daemon stop
-	$(INSTALL_BIN) daemon start
+	mkdir -p $(BINDIR)
+	install -m 755 $(BIN) $(INSTALL_BIN)
 
 test:
 	go test -race ./...
@@ -81,7 +59,7 @@ skill:
 	go run ./cmd/genskill
 
 # Fail if the committed skill has drifted from the generator. Wired into lint
-# so CI catches a forgotten `make skill`.
+# so a forgotten `make skill` is caught.
 skill-check:
 	go run ./cmd/genskill --check
 

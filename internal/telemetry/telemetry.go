@@ -24,7 +24,6 @@ const (
 	defaultHostname = "cli"
 	defaultTitle    = "no-mistakes CLI"
 	defaultPath     = "/api/send"
-	defaultHost     = "https://a.kunchenguid.com"
 
 	umamiHostEnv      = "NO_MISTAKES_UMAMI_HOST"
 	umamiWebsiteIDEnv = "NO_MISTAKES_UMAMI_WEBSITE_ID"
@@ -139,6 +138,12 @@ func Default() Sink {
 	}
 
 	host := defaultHostValue()
+	// Fail closed: without a host there is nothing to report to, so no
+	// network request is ever made.
+	if host == "" {
+		defaultSink = noopSink{}
+		return defaultSink
+	}
 	client, err := NewClient(Config{
 		Host:      host,
 		WebsiteID: websiteID,
@@ -379,9 +384,6 @@ func defaultHostValue() string {
 
 	if host == "" {
 		host = strings.TrimSpace(buildinfo.TelemetryHost)
-	}
-	if host == "" {
-		host = defaultHost
 	}
 
 	return host

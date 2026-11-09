@@ -4,7 +4,7 @@ This file is for agentic coding tools working in this repo.
 
 This repository is a Go CLI app named `no-mistakes`.
 The binary entrypoint is `cmd/no-mistakes`; implementation code lives under `internal/`, and the package names there are the layout map (CLI in `internal/cli`, daemon in `internal/daemon`, pipeline and steps in `internal/pipeline`, agent adapters in `internal/agent`, terminal UI in `internal/tui`, shared infrastructure in `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`).
-Build, test, and release commands are owned by the `Makefile`; read it for the full target list instead of relying on a copy here.
+Build and test commands are owned by the `Makefile`; read it for the full target list instead of relying on a copy here.
 
 Safest local verification sequence after non-trivial changes:
 
@@ -54,14 +54,13 @@ Safest local verification sequence after non-trivial changes:
 - `runs.awaiting_agent_since` is set exactly while a gate is parked. Owner: `.agents/skills/pipeline-review-and-agents/SKILL.md`.
 - The daemon's effective environment comes from the login-shell probe at startup, never from the service definition's bootstrap `PATH`; only a missing shell binary is waited for, and only at startup. The probe runs in its own session (Setsid); do not fold it into `ConfigureShellCommand` (Setpgid and Setsid cannot be combined). Owner: `daemon-runtime` skill.
 - Telemetry: read-only surfaces (`axi` home/status/logs, `status`, `runs`) emit no remote telemetry. Performance detail stays local; prompts, outputs, diffs, and raw command arguments are never stored (`TestAgentInvocations_PrivacySafeShape`), and run IDs, paths, and session identities are never sent remotely; a not-reported metric is stored as NULL, never a fabricated zero. Owner: `reference/environment.md`.
-- `no-mistakes update` reads only `channels.json` from the release-asset CDN, never `api.github.com`, and `release.yml` must call the channel publisher after `finalize`. Owner: `release-signing` skill.
 - The retired `jev` config key stays a parse-only tombstone; do not repurpose it.
 
 ## Test and CI conventions
 
 - Pipeline-step tests put the non-race `internal/pipeline/fakecli` helper on PATH as `gh`/`glab`/`git`, and use `internal/testgit.RealGit` for the real binary. Never re-exec the race-instrumented test binary as those names.
 - CI-monitor tests live in `internal/pipeline/steps/citest`; keep both packages under `go test ./...`, not behind the `e2e` tag.
-- Any `go.mod`/`go.sum` change must recompute `vendorHash` in `package.nix` (set it to `lib.fakeHash`, run `nix build`, copy the `got:` hash); the `Nix flake` workflow fails otherwise and names the hash.
+- Any `go.mod`/`go.sum` change must recompute `vendorHash` in `package.nix` (set it to `lib.fakeHash`, run `nix build`, copy the `got:` hash).
 - The rest is owned by the `testing-conventions` skill.
 
 **The Review Conversation (`internal/reviewqa`, `internal/pipeline/steps/review_questions.go`)**

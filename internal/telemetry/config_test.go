@@ -139,7 +139,7 @@ func TestDefaultUsesEmbeddedTelemetryHostAndWebsiteID(t *testing.T) {
 	}
 }
 
-func TestDefaultUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
+func TestDefaultDisablesTelemetryWhenHostConfigMissing(t *testing.T) {
 	prevSink := defaultSink
 	defaultSink = nil
 	defer func() { defaultSink = prevSink }()
@@ -161,12 +161,8 @@ func TestDefaultUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
 	t.Setenv(umamiWebsiteIDEnv, "")
 
 	sink := Default()
-	client, ok := sink.(*Client)
-	if !ok {
-		t.Fatalf("Default() type = %T, want *Client", sink)
-	}
-	if client.endpoint != defaultHost+"/api/send" {
-		t.Fatalf("endpoint = %q, want %q", client.endpoint, defaultHost+"/api/send")
+	if _, ok := sink.(*Client); ok {
+		t.Fatal("Default() must fail closed and send nothing when no telemetry host is configured")
 	}
 }
 

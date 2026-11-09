@@ -107,7 +107,6 @@ func TestGateControlOlderDaemonFallback(t *testing.T) {
 		args      []string
 		want      string
 	}{
-		{name: "update", pid: os.Getpid(), args: []string{"update"}},
 		{name: "daemon ancestry", pid: os.Getppid(), args: []string{"daemon", "restart"}, want: "nested_gate_context"},
 		{name: "uninstall", pid: os.Getpid(), args: []string{"daemon", "uninstall"}},
 		{name: "missing PID", args: []string{"daemon", "stop"}, want: "read daemon PID"},

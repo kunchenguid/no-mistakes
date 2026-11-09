@@ -29,73 +29,12 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("HOME", home)
 	_ = os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
 	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
-	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
 
 	code := m.Run()
 
 	_ = os.RemoveAll(root)
 	_ = os.RemoveAll(home)
 	os.Exit(code)
-}
-
-func TestRunAttemptsOldExecutableCleanupBeforeEarlyRoutes(t *testing.T) {
-	originalArgs := os.Args
-	originalCleanup := cleanupOldExecutable
-	originalBackground := maybeHandleBackgroundCheck
-	t.Cleanup(func() {
-		os.Args = originalArgs
-		cleanupOldExecutable = originalCleanup
-		maybeHandleBackgroundCheck = originalBackground
-	})
-
-	t.Run("daemon", func(t *testing.T) {
-		called := false
-		cleanupOldExecutable = func() error {
-			called = true
-			return nil
-		}
-		os.Args = []string{"no-mistakes", "daemon", "log-sink", "--root", ""}
-		if code := run(); code != 1 {
-			t.Fatalf("run code = %d, want 1", code)
-		}
-		if !called {
-			t.Fatal("cleanup was not attempted before daemon routing")
-		}
-	})
-
-	t.Run("background update", func(t *testing.T) {
-		cleanupFinished := false
-		cleanupOldExecutable = func() error {
-			cleanupFinished = true
-			return fmt.Errorf("executable is still locked")
-		}
-		maybeHandleBackgroundCheck = func([]string) (bool, error) {
-			if !cleanupFinished {
-				t.Fatal("background routing ran before cleanup")
-			}
-			return true, nil
-		}
-		os.Args = []string{"no-mistakes", "--update-check", "v1.2.3"}
-		if code := run(); code != 0 {
-			t.Fatalf("run code = %d, want 0", code)
-		}
-	})
-
-	t.Run("interactive", func(t *testing.T) {
-		called := false
-		cleanupOldExecutable = func() error {
-			called = true
-			return nil
-		}
-		maybeHandleBackgroundCheck = originalBackground
-		os.Args = []string{"no-mistakes", "--version"}
-		if code := run(); code != 0 {
-			t.Fatalf("run code = %d, want 0", code)
-		}
-		if !called {
-			t.Fatal("cleanup was not attempted before interactive routing")
-		}
-	})
 }
 
 // Issue #1653: `daemon run` must release a console of its own and repoint
@@ -141,12 +80,10 @@ func TestOnlyDaemonRunPreparesDaemonStdio(t *testing.T) {
 	originalArgs := os.Args
 	originalPrepare := prepareDaemonRunStdio
 	originalRunDaemon := runDaemon
-	originalBackground := maybeHandleBackgroundCheck
 	t.Cleanup(func() {
 		os.Args = originalArgs
 		prepareDaemonRunStdio = originalPrepare
 		runDaemon = originalRunDaemon
-		maybeHandleBackgroundCheck = originalBackground
 	})
 	prepareDaemonRunStdio = func() error {
 		t.Errorf("%q prepared daemon stdio", os.Args[1:])
@@ -156,16 +93,12 @@ func TestOnlyDaemonRunPreparesDaemonStdio(t *testing.T) {
 		t.Errorf("%q ran the daemon", os.Args[1:])
 		return nil
 	}
-	maybeHandleBackgroundCheck = func(args []string) (bool, error) {
-		return len(args) > 0 && args[0] == "--update-check", nil
-	}
 
 	for _, args := range [][]string{
 		{"--version"},
 		{"daemon", "run", "--help"},
 		{"daemon", "run", "--root"},
 		{"daemon", "log-sink", "--root", ""},
-		{"--update-check", "v1.2.3"},
 	} {
 		os.Args = append([]string{"no-mistakes"}, args...)
 		_ = run()
