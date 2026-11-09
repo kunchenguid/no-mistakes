@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -43,6 +44,7 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 	}{
 		{"valid evidence", reportedOperatorStop, "", false},
 		{"valid legacy evidence", legacyReport, "", false},
+		{"canonical repair and legacy stop", strings.Replace(legacyReport, `"summary":`, `"findings":[{"id":"repair","severity":"error","action":"auto-fix","description":"Repair the synthetic defect."}],"summary":`, 1), "", false},
 		{"invalid verdict", strings.Replace(reportedOperatorStop, `"no-go"`, `"go"`, 1), "failed scenario", false},
 		{"invalid unused legacy field", strings.Replace(reportedOperatorStop, `"summary":`, `"items":false,"summary":`, 1), "cannot unmarshal bool", false},
 		{"invalid canonical field", strings.Replace(legacyReport, `"summary":`, `"findings":false,"summary":`, 1), "cannot unmarshal bool", false},
@@ -135,10 +137,25 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 				t.Fatal(err)
 			}
 			if findings.TestedHeadSHA != headSHA || !strings.Contains(*step.FindingsJSON, `"requires_operator_stop":true`) ||
-				len(findings.Items) == 0 || findings.Items[0].ID != "validation-refused" || findings.Items[0].Action != types.ActionAskUser {
+				!types.HasTestOperatorStop(findings) {
 				t.Fatalf("parked Test lost the reported stop or its head: %s", *step.FindingsJSON)
 			}
 			if tc.rejection == "" {
+				original, err := types.ParseFindingsJSON(tc.report)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, want := range original.Items {
+					found := false
+					for _, got := range findings.Items {
+						if reflect.DeepEqual(got, want) {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("parked Test lost an accepted finding: %+v", want)
+					}
+				}
 				if findings.Verdict != types.TestVerdictNoGo || len(findings.Scenarios) != 2 ||
 					findings.Scenarios[0].Result != types.ScenarioResultFail || findings.Scenarios[0].Evidence != "run-check exited with a refusal" ||
 					findings.Scenarios[1].Result != types.ScenarioResultUntested || findings.Scenarios[1].Reason != "The checker refused to proceed." {
@@ -231,6 +248,49 @@ func TestTestAnalyzer_OperatorStopRequiresExplicitAskUser(t *testing.T) {
 			findings, err := parseTestAnalyzerOutput(&agent.Result{Output: output})
 			if stopped := types.HasTestOperatorStop(findings); (err != nil) != tc.reject || stopped != tc.stop {
 				t.Fatalf("operator stop = %v, error = %v. Want stop = %v, rejected = %v", stopped, err, tc.stop, tc.reject)
+			}
+		})
+	}
+}
+
+func TestTestAnalyzer_OperatorStopAliasPrecedence(t *testing.T) {
+	stop := `{"id":"canonical-stop","severity":"warning","action":"ask-user","description":"Operator decision required.","requires_operator_stop":true}`
+	legacyStop := strings.Replace(stop, "canonical-stop", "legacy-stop", 1)
+	repair := `{"id":"repair","severity":"error","action":"auto-fix","description":"Repair the synthetic defect."}`
+	for _, tc := range []struct {
+		name      string
+		canonical string
+		legacy    string
+		wantIDs   []string
+	}{
+		{"canonical wins", stop, legacyStop, []string{"canonical-stop"}},
+		{"legacy supplements canonical", repair, legacyStop, []string{"repair", "legacy-stop"}},
+		{"legacy supplies empty canonical", "", legacyStop, []string{"legacy-stop"}},
+		{"ordinary legacy stays unselected", repair, repair, []string{"repair"}},
+		{"invalid legacy stop is not promoted", repair, strings.Replace(legacyStop, `"ask-user"`, `"auto-fix"`, 1), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := fmt.Sprintf(cleanTestEvidence, "["+tc.canonical+"]")
+			raw = strings.Replace(raw, `"summary":`, `"items":[`+tc.legacy+`],"summary":`, 1)
+			got, err := parseTestAnalyzerOutput(&agent.Result{Output: json.RawMessage(raw)})
+			if tc.wantIDs == nil {
+				if err == nil {
+					t.Fatal("invalid stop action must be rejected")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, item := range got.Items {
+				ids = append(ids, item.ID)
+			}
+			if !reflect.DeepEqual(ids, tc.wantIDs) {
+				t.Fatalf("finding IDs = %v, want %v", ids, tc.wantIDs)
+			}
+			if got.Verdict != types.TestVerdictGo || len(got.Scenarios) == 0 || len(got.Tested) == 0 {
+				t.Fatalf("accepted evidence was lost: %+v", got)
 			}
 		})
 	}

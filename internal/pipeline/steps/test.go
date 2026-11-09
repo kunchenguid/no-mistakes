@@ -455,6 +455,8 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 			TestingSummary: fmt.Sprintf("Test evidence was rejected: %v", err),
 			Verdict:        types.TestVerdictInconclusive,
 		}
+	} else if !types.HasTestOperatorStop(findings) {
+		findings.Items = append(findings.Items, reportedTestOperatorStops(result.Output)...)
 	}
 	for i := range findings.Items {
 		if slices.Contains(testBudgetCutIDs, findings.Items[i].ID) {
