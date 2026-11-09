@@ -57,7 +57,7 @@ func TestMissingTool_ConfiguredCommandParksForSetup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !outcome.NeedsApproval || outcome.AutoFixable || outcome.ExitCode != tc.code {
+			if !outcome.NeedsApproval || outcome.AutoFixable || outcome.Skipped || outcome.ExitCode != tc.code {
 				t.Fatalf("outcome = %+v, want parked setup failure retaining exit %d without automatic repair", outcome, tc.code)
 			}
 			if calls != 1 {
