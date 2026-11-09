@@ -34,15 +34,21 @@ const reportedOperatorStop = `{
 }`
 
 func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
+	legacyReport := strings.Replace(reportedOperatorStop, `"findings":`, `"items":`, 1)
 	for _, tc := range []struct {
-		name   string
-		report string
-		valid  bool
-		fix    bool
+		name      string
+		report    string
+		rejection string
+		fix       bool
 	}{
-		{"valid evidence", reportedOperatorStop, true, false},
-		{"invalid verdict", strings.Replace(reportedOperatorStop, `"no-go"`, `"go"`, 1), false, false},
-		{"operator authorizes a repair", reportedOperatorStop, true, true},
+		{"valid evidence", reportedOperatorStop, "", false},
+		{"valid legacy evidence", legacyReport, "", false},
+		{"invalid verdict", strings.Replace(reportedOperatorStop, `"no-go"`, `"go"`, 1), "failed scenario", false},
+		{"invalid unused legacy field", strings.Replace(reportedOperatorStop, `"summary":`, `"items":false,"summary":`, 1), "cannot unmarshal bool", false},
+		{"invalid canonical field", strings.Replace(legacyReport, `"summary":`, `"findings":false,"summary":`, 1), "cannot unmarshal bool", false},
+		{"invalid sibling finding", strings.Replace(reportedOperatorStop, `"findings":[`, `"findings":[false,`, 1), "cannot unmarshal bool", false},
+		{"invalid canonical finding", strings.Replace(legacyReport, `"summary":`, `"findings":[false],"summary":`, 1), "cannot unmarshal bool", false},
+		{"operator authorizes a repair", reportedOperatorStop, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, baseSHA, headSHA := setupGitRepo(t)
@@ -132,13 +138,13 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 				len(findings.Items) == 0 || findings.Items[0].ID != "validation-refused" || findings.Items[0].Action != types.ActionAskUser {
 				t.Fatalf("parked Test lost the reported stop or its head: %s", *step.FindingsJSON)
 			}
-			if tc.valid {
+			if tc.rejection == "" {
 				if findings.Verdict != types.TestVerdictNoGo || len(findings.Scenarios) != 2 ||
 					findings.Scenarios[0].Result != types.ScenarioResultFail || findings.Scenarios[0].Evidence != "run-check exited with a refusal" ||
 					findings.Scenarios[1].Result != types.ScenarioResultUntested || findings.Scenarios[1].Reason != "The checker refused to proceed." {
 					t.Fatalf("parked Test lost the scenario evidence: %s", *step.FindingsJSON)
 				}
-			} else if findings.Verdict == types.TestVerdictGo || !strings.Contains(findings.TestingSummary, "failed scenario") {
+			} else if findings.Verdict != types.TestVerdictInconclusive || !strings.Contains(findings.TestingSummary, tc.rejection) {
 				t.Fatalf("parked Test did not report the validation limit: %s", *step.FindingsJSON)
 			}
 

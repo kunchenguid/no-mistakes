@@ -704,6 +704,11 @@ func TestTestStep_InvalidAnalyzerPayloadTriggersCorrectionRound(t *testing.T) {
 			wantPrompt: `scenario 1: result "pass" but live=false - if you did not drive this against the live product, mark it result "untested" with a reason instead of "pass"`,
 		},
 		{
+			name:       "invalid stop cannot bypass correction",
+			invalid:    strings.Replace(reportedOperatorStop, `"action":"ask-user"`, `"action":"auto-fix"`, 1),
+			wantPrompt: `requires_operator_stop requires an explicit "ask-user" action`,
+		},
+		{
 			name:       "untested without a reason",
 			invalid:    untestedWithoutReasonFindingsJSON,
 			wantPrompt: `scenario 1: result "untested" without a reason - state what was tried to drive it live and why live validation is impossible, naming the specific tool, credential, permission, or authority out of reach and how to provide it`,
