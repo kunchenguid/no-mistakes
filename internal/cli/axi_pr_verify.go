@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (steps.PR
 		Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			repo, pr = strings.TrimSpace(repo), strings.TrimSpace(pr)
-			if repo == "" || scm.RepoPath(repo) == "" || !strings.ContainsAny(repo, ":/") {
+			if !validPRVerifyRepo(repo) {
 				return emitError(cmd, 2, "--repo requires the repository's full remote URL")
 			}
 			if n, err := strconv.ParseUint(pr, 10, 64); err != nil || n == 0 {
@@ -59,4 +60,34 @@ func newAxiPRVerifyCmdWithReader(resolve func(context.Context, string) (steps.PR
 	cmd.Flags().StringVar(&repo, "repo", "", "full repository remote URL (required)")
 	cmd.Flags().StringVar(&pr, "pr", "", "PR number to read (required)")
 	return cmd
+}
+
+func validPRVerifyRepo(repo string) bool {
+	parsed := repo
+	if !strings.Contains(repo, "://") {
+		authority, path, ok := strings.Cut(repo, ":")
+		if !ok || strings.ContainsAny(authority, "/\\") || strings.HasPrefix(path, "/") {
+			return false
+		}
+		parsed = "ssh://" + authority + "/" + path
+	}
+	u, err := url.Parse(parsed)
+	if err != nil || u.Hostname() == "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https", "http", "ssh", "git":
+	default:
+		return false
+	}
+	parts := strings.Split(scm.RepoPath(repo), "/")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.Contains(part, "\\") {
+			return false
+		}
+	}
+	return true
 }

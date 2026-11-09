@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -106,5 +107,91 @@ func TestPRAppendixVerifyRegistered(t *testing.T) {
 	cmd, _, err := newAxiCmd().Find([]string{"pr-verify"})
 	if err != nil || cmd.Name() != "pr-verify" {
 		t.Fatalf("command not registered: %v", err)
+	}
+}
+
+func TestPRAppendixVerifyRefusesIncompleteRepository(t *testing.T) {
+	for _, repo := range []string{
+		"gitlab.com/team/target",
+		"https://github.com/owner",
+		"",
+		"owner/repo",
+		"https://github.com",
+		"https:///owner/repo",
+		"https://:443/owner/repo",
+		"https://github.com/owner/.git",
+		"https://github.com/owner/..",
+		"https://github.com/owner/repo?other",
+		"https://github.com/owner/repo#other",
+		"ssh://git@/owner/repo",
+		"ssh://git@github.com/owner",
+		"git@github.com:owner",
+		"git@:owner/repo",
+		":owner/repo",
+		"C:/owner/repo",
+		`C:\owner\repo`,
+		"file:///owner/repo",
+		"ftp://github.com/owner/repo",
+	} {
+		t.Run(repo, func(t *testing.T) {
+			resolved, reads := 0, 0
+			cmd := newAxiPRVerifyCmdWithReader(func(context.Context, string) (steps.PRAppendixReader, error) {
+				resolved++
+				return func(context.Context, string) (scm.PRContent, error) {
+					reads++
+					return scm.PRContent{Body: "author"}, nil
+				}, nil
+			})
+			cmd.SetArgs([]string{"--repo", repo, "--pr", "7"})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			err := cmd.Execute()
+			var exit *exitError
+			if !errors.As(err, &exit) || exit.code != 2 {
+				t.Fatalf("error = %v, want exit 2; output = %s", err, &out)
+			}
+			if resolved != 0 || reads != 0 || strings.Contains(out.String(), "verdict:") {
+				t.Fatalf("resolved = %d, reads = %d, output = %s", resolved, reads, &out)
+			}
+		})
+	}
+}
+
+func TestPRAppendixVerifyAcceptsFullRepositoryRemotes(t *testing.T) {
+	for _, repo := range []string{
+		"https://github.com/owner/repo.git",
+		"http://gitlab.example/team/sub/repo.git",
+		"ssh://git@github.com:22/owner/repo.git",
+		"git://github.com/owner/repo.git",
+		"git@github.com:owner/repo.git",
+		"gitlab.example:team/sub/repo.git",
+		"git@work-alias:owner/repo.git",
+		"https://codeberg.org/owner/repo.git",
+		"https://forgejo.example:3443/git/owner/repo.git",
+		"https://dev.azure.com/org/project/_git/repo",
+		"git@ssh.dev.azure.com:v3/org/project/repo",
+		"https://org.visualstudio.com/project/_git/repo",
+		"https://origin.cursor.com/owner/repo.git",
+	} {
+		t.Run(repo, func(t *testing.T) {
+			resolved := 0
+			forge := &appendixReadOnlyForge{body: "author"}
+			cmd := newAxiPRVerifyCmdWithReader(func(_ context.Context, gotRepo string) (steps.PRAppendixReader, error) {
+				resolved++
+				if gotRepo != repo {
+					t.Fatalf("resolved %q, want %q", gotRepo, repo)
+				}
+				return forge.GetPRContent, nil
+			})
+			cmd.SetArgs([]string{"--repo", repo, "--pr", "7"})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("command: %v: %s", err, &out)
+			}
+			if resolved != 1 || forge.reads != 1 || !strings.Contains(out.String(), "verdict: absent") {
+				t.Fatalf("resolved = %d, reads = %d, output = %s", resolved, forge.reads, &out)
+			}
+		})
 	}
 }
