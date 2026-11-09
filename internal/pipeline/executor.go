@@ -632,9 +632,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			break
 		}
 		if restartFrom != "" {
-			restartIndex, err := e.prepareRestart(run.ID, restartFrom, i)
+			restartIndex, err := e.prepareRestart(ctx, run, repo, workDir, restartFrom, i)
 			if err != nil {
-				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", step.Name(), restartFrom), ctx)
+				return e.failRun(run, repo, fmt.Errorf("step %s requested restart from %s: %w", step.Name(), restartFrom, err), ctx)
 			}
 			revalidating = true
 			i = restartIndex - 1
@@ -694,12 +694,23 @@ func (e *Executor) stepIndex(name types.StepName) (int, error) {
 	return 0, fmt.Errorf("step %s is not in the pipeline", name)
 }
 
-func (e *Executor) prepareRestart(runID string, name types.StepName, currentIndex int) (int, error) {
+func (e *Executor) prepareRestart(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, name types.StepName, currentIndex int) (int, error) {
 	index, err := e.stepIndex(name)
 	if err != nil || index >= currentIndex {
 		return 0, fmt.Errorf("invalid restart boundary")
 	}
-	if err := e.db.ResetStepsFrom(runID, e.steps[index].Name().Order()); err != nil {
+	if preparer, ok := e.steps[currentIndex].(RestartPreparer); ok {
+		sctx := &StepContext{
+			Ctx: ctx, Run: run, Repo: repo, WorkDir: workDir,
+			GateDir: e.paths.RepoDir(repo.ID), Config: e.config,
+			ForgeContext: e.forge, DB: e.db,
+			Log: func(message string) { slog.Info(message, "run", run.ID, "step", e.steps[currentIndex].Name()) },
+		}
+		if err := preparer.PrepareRestart(sctx, name); err != nil {
+			return 0, err
+		}
+	}
+	if err := e.db.ResetStepsFrom(run.ID, e.steps[index].Name().Order()); err != nil {
 		return 0, err
 	}
 	if name == types.StepReview {
@@ -952,18 +963,25 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
-		// The live path approves with the parked outcome's restart in hand; a
-		// recovered CI gate has only the durable flag a carried review
-		// approval left (db.UpdateRunHeadSHAWithCarriedReview).
 		if gate.step.Name() == types.StepCI {
-			pending, err := e.db.RunTestRestartPending(run.ID)
+			pendingReview, err := CIReviewRestartPending(e.db, run.ID)
 			if err != nil {
 				return e.failRun(run, repo, err, ctx)
 			}
-			if pending {
-				restartIndex, err := e.prepareRestart(run.ID, types.StepTest, gate.index)
+			pendingTest, err := e.db.RunTestRestartPending(run.ID)
+			if err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+			var restartFrom types.StepName
+			if pendingReview {
+				restartFrom = types.StepReview
+			} else if pendingTest {
+				restartFrom = types.StepTest
+			}
+			if restartFrom != "" {
+				restartIndex, err := e.prepareRestart(ctx, run, repo, workDir, restartFrom, gate.index)
 				if err != nil {
-					return e.failRun(run, repo, fmt.Errorf("restart recovered run from %s: %w", types.StepTest, err), ctx)
+					return e.failRun(run, repo, fmt.Errorf("restart recovered run from %s: %w", restartFrom, err), ctx)
 				}
 				return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
 			}
@@ -975,6 +993,19 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
+		if gate.step.Name() == types.StepCI {
+			pending, err := CIReviewRestartPending(e.db, run.ID)
+			if err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+			if pending {
+				restartIndex, err := e.prepareRestart(ctx, run, repo, workDir, types.StepReview, gate.index)
+				if err != nil {
+					return e.failRun(run, repo, err, ctx)
+				}
+				return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+			}
+		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	case types.ActionAbort:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
@@ -1064,9 +1095,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.skipRecoveredRemainder(run, repo, gate.index+1)
 		}
 		if restartFrom != "" {
-			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
+			restartIndex, indexErr := e.prepareRestart(ctx, run, repo, workDir, restartFrom, gate.index)
 			if indexErr != nil {
-				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", gate.step.Name(), restartFrom), ctx)
+				return e.failRun(run, repo, fmt.Errorf("step %s requested restart from %s: %w", gate.step.Name(), restartFrom, indexErr), ctx)
 			}
 			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
 		}
@@ -1193,9 +1224,9 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.skipRecoveredRemainder(run, repo, index+1)
 		}
 		if restartFrom != "" {
-			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index)
+			restartIndex, indexErr := e.prepareRestart(ctx, run, repo, workDir, restartFrom, index)
 			if indexErr != nil {
-				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", e.steps[index].Name(), restartFrom), ctx)
+				return e.failRun(run, repo, fmt.Errorf("step %s requested restart from %s: %w", e.steps[index].Name(), restartFrom, indexErr), ctx)
 			}
 			revalidating = true
 			index = restartIndex - 1
@@ -1652,6 +1683,15 @@ rounds:
 			contextCause := context.Cause(ctx)
 			handoff := (errors.Is(err, ErrHandoff) || errors.Is(contextCause, ErrHandoff)) && (contextCause == nil || errors.Is(contextCause, ErrHandoff))
 			if stepName == types.StepCI && handoff {
+				if pending, readErr := CIReviewRestartPending(e.db, run.ID); readErr != nil {
+					err = readErr
+					handoff = false
+				} else if pending {
+					err = fmt.Errorf("cannot hand off before reviewing the rewritten head")
+					handoff = false
+				}
+			}
+			if stepName == types.StepCI && handoff {
 				if dbErr := e.db.CompleteStep(sr.ID, 0, durationMS, logPath); dbErr != nil {
 					return false, "", dbErr
 				}
@@ -1959,6 +1999,15 @@ rounds:
 					return false, "", fmt.Errorf("complete step %s (skip): %w", stepName, err)
 				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", &executionMS)
+				if stepName == types.StepCI {
+					pending, err := CIReviewRestartPending(e.db, run.ID)
+					if err != nil {
+						return false, "", err
+					}
+					if pending {
+						return false, types.StepReview, nil
+					}
+				}
 				return false, "", nil
 
 			case types.ActionAbort:
@@ -2077,6 +2126,16 @@ rounds:
 	}
 
 done:
+	if stepName == types.StepCI {
+		pending, err := CIReviewRestartPending(e.db, run.ID)
+		if err != nil {
+			return false, "", err
+		}
+		if pending {
+			restartFrom = types.StepReview
+			ciReadyNoCIOnCompletion = nil
+		}
+	}
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
 	if durationOverrideMS > 0 {
@@ -2635,11 +2694,15 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 		}
 	}
 	if causesHandoff {
-		return e.completeRunWithStatus(run, repo, types.RunHandedOff)
+		if completionErr := e.completeRunWithStatus(run, repo, types.RunHandedOff); completionErr == nil {
+			return nil
+		} else {
+			err = completionErr
+		}
 	}
 	errMsg := err.Error()
 	for _, ctx := range ctxs {
-		if cause := context.Cause(ctx); cause != nil && cause != context.Canceled {
+		if cause := context.Cause(ctx); cause != nil && cause != context.Canceled && !errors.Is(cause, ErrHandoff) {
 			errMsg = cause.Error()
 			break
 		}
@@ -2675,6 +2738,11 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 }
 
 func (e *Executor) completeRunWithStatus(run *db.Run, repo *db.Repo, status types.RunStatus) error {
+	if pending, err := CIReviewRestartPending(e.db, run.ID); err != nil {
+		return err
+	} else if pending {
+		return fmt.Errorf("cannot complete run before reviewing the rewritten head")
+	}
 	var err error
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	if verified {

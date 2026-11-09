@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -28,6 +29,14 @@ func (s reconcileEnvStep) Execute(ctx *pipeline.StepContext) (*pipeline.StepOutc
 func (s reconcileEnvStep) ReconcileApprovalGate(ctx *pipeline.StepContext) (bool, error) {
 	ctx.Env = s.env
 	return s.step.(pipeline.ApprovalGateReconciler).ReconcileApprovalGate(ctx)
+}
+
+func (s reconcileEnvStep) PrepareRestart(ctx *pipeline.StepContext, restartFrom types.StepName) error {
+	ctx.Env = s.env
+	if preparer, ok := s.step.(pipeline.RestartPreparer); ok {
+		return preparer.PrepareRestart(ctx, restartFrom)
+	}
+	return nil
 }
 
 func TestCIGateReconciliationClearsActiveRunAfterPRBecomesTerminal(t *testing.T) {
@@ -121,7 +130,7 @@ func setupCIGateReconcileTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	database, err := db.Open(p.DB())
+	database, err := stepstest.OpenNewDB(p.DB())
 	if err != nil {
 		t.Fatal(err)
 	}

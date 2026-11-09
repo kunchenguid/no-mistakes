@@ -699,7 +699,7 @@ If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure
 A clean behind PR needs no command, except on GitHub when the base requires up-to-date branches (`mergeStateStatus: BEHIND`): that PR waits for a human to bring it up to date, unless [`ci.rebase_behind`](#cirebase_behind) is on.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
-If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
+If the PR is merged or closed externally, the stale gate completes automatically, subject to the [CI step’s merged-head verification](/no-mistakes/reference/pipeline-steps/#ci). An open, unknown, or temporarily unreachable PR remains parked for a user decision.
 
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to disable this timeout. A run still ends when the PR is merged, closed, or declined, when green monitoring is explicitly handed off, or at readiness under `ci.release_after_checks_pass`. You can end it explicitly with `no-mistakes axi handoff` or cancel it with `no-mistakes axi abort --run <id>`.
 

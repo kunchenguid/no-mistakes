@@ -2324,3 +2324,31 @@ func TestGetChecksRefusesANullPageOnTriggerJobAndStatusCheckReads(t *testing.T) 
 		}
 	}
 }
+
+// GetPRBaseBranch reads the merge request's live target branch, which the CI
+// step aligns a restart at Review with so a layer the forge retargeted keeps
+// its layer-only scope.
+func TestGetPRBaseBranchReadsTheMergeRequestTarget(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"iid":123,"state":"opened","target_branch":"layer2"}` + "\n",
+		},
+		"glab mr view 124 --output json": {
+			stdout: `{"iid":124,"state":"opened","target_branch":""}` + "\n",
+		},
+	}), nil, "", "")
+
+	got, err := host.GetPRBaseBranch(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetPRBaseBranch() error = %v", err)
+	}
+	if got != "layer2" {
+		t.Fatalf("GetPRBaseBranch() = %q, want the merge request's target layer2", got)
+	}
+
+	if _, err := host.GetPRBaseBranch(context.Background(), &scm.PR{Number: "124"}); err == nil {
+		t.Fatal("GetPRBaseBranch() error = nil, want a merge request without a target branch refused")
+	}
+}

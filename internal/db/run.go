@@ -98,8 +98,16 @@ type Run struct {
 	LaunchReceiptClaimedAt     *int64
 	// PRBaseBranch is a per-run override for the integration/PR target branch.
 	// It is set by the operator (axi run --base-branch) and takes precedence
-	// over pr.base_branch in repo config for this run only.
+	// over pr.base_branch in repo config for this run only. It is TARGET
+	// intent: the PR step retargets an existing pull request to this value.
 	PRBaseBranch *string
+	// ObservedBaseBranch is the base branch the CI step observed on the
+	// pull request and aligned the run to, so a restart at Review scopes the
+	// change the way the pull request is now shaped. It is SCOPING state only,
+	// never target intent: no retarget is issued from it (PRBaseBranch and the
+	// configured pr.base_branch own that), and it supersedes PRBaseBranch for
+	// change scoping because the forge retargeted the pull request itself.
+	ObservedBaseBranch *string
 	// OmitIntent records the caller-side, tighten-only decision to keep the
 	// generated Intent section out of the PR body for this run. It is the
 	// OR of the per-run flag and the operator's global intent.publish_intent
@@ -135,7 +143,7 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, observed_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
 
 func (d *DB) runColumns() (string, error) {
 	return d.readProjection("runs", runColumns, runScanTargets(&Run{}, &sql.NullString{})...)
@@ -150,7 +158,7 @@ func runScanTargets(r *Run, storedClosingIssues *sql.NullString) []any {
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
+		&r.PRBaseBranch, &r.ObservedBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -742,8 +750,19 @@ type PushRebind struct {
 // reports whether it applied. head_sha follows only
 // when it equalled the old binding, so a custody-returned run keeps its own
 // recorded head.
+//
+// The rebind is the only writer of the unvalidated-rebound-head marker, and it
+// writes it in this same transaction: recording it afterwards could not be
+// retried, because the retry would find the binding already at the live head
+// and return early, leaving a bound head no run validated with nothing saying
+// so.
 func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
-	result, err := d.sql.Exec(
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, fmt.Errorf("rebind run pushed head: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
 		`UPDATE runs SET head_sha = CASE WHEN head_sha = last_pushed_sha THEN ? ELSE head_sha END, last_pushed_sha = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ?
 		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ?
 			AND head_sha = ? AND (custody_returned_at IS NOT NULL) = ?
@@ -765,7 +784,20 @@ func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("rebind run pushed head: %w", err)
 	}
-	return affected == 1, nil
+	if affected != 1 {
+		return false, nil
+	}
+	var repoID string
+	if err := tx.QueryRow(`SELECT repo_id FROM runs WHERE id = ?`, id).Scan(&repoID); err != nil {
+		return false, fmt.Errorf("rebind run pushed head: %w", err)
+	}
+	if err := recordUnvalidatedReboundHead(tx, repoID, rebind.Ref, rebind.Head); err != nil {
+		return false, fmt.Errorf("rebind run pushed head: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("rebind run pushed head: commit: %w", err)
+	}
+	return true, nil
 }
 
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
@@ -1044,6 +1076,20 @@ func (d *DB) RunTestRestartPending(id string) (bool, error) {
 		return false, fmt.Errorf("read run test restart pending: %w", err)
 	}
 	return pending, nil
+}
+
+// UpdateRunObservedBaseBranch persists the base branch the CI step observed on
+// the pull request, so every later pass scopes the change the way the pull
+// request is now shaped. Only the CI step's restart-at-Review alignment writes
+// it today. It is deliberately separate from pr_base_branch: that column is
+// operator TARGET intent, and writing an observation there made the PR step
+// retarget the pull request back to a base nobody asked for.
+func (d *DB) UpdateRunObservedBaseBranch(id, baseBranch string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET observed_base_branch = ?, updated_at = ? WHERE id = ?`, baseBranch, now(), id)
+	if err != nil {
+		return fmt.Errorf("update run observed base branch: %w", err)
+	}
+	return nil
 }
 
 // UpdateRunError sets the error message on a run.

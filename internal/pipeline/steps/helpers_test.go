@@ -189,7 +189,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 	ensureHermeticOrigin(t, workDir)
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	database, err := db.Open(dbPath)
+	database, err := stepstest.OpenNewDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,6 +392,9 @@ type fakeBitbucketCIAPI struct {
 	stepsByPath    map[string]string
 	stepLogsByPath map[string]string
 	prSourceSHA    string
+	// beforeStatuses runs before the statuses answer, so a test can land a
+	// rewrite exactly inside one poll's check read.
+	beforeStatuses func()
 	prStateCalls   int
 	statusesCalls  int
 	pipelinesCalls int
@@ -417,9 +420,14 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
 			api.prStateCalls++
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
+			// Every pull request names its destination branch; the CI step
+			// aligns a restart at Review with it.
+			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.prState, api.prSourceSHA)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
 			api.statusesCalls++
+			if api.beforeStatuses != nil {
+				api.beforeStatuses()
+			}
 			api.lastStatusesQ = r.URL.Query().Get("q")
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, api.statusesJSON)

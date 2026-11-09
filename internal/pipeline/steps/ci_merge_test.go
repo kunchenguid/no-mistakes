@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -17,49 +18,58 @@ import (
 )
 
 func TestCIStep_HandoffWakeRechecksGreenReadiness(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	prURL := "https://github.com/test/repo/pull/42"
-	sctx.Run.PRURL = &prURL
-	sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
-	sctx.Config.CITimeout = time.Minute
-	wake := make(chan struct{}, 1)
-	sctx.CIWake = wake
-	firstReady := make(chan struct{})
-	readyCalls := 0
-	sctx.SetCIReadiness = func(ready, _ bool) error {
-		if !ready {
-			return nil
+	t.Parallel()
+	// Fake time excludes forge-process startup from the wake watchdog.
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+		ctx, cancel := context.WithCancel(sctx.Ctx)
+		defer cancel()
+		sctx.Ctx = ctx
+		prURL := "https://github.com/test/repo/pull/42"
+		sctx.Run.PRURL = &prURL
+		sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+		sctx.Config.CITimeout = time.Minute
+		wake := make(chan struct{}, 1)
+		sctx.CIWake = wake
+		firstReady := make(chan struct{})
+		readyCalls := 0
+		sctx.SetCIReadiness = func(ready, _ bool) error {
+			if !ready {
+				return nil
+			}
+			readyCalls++
+			if readyCalls == 1 {
+				close(firstReady)
+				return nil
+			}
+			return pipeline.ErrHandoff
 		}
-		readyCalls++
-		if readyCalls == 1 {
-			close(firstReady)
-			return nil
-		}
-		return pipeline.ErrHandoff
-	}
 
-	done := make(chan struct {
-		err error
-	}, 1)
-	go func() {
-		_, err := (&CIStep{pollIntervalOverride: 30 * time.Second}).Execute(sctx)
-		done <- struct{ err error }{err: err}
-	}()
-	<-firstReady
-	wake <- struct{}{}
+		done := make(chan struct {
+			err error
+		}, 1)
+		go func() {
+			_, err := (&CIStep{pollIntervalOverride: 30 * time.Second}).Execute(sctx)
+			done <- struct{ err error }{err: err}
+		}()
+		<-firstReady
+		synctest.Wait() // The monitor is parked on its poll timer before the wake.
+		wake <- struct{}{}
 
-	select {
-	case result := <-done:
-		if !errors.Is(result.err, pipeline.ErrHandoff) {
-			t.Fatalf("handoff result error = %v, want ErrHandoff", result.err)
+		select {
+		case result := <-done:
+			if !errors.Is(result.err, pipeline.ErrHandoff) {
+				t.Fatalf("handoff result error = %v, want ErrHandoff", result.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("handoff wake did not interrupt the CI poll wait")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("handoff wake did not interrupt the CI poll wait")
-	}
+	})
 }
 
 func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, checks, warning string
 	}{
@@ -67,6 +77,7 @@ func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
 		{"clear", `invalid check response`, "could not clear CI readiness"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 			prURL := "https://github.com/test/repo/pull/42"
@@ -90,6 +101,7 @@ func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
 }
 
 func TestCIStep_ReadinessClearFailureWithPendingHandoffKeepsIssueObservation(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	prURL := "https://github.com/test/repo/pull/42"
@@ -115,6 +127,7 @@ func TestCIStep_ReadinessClearFailureWithPendingHandoffKeepsIssueObservation(t *
 }
 
 func TestCIStep_ReadinessWriteFailureRetriesOnNextPoll(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	prURL := "https://github.com/test/repo/pull/42"

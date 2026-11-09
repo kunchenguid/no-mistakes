@@ -70,54 +70,13 @@ func TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren(t *testing.T)
 			if err := syscall.Kill(-leader.Process.Pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
 				t.Fatalf("fixture group must still exist: %v", err)
 			}
-			active, _, err := ShellCommandGroupActive(leader, 300*time.Millisecond)
-			if live && errors.Is(err, context.DeadlineExceeded) {
-				// A ps probe that exhausts the remaining window refuses
-				// completion as unverified, rather than declaring inactivity.
-				return
-			}
+			// State classification needs one snapshot, independently of the settle
+			// deadline exercised by the deterministic probe tests.
+			active, _, err := probeShellCommandGroup(leader.Process.Pid, 5*time.Second, shellCommandGroupPS)
 			if err != nil || active != live {
 				t.Fatalf("live=%v: group active=%v, error=%v", live, active, err)
 			}
 		})
-	}
-}
-
-// TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow is the issue
-// #1614 regression: a member still finishing when the leader exits is seen by
-// the first probe, but it leaves the group inside the settle window, so the
-// bounded re-probe accepts the leader's exit. The same member probed with no
-// window is still refused, which is what the check did before the fix.
-func TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow(t *testing.T) {
-	// The member is a direct backgrounded process (not a subshell) with its
-	// stdio detached, so it outlives the leader by ~0.5s inside the leader's
-	// process group and reparents to init - the exact shape the wild failures
-	// showed.
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "sleep 0.5 >/dev/null 2>&1 & exit 0")
-	ConfigureShellCommand(cmd)
-	if err := StartShellCommand(cmd); err != nil {
-		t.Fatal(err)
-	}
-	defer TerminateShellCommandGroup(cmd)
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
-	}
-
-	active, detail, err := ShellCommandGroupActive(cmd, 0)
-	if err != nil || !active {
-		t.Fatalf("single probe: active=%v detail=%q err=%v, want the finishing member reported", active, detail, err)
-	}
-	if !strings.Contains(detail, "(sleep 0.5)") {
-		t.Fatalf("single probe detail = %q, want the member's pid and command", detail)
-	}
-
-	started := time.Now()
-	active, detail, err = ShellCommandGroupActive(cmd, 3*time.Second)
-	if err != nil || active {
-		t.Fatalf("bounded re-probe: active=%v detail=%q err=%v, want the finishing member accepted", active, detail, err)
-	}
-	if elapsed := time.Since(started); elapsed >= 3*time.Second {
-		t.Fatalf("bounded re-probe took %s; the member left the group inside the window", elapsed)
 	}
 }
 
@@ -143,7 +102,8 @@ func TestShellCommandGroupActiveRefusesMemberSurvivingWindow(t *testing.T) {
 
 	// Check identity independently of the bounded wait: a last ps probe
 	// may legitimately time out and refuse completion as unverified instead.
-	active, detail, err := ShellCommandGroupActive(cmd, 0)
+	active, members, err := probeShellCommandGroup(cmd.Process.Pid, 5*time.Second, shellCommandGroupPS)
+	detail := formatGroupMembers(members)
 	if err != nil || !active || !strings.Contains(detail, "pid "+strconv.Itoa(memberPID)) || !strings.Contains(detail, "(sleep 30)") {
 		t.Fatalf("active=%v detail=%q err=%v, want pid %d and its command named", active, detail, err, memberPID)
 	}

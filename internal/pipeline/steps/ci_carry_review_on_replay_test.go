@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -51,6 +52,26 @@ func newReplayFixture(t *testing.T, carry, revalidate bool) *replayFixture {
 	base := gitCmd(t, f.dir, "rev-parse", "HEAD")
 	gitCmd(t, f.dir, "checkout", "feature")
 	return &replayFixture{ciRepairFixture: f, reviewedHead: reviewed, base: base}
+}
+
+// pinProviderHead makes the fake provider report a fixed head instead of
+// resolving the run worktree's current HEAD, so a test can model a provider
+// observation of a head the worktree has since moved past.
+func pinProviderHead(t *testing.T, sctx *pipeline.StepContext, head string) {
+	t.Helper()
+	// Every entry: a duplicate key later in the slice wins when the command's
+	// environment is built, so leaving one behind would keep the worktree
+	// resolution active.
+	found := false
+	for i, entry := range sctx.Env {
+		if strings.HasPrefix(entry, "FAKE_CLI_PR_HEAD_SHA=") {
+			sctx.Env[i] = "FAKE_CLI_PR_HEAD_SHA=" + head
+			found = true
+		}
+	}
+	if !found {
+		sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+head)
+	}
 }
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -503,6 +524,10 @@ func TestCIStep_CarryReviewOnReplay_StaleChecksOnPendingCarryRestartTest(t *test
 		t.Error("fixer called using stale checks from the old published head")
 		return nil, errors.New("unexpected fixer call")
 	}}
+	// The provider still reports the head that was published, not the carried
+	// head the run worktree now holds: that is what makes the selected checks
+	// stale rather than freshly observed on the head about to be published.
+	pinProviderHead(t, f.sctx, f.reviewedHead)
 	f.sctx.Fixing = true
 	f.sctx.PreviousFindings = ciGateFindingsJSON("test")
 	ctx, cancel := context.WithCancel(context.Background())

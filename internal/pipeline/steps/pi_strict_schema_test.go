@@ -18,6 +18,8 @@ import (
 // writeStrictPi fakes a strict-capable Pi that saves the output extension it
 // was launched with as pi-extension.ts in its working directory and submits
 // output through the output tool.
+// Callers stay sequential: a concurrent fork can inherit the fixture's writable
+// descriptor and make its version probe or launch fail with ETXTBSY.
 func writeStrictPi(t *testing.T, output string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -141,7 +143,6 @@ func strictSchemaViolations(value any, path string) []string {
 // ("At schema path /, additionalProperties must be false"). Every schema the
 // steps hand to RunOpts.JSONSchema must therefore declare a strict-valid tool.
 func TestPiStrictDeclarationSatisfiesTheStrictFunctionContract(t *testing.T) {
-	t.Parallel()
 	schemas := map[string]json.RawMessage{
 		"review":                reviewSchemaForFinalize(false),
 		"review finalize":       reviewSchemaForFinalize(true),
@@ -174,7 +175,6 @@ func TestPiStrictDeclarationSatisfiesTheStrictFunctionContract(t *testing.T) {
 }
 
 func TestPiStrictDeclarationLeavesSummaryLengthToPostValidation(t *testing.T) {
-	t.Parallel()
 	overLong, err := json.Marshal(strings.Repeat("a", config.MaxFixMessageSummaryBytes+1))
 	if err != nil {
 		t.Fatal(err)

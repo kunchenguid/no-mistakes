@@ -139,3 +139,32 @@ func TestShellCommandGroupActiveStopsAtDeadlineBetweenProbes(t *testing.T) {
 		}
 	})
 }
+
+// A finishing member must be refused by a single snapshot, then accepted once
+// it leaves inside the settle window (issue #1614). A scripted process table
+// and simulated clock keep both observations independent of ps startup latency
+// and of a real child exiting before its first snapshot on a busy runner.
+func TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pgid := syscall.Getpgrp()
+		cmd := &exec.Cmd{Process: &os.Process{Pid: pgid}}
+		started := time.Now()
+		ps := func(context.Context) ([]byte, error) {
+			if time.Since(started) < 500*time.Millisecond {
+				return fmt.Appendf(nil, "%d S 4242 sleep 0.5\n", pgid), nil
+			}
+			return nil, nil
+		}
+		active, detail, err := shellCommandGroupActive(cmd, 0, ps)
+		if err != nil || !active || !strings.Contains(detail, "pid 4242 (sleep 0.5)") {
+			t.Fatalf("single probe: active=%v detail=%q err=%v, want the finishing member reported", active, detail, err)
+		}
+		active, detail, err = shellCommandGroupActive(cmd, 3*time.Second, ps)
+		if err != nil || active || detail != "" {
+			t.Fatalf("bounded re-probe: active=%v detail=%q err=%v, want the finishing member accepted", active, detail, err)
+		}
+		if elapsed := time.Since(started); elapsed != 500*time.Millisecond {
+			t.Fatalf("bounded re-probe took %s, want the member's 500ms lifetime", elapsed)
+		}
+	})
+}

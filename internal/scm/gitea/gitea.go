@@ -456,6 +456,37 @@ func (h *Host) viewPR(ctx context.Context, number string) (giteaPRView, error) {
 	return view, nil
 }
 
+// GetPRHeadSHA reads the commit the pull request points at, which the adapter
+// already fetches for every pull-request view. The CI step uses it to name the
+// head a merge landed on when this provider cannot prove a merge, so a merged
+// completion never certifies a commit nobody can attribute.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	view, err := h.viewPR(ctx, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(view.HeadSHA)
+	if head == "" {
+		return "", fmt.Errorf("tea pr view: pull request reports no head commit: %w", scm.ErrPRHeadMissing)
+	}
+	return head, nil
+}
+
+// GetPRBaseBranch reads the pull request's live base branch, which the adapter
+// already fetches for every pull-request view. The CI step aligns a restart at
+// Review with it, so a layer the forge retargeted keeps its layer-only scope.
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	view, err := h.viewPR(ctx, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSpace(view.Base)
+	if base == "" {
+		return "", errors.New("tea pr view: pull request reports no base branch")
+	}
+	return base, nil
+}
+
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	view, err := h.viewPR(ctx, pr.Number)
 	if err != nil {

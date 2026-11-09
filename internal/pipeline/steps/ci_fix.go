@@ -96,7 +96,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		}
 		snapshotPR := *pr
 		snapshotPR.HeadSHA = expectedHeadSHA
-		checks, _, moved, err := getCIChecks(sctx.Ctx, host, &snapshotPR)
+		checks, _, moved, err := s.getCIChecks(sctx, host, &snapshotPR)
 		switch {
 		case moved && !pluginContractBroken(err):
 			sctx.Log("selected CI checks are stale; waiting for current checks before repair")
@@ -136,6 +136,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	sctx.Log(fmt.Sprintf("repairing: %s...", issueDesc))
 	previousHeadSHA := sctx.Run.HeadSHA
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
+	_, baseErr := resolveLivePRBase(sctx, host, pr)
+	if pluginContractBroken(baseErr) {
+		return nil, baseErr
+	}
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
@@ -196,6 +200,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			// supersede findings that were left unselected for this repair.
 			// Carry them on the restart outcome: ask-user findings park before
 			// the restart, while an empty or informational set proceeds.
+
 			return &pipeline.StepOutcome{
 				RestartFrom: repair.restartFrom(),
 				Findings:    sctx.DeferredFindings,
@@ -370,7 +375,7 @@ CI logs:
 	if errors.As(err, &refusal) {
 		head, recordErr := stepGitHeadSHA(sctx)
 		if recordErr == nil && head != sctx.Run.HeadSHA {
-			_, recordErr = s.recordLocalRepair(sctx, head)
+			_, recordErr = s.recordLocalRepair(sctx, head, "")
 		}
 		return repair, errors.Join(err, recordErr)
 	}
@@ -628,7 +633,7 @@ func (s *CIStep) ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc s
 	case rebaseInProgress(sctx.Ctx, sctx.WorkDir) || mergeInProgress(sctx.Ctx, sctx.WorkDir):
 		leftover = append(leftover, fmt.Sprintf("The timed-out agent left an unfinished rebase or merge in the run worktree at %s; its partial HEAD is not recorded.", sctx.WorkDir))
 	case headErr == nil && head != "" && head != sctx.Run.HeadSHA:
-		if _, recErr := s.recordLocalRepair(sctx, head); recErr != nil {
+		if _, recErr := s.recordLocalRepair(sctx, head, ""); recErr != nil {
 			sctx.Log(fmt.Sprintf("warning: could not record timed-out CI repair head %s: %v", head, recErr))
 			leftover = append(leftover, fmt.Sprintf("The timed-out agent left a committed head at %s in the run worktree.", shortObjectID(head)))
 		} else {
@@ -846,7 +851,7 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if ciRevalidatesRepairs(sctx) {
-		return s.recordLocalRepair(sctx, headSHA)
+		return s.recordLocalRepair(sctx, headSHA, "")
 	}
 	if reason := ciRepairContinuityGap(sctx, headSHA); reason != "" {
 		if s.replayBase != "" && ciCarriesReviewOnReplay(sctx) {
@@ -856,7 +861,7 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 			}
 		}
 		sctx.Log(fmt.Sprintf("cannot prove the repaired head continues the reviewed head: %s; revalidating from Review instead of publishing", reason))
-		return s.recordLocalRepair(sctx, headSHA)
+		return s.recordLocalRepair(sctx, headSHA, "")
 	}
 	// A head that carried its review approval across a rebase has not been
 	// through Test onward yet, so nothing on it may publish here. The same head
@@ -868,7 +873,7 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 			sctx.Log("carried review approval still awaits validation from Test; restarting there instead of publishing")
 			return ciRepairResult{HeadAdvanced: true, Revalidate: true, ReviewCarried: true}, nil
 		}
-		return s.recordLocalRepair(sctx, headSHA)
+		return s.recordLocalRepair(sctx, headSHA, "")
 	}
 	return s.publishRepair(sctx, headSHA)
 }
@@ -945,23 +950,42 @@ func ciRepairContinuityGap(sctx *pipeline.StepContext, headSHA string) string {
 // the Push step's
 // assertReviewApprovedPushHead guard refuses to publish the repaired head until
 // Review has approved it again. The CI monitor turns that into a restart at
-// Review.
-func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
-	if err := updateNonSharedBranchRef(sctx, headSHA); err != nil {
-		return ciRepairResult{}, err
-	}
+// Review. note is the log line to write; the empty note keeps the repair log
+// line, while the head-adoption path names its adopted head instead.
+func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA, note string) (ciRepairResult, error) {
+	return s.recordRevalidationHead(sctx, headSHA, note, true)
+}
+
+// recordRevalidationHead advances the run onto headSHA for revalidation.
+// pipelineAuthored says whose commits those are: a repair's are the fixer's, so
+// the range is persisted as an uncertified pipeline range and Review is told so;
+// an ADOPTED head's are not - they were written outside the run by the rewrite
+// that moved the branch - and claiming them would hand the reviewer a wrong
+// authorship label and the revert-to-minimal-fix ramp over the author's own work.
+func (s *CIStep) recordRevalidationHead(sctx *pipeline.StepContext, headSHA, note string, pipelineAuthored bool) (ciRepairResult, error) {
 	startingHead := sctx.Run.HeadSHA
-	// Durable first, then in memory. Advancing the live head before the write
+	// Durable first, then refs, then in memory. Moving a ref before the write
 	// succeeds leaves the monitor watching a head the durable record does not
 	// know about, still holding its old review approval, with the revalidation
-	// this call exists to trigger silently lost.
+	// this call exists to trigger silently lost - and for an adopted head it
+	// would leave the branch on a commit no Review approved while the record
+	// still names the reviewed one.
 	if err := sctx.DB.UpdateRunHeadSHAForRevalidation(sctx.Run.ID, headSHA); err != nil {
+		return ciRepairResult{}, err
+	}
+	if err := updateNonSharedBranchRef(sctx, headSHA); err != nil {
 		return ciRepairResult{}, err
 	}
 	sctx.Run.HeadSHA = headSHA
 	sctx.Run.ReviewApprovedHeadSHA = nil
-	pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
-	sctx.Log("committed CI repair for revalidation")
+	if pipelineAuthored {
+		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
+	}
+	if note != "" {
+		sctx.Log(note)
+	} else {
+		sctx.Log("committed CI repair for revalidation")
+	}
 	return ciRepairResult{HeadAdvanced: true, Revalidate: true}, nil
 }
 

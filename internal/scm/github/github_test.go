@@ -2255,3 +2255,136 @@ func TestStdoutOnlyFailureDetail(t *testing.T) {
 		})
 	}
 }
+
+// A merged PR whose head is the run's recorded head proves the run's own
+// outcome: the proof carries every attestation field.
+func TestGetMergedProofAcceptsMergesAtTheExpectedHead(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy": {
+			stdout: `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"1111111111111111111111111111111111111111","mergeCommit":{"oid":"abc"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"reviewer"}}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	proof, err := host.GetMergedProof(context.Background(), &scm.PR{Number: "42"}, []string{"1111111111111111111111111111111111111111"})
+	if err != nil {
+		t.Fatalf("GetMergedProof() error = %v", err)
+	}
+	if !proof.Merged || proof.HeadSHA != "1111111111111111111111111111111111111111" ||
+		proof.MergeCommitSHA != "abc" || proof.MergedBy != "reviewer" || proof.MergedAt.IsZero() || proof.Number != "42" {
+		t.Fatalf("proof = %#v", proof)
+	}
+}
+
+// A branch rewritten outside the run and then merged carries the merge at a
+// head the recorded head alone cannot explain; the run's other own heads do.
+func TestGetMergedProofAcceptsMergesAtAnotherOwnHead(t *testing.T) {
+	t.Parallel()
+
+	const adopted = "2222222222222222222222222222222222222222"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy": {
+			stdout: `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"` + adopted + `","mergeCommit":{"oid":"abc"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"reviewer"}}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	proof, err := host.GetMergedProof(context.Background(), &scm.PR{Number: "42"}, []string{"1111111111111111111111111111111111111111", adopted})
+	if err != nil {
+		t.Fatalf("GetMergedProof() error = %v", err)
+	}
+	if !proof.Merged || proof.HeadSHA != adopted {
+		t.Fatalf("proof = %#v", proof)
+	}
+}
+
+// A merge at a head the run owns nowhere is a foreign merge: the run must
+// refuse to report it as its own outcome rather than attesting a head it
+// never validated.
+func TestGetMergedProofRefusesAMergeAtAHeadTheRunOwnsNowhere(t *testing.T) {
+	t.Parallel()
+
+	const foreign = "3333333333333333333333333333333333333333"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy": {
+			stdout: `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"` + foreign + `","mergeCommit":{"oid":"abc"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"someone-else"}}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	_, err := host.GetMergedProof(context.Background(), &scm.PR{Number: "42"}, []string{"1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"})
+	if !errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("GetMergedProof() error = %v, want ErrHeadChanged", err)
+	}
+	for _, want := range []string{
+		"1111111111111111111111111111111111111111",
+		"2222222222222222222222222222222222222222",
+		"got " + foreign,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want every accepted head and the observed head named (%s)", err, want)
+		}
+	}
+}
+
+// The merge commit and timestamp are required whenever the PR is merged, so an
+// attestation written from this proof always names both.
+func TestGetMergedProofRefusesIncompleteEvidenceForAMergedPR(t *testing.T) {
+	t.Parallel()
+
+	for name, payload := range map[string]string{
+		"no merge commit": `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"1111111111111111111111111111111111111111","mergeCommit":{"oid":""},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"reviewer"}}`,
+		"no merged at":    `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"1111111111111111111111111111111111111111","mergeCommit":{"oid":"abc"},"mergedAt":"","mergedBy":{"login":"reviewer"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 42 --repo test/repo --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy": {stdout: payload + "\n"},
+			}), nil, "", "test/repo")
+
+			_, err := host.GetMergedProof(context.Background(), &scm.PR{Number: "42"}, []string{"1111111111111111111111111111111111111111"})
+			if err == nil || !strings.Contains(err.Error(), "incomplete evidence") {
+				t.Fatalf("GetMergedProof() error = %v, want incomplete-evidence refusal", err)
+			}
+		})
+	}
+}
+
+// The merging identity is not evidence of the merge: GitHub reports no login
+// for a merge by an app identity or a deleted account, and failing the run
+// there refused a merge the commit and timestamp already proved.
+func TestGetMergedProofAcceptsAMergeWithNoMergingIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy": {
+			stdout: `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"1111111111111111111111111111111111111111","mergeCommit":{"oid":"abc"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":""}}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	proof, err := host.GetMergedProof(context.Background(), &scm.PR{Number: "42"}, []string{"1111111111111111111111111111111111111111"})
+	if err != nil {
+		t.Fatalf("GetMergedProof() error = %v, want the merge accepted without a merging identity", err)
+	}
+	if !proof.Merged || proof.MergeCommitSHA != "abc" || proof.MergedAt.IsZero() {
+		t.Fatalf("proof = %+v, want a complete merge proof", proof)
+	}
+	if proof.MergedBy != "" {
+		t.Fatalf("MergedBy = %q, want it left empty", proof.MergedBy)
+	}
+}
+
+// Membership is case-insensitive: providers shorten or lengthen SHAs in
+// their payloads, and a head this run owns must never be refused on case.
+func TestGetMergedProofHeadMembershipIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy": {
+			stdout: `{"number":42,"url":"https://github.com/test/repo/pull/42","state":"MERGED","headRefOid":"AAAA111111111111111111111111111111111111","mergeCommit":{"oid":"abc"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"reviewer"}}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	if _, err := host.GetMergedProof(context.Background(), &scm.PR{Number: "42"}, []string{"aaaa111111111111111111111111111111111111"}); err != nil {
+		t.Fatalf("GetMergedProof() error = %v, want case-insensitive ownership", err)
+	}
+}

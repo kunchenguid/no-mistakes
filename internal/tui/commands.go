@@ -151,6 +151,13 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if pipeline.HasUnreadableReviewQuestionHistory(m.stepFindings[step.StepName]) {
 		return nil
 	}
+	// Which head to validate after an outside rewrite is an operator decision,
+	// so yolo has no standing consent to give either: the fix branch below
+	// would hand the CI fixer a head rewrite it cannot fix and then approve the
+	// resulting fix_review as already-fixed.
+	if pipeline.HasCIHeadRewriteRefusal(m.stepFindings[step.StepName]) {
+		return nil
+	}
 	if !m.approvalReady(step) {
 		return nil
 	}

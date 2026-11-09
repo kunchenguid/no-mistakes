@@ -547,8 +547,9 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 
 	// A rerun runs the checks again for whatever commit the branch now points
 	// at, so it is only meaningful while that is still the commit this run
-	// delivered. If the branch moved, the checks being re-run would certify a
-	// revision this run never produced: terminate with the evidence instead.
+	// delivered. A move after the monitor's head guard leaves these checks
+	// stale: pause with the expected and observed heads instead of rerunning
+	// them. Rewrites observed by the monitor itself use its adoption path.
 	published, err := publishedBranchHead(sctx)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not verify the published branch head before re-running checks: %v", err))

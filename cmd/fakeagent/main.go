@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -156,6 +157,26 @@ func runGhForkPRStub(args []string) int {
 			fmt.Println("MERGEABLE")
 			return 0
 		}
+		// The CI step's merged-proof read must see the PR merged at a head the
+		// run owns, so the stub reports the invoking worktree's HEAD (the step
+		// always runs there). Failing to resolve one exits 1 - the proof must
+		// fail closed rather than certify a foreign head.
+		if strings.Contains(argAfter(args, "--json"), "mergeCommit") {
+			head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fakeagent gh fork-pr: merged proof could not resolve the worktree head: %v\n", err)
+				return 1
+			}
+			repo := argAfter(args, "--repo")
+			if repo == "" {
+				repo = os.Getenv("FAKEAGENT_GH_PARENT")
+			}
+			if repo == "" {
+				repo = "parent/repo"
+			}
+			fmt.Printf(`{"number":99,"url":"https://github.com/%s/pull/99","state":"MERGED","headRefOid":"%s","mergeCommit":{"oid":"merge00000000000000000000000000000000000000"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"e2e-parent-user"}}`+"\n", strings.TrimSuffix(repo, ".git"), strings.TrimSpace(string(head)))
+			return 0
+		}
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "checks" {
 		fmt.Println("[]")
@@ -231,9 +252,17 @@ func runTeaStub(args []string) int {
 	if len(args) >= 2 && args[0] == "pulls" {
 		// `tea pulls <idx> --output json` (view a single PR by index). Merged
 		// on the first poll so the CI step's GetPRState exits without needing
-		// to model Gitea Actions runs.
+		// to model Gitea Actions runs. The merged head is the invoking
+		// worktree's HEAD, which is the only head the run can prove it owns; a
+		// merge the provider cannot attribute to one of the run's heads is
+		// refused rather than completed.
 		if _, err := strconv.Atoi(args[1]); err == nil {
-			fmt.Println(`{"index":99,"state":"closed","hasMerged":true,"head":"","base":"main"}`)
+			head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fakeagent tea: merged head could not resolve the worktree head: %v\n", err)
+				return 1
+			}
+			fmt.Printf(`{"index":99,"state":"closed","hasMerged":true,"head":"","headSha":%q,"base":"main"}`+"\n", strings.TrimSpace(string(head)))
 			return 0
 		}
 	}
