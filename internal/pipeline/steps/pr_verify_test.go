@@ -68,7 +68,7 @@ func TestPRAppendixVerifyGitLabScopesRepository(t *testing.T) {
 			linkTestBinary(t, bin, "glab")
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("FAKE_CLI_MODE", "glab")
-			t.Setenv("FAKE_CLI_MR_READBACK_JSON", `{"iid":7,"title":"Target MR","description":"author"}`)
+			t.Setenv("FAKE_CLI_MR_READBACK_JSON", `{"iid":7,"title":"Target MR","description":"author","web_url":"https://gitlab.com/team/sub/target/-/merge_requests/7"}`)
 			log := filepath.Join(t.TempDir(), "requests.log")
 			t.Setenv("FAKE_CLI_LOG", log)
 			reader, err := NewPRAppendixReader(context.Background(), config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{}), remote)
@@ -107,7 +107,7 @@ func TestPRAppendixVerifyForgejoNumberedRead(t *testing.T) {
 		response string
 		wantErr  bool
 	}{
-		{`{"status":200,"data":{"number":7,"title":"Target PR","body":"author"}}`, false},
+		{`{"status":200,"data":{"number":7,"title":"Target PR","body":"author","html_url":"https://code.example:3443/git/team/target/pulls/7"}}`, false},
 		{`{"status":200,"data":{"number":8,"title":"Other PR","body":"author"}}`, true},
 	} {
 		t.Setenv("FAKE_CLI_PR_CONTENT_JSON", tc.response)

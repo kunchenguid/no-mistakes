@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/scm/forgejo"
+	"github.com/kunchenguid/no-mistakes/internal/scm/origin"
 )
 
 // PRAppendixVerification reports the publication parser's ownership decision.
@@ -59,21 +62,54 @@ func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string
 		Ctx: ctx, Config: cfg, ForgeContext: forge,
 		Repo: &db.Repo{UpstreamURL: repoURL}, Run: &db.Run{},
 	}
-	host, reason := buildHost(sctx, resolvedProvider(sctx))
+	provider := resolvedProvider(sctx)
+	host, reason := buildHost(sctx, provider)
 	if host == nil {
 		return nil, fmt.Errorf("cannot read PR content: %s", reason)
 	}
 	if err := host.Available(ctx); err != nil {
 		return nil, fmt.Errorf("cannot read PR content: %w", err)
 	}
-	if host, ok := host.(*forgejo.Host); ok {
-		return host.GetPRContentByNumber, nil
-	}
-	reader, ok := host.(scm.PRContentReader)
+	reader, ok := host.(scm.PRRepositoryContentReader)
 	if !ok {
-		return nil, fmt.Errorf("provider does not support reading PR content")
+		return nil, fmt.Errorf("provider does not support repository-bound numbered PR reads")
+	}
+	expected := scm.RepositoryIdentity{Host: resolvedHost(sctx, repoURL), Path: scm.RepoPath(repoURL)}
+	if web := scm.RepositoryIdentityFromURL(repoURL); web.Host != "" {
+		expected.Host = web.Host
+	}
+	switch provider {
+	case scm.ProviderAzureDevOps:
+		org, project, repo, ok := azuredevops.ParseRemote(repoURL)
+		if !ok {
+			return nil, fmt.Errorf("cannot resolve requested Azure repository identity")
+		}
+		expected = scm.RepositoryIdentity{Host: "dev.azure.com", Path: scm.RepoPath(org) + "/" + project + "/" + repo}
+	case scm.ProviderOrigin:
+		expected = scm.RepositoryIdentity{Host: "origin.cursor.com", Path: origin.RepoSlug(repoURL)}
+	case scm.ProviderForgejo:
+		base, repo, err := forgejo.ResolveRemoteWithSSHDomain(repoURL, forgejoBaseURLForStep(sctx), scm.ResolveHost(ctx, repoURL), forgejoSSHDomainForStep(sctx))
+		if err != nil {
+			return nil, err
+		}
+		expected = scm.RepositoryIdentityFromURL(strings.TrimRight(base, "/") + "/" + repo)
+	}
+	if expected.Host == "" || expected.Path == "" {
+		return nil, fmt.Errorf("requested repository identity is incomplete")
 	}
 	return func(ctx context.Context, number string) (scm.PRContent, error) {
-		return reader.GetPRContent(ctx, &scm.PR{Number: number})
+		result, err := reader.GetPRRepositoryContent(ctx, number)
+		if err != nil {
+			return scm.PRContent{}, err
+		}
+		// This is the single gate between every adapter's structured read and
+		// the parser. No content escapes on missing or mismatched identity.
+		if result.Repository.Host == "" || result.Repository.Path == "" {
+			return scm.PRContent{}, fmt.Errorf("PR read did not report a repository identity")
+		}
+		if !strings.EqualFold(result.Repository.Host, expected.Host) || result.Repository.Path != expected.Path {
+			return scm.PRContent{}, fmt.Errorf("PR repository identity does not match --repo")
+		}
+		return result.Content, nil
 	}, nil
 }
