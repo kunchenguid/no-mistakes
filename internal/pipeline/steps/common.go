@@ -39,22 +39,29 @@ func unmarshalRequiredFindings(raw []byte, findings *Findings, requireNonEmptySu
 		return fmt.Errorf("missing summary")
 	}
 	for i, item := range parsed.Items {
-		switch item.Severity {
-		case "error", "warning", "info":
-		default:
-			return fmt.Errorf("finding %d missing severity", i)
-		}
-		if strings.TrimSpace(item.Description) == "" {
-			return fmt.Errorf("finding %d missing description", i)
-		}
-		switch item.Action {
-		case types.ActionNoOp, types.ActionAutoFix, types.ActionAskUser:
-		default:
-			return fmt.Errorf("finding %d missing action", i)
+		if err := validateAnalyzerFinding(item); err != nil {
+			return fmt.Errorf("finding %d %w", i, err)
 		}
 	}
 	*findings = parsed
 	return nil
+}
+
+func validateAnalyzerFinding(item Finding) error {
+	switch item.Severity {
+	case types.FindingSeverityError, types.FindingSeverityWarning, types.FindingSeverityInfo:
+	default:
+		return fmt.Errorf("missing severity")
+	}
+	if strings.TrimSpace(item.Description) == "" {
+		return fmt.Errorf("missing description")
+	}
+	switch item.Action {
+	case types.ActionNoOp, types.ActionAutoFix, types.ActionAskUser:
+		return nil
+	default:
+		return fmt.Errorf("missing action")
+	}
 }
 
 func unmarshalRequiredTestFindings(raw []byte, findings *Findings) error {
@@ -245,7 +252,8 @@ var testFindingsSchema = json.RawMessage(`{
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
 					"description": {"type": "string"},
-					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]}
+					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]},
+					"requires_operator_stop": {"type": "boolean", "description": "true on an ask-user finding when a validation authority refuses and dependent work must wait for an operator decision"}
 				},
 				"required": ["severity", "description", "action"]
 			}

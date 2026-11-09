@@ -40,6 +40,11 @@ func HasUnvalidatedWorkRefusal(findingsJSON string) bool {
 	return hasFindingID(findingsJSON, types.FindingIDTestAgentUnvalidatedWork)
 }
 
+func HasTestOperatorStop(findingsJSON string) bool {
+	findings, _ := types.ParseFindingsJSON(findingsJSON)
+	return types.HasTestOperatorStop(findings)
+}
+
 func hasFindingID(findingsJSON, id string) bool {
 	findings, _ := types.ParseFindingsJSON(findingsJSON)
 	for _, finding := range findings.Items {

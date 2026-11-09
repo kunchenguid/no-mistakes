@@ -223,6 +223,8 @@ type Finding struct {
 	// every non-CI finding.
 	Check   string `json:"check,omitempty"`
 	CheckID string `json:"check_id,omitempty"`
+
+	RequiresOperatorStop bool `json:"requires_operator_stop,omitempty"`
 }
 
 // TestScenario is one named end-to-end scenario the test step derived from the
@@ -295,6 +297,8 @@ type findingWire struct {
 	Check               string `json:"check,omitempty"`
 	CheckID             string `json:"check_id,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
+
+	RequiresOperatorStop bool `json:"requires_operator_stop,omitempty"`
 }
 
 // WithdrawnFinding is one carried finding an answer round retracted, naming
@@ -564,6 +568,10 @@ func HasAskUserFindings(findings Findings) bool {
 	return false
 }
 
+func HasTestOperatorStop(findings Findings) bool {
+	return slices.ContainsFunc(findings.Items, func(item Finding) bool { return item.RequiresOperatorStop })
+}
+
 // HasActionableFindings reports whether any finding warrants a fix - that is,
 // any finding whose effective action is not "no-op". Findings that are purely
 // informational ("no-op") are not actionable and need no fix, so a step whose
@@ -669,6 +677,9 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	if wire.RequiresOperatorStop && wire.Action != ActionAskUser {
+		return fmt.Errorf("requires_operator_stop requires an explicit %q action", ActionAskUser)
+	}
 	f.ID = wire.ID
 	f.Severity = wire.Severity
 	f.File = wire.File
@@ -682,6 +693,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Category = wire.Category
 	f.Check = wire.Check
 	f.CheckID = wire.CheckID
+	f.RequiresOperatorStop = wire.RequiresOperatorStop
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

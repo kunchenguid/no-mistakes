@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -35,17 +38,27 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 		name   string
 		report string
 		valid  bool
+		fix    bool
 	}{
-		{"valid evidence", reportedOperatorStop, true},
-		{"invalid verdict", strings.Replace(reportedOperatorStop, `"no-go"`, `"go"`, 1), false},
+		{"valid evidence", reportedOperatorStop, true, false},
+		{"invalid verdict", strings.Replace(reportedOperatorStop, `"no-go"`, `"go"`, 1), false, false},
+		{"operator authorizes a repair", reportedOperatorStop, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			gitCmd(t, dir, "checkout", "--detach", headSHA)
 			var primaryCalls, fallbackCalls atomic.Int32
 			primary := &mockAgent{name: "primary", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-				if primaryCalls.Add(1) == 1 {
+				switch primaryCalls.Add(1) {
+				case 1:
 					return &agent.Result{Output: json.RawMessage(tc.report)}, nil
+				case 2:
+					if tc.fix {
+						if err := os.WriteFile(filepath.Join(dir, "checker.conf"), []byte("approved=true\n"), 0o644); err != nil {
+							return nil, err
+						}
+						return &agent.Result{Output: json.RawMessage(`{"summary":"Set the approved checker configuration"}`)}, nil
+					}
 				}
 				return &agent.Result{Output: json.RawMessage(fmt.Sprintf(cleanTestEvidence, "[]"))}, nil
 			}}
@@ -54,13 +67,13 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 				return nil, fmt.Errorf("unexpected fallback invocation")
 			}}
 			ag := agent.NewFallback([]agent.Agent{primary, fallback})
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "exit 0"})
 			sctx.Config.AutoFix.Test = 3
 			sctx.Config.AgentCrashRetries = 2
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			parked := make(chan ipc.Event, 1)
-			exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}}, func(event ipc.Event) {
+			exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}, &LintStep{}}, func(event ipc.Event) {
 				if event.Type == ipc.EventStepCompleted && event.Status != nil &&
 					(*event.Status == string(types.StepStatusAwaitingApproval) || *event.Status == string(types.StepStatusFixReview)) {
 					parked <- event
@@ -98,7 +111,8 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(stepResults) != 1 || stepResults[0].Status != types.StepStatusAwaitingApproval || stepResults[0].FindingsJSON == nil {
+			if len(stepResults) != 2 || stepResults[0].Status != types.StepStatusAwaitingApproval ||
+				stepResults[0].FindingsJSON == nil || stepResults[1].Status != types.StepStatusPending {
 				t.Fatalf("Test did not persist an approval gate: %+v", stepResults)
 			}
 			step := stepResults[0]
@@ -128,19 +142,89 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 				t.Fatalf("parked Test did not report the validation limit: %s", *step.FindingsJSON)
 			}
 
-			if _, err := exec.RespondWithOverrides(types.StepTest, types.ActionAbort, nil, nil, nil, nil, "Validation was refused"); err != nil {
+			if tc.fix {
+				ids := make([]string, 0, len(findings.Items))
+				for _, item := range findings.Items {
+					ids = append(ids, item.ID)
+				}
+				if _, err := exec.RespondWithOverrides(types.StepTest, types.ActionFix, ids, nil, nil, nil, "",
+					pipeline.ResponseOptions{Origin: types.ResponseOriginInteractive}); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := exec.RespondWithOverrides(types.StepTest, types.ActionAbort, nil, nil, nil, nil, "Validation was refused"); err != nil {
 				t.Fatal(err)
 			}
 			select {
 			case <-done:
+			case event := <-parked:
+				t.Fatalf("operator response left Test parked: %s", *event.Status)
+			case <-ctx.Done():
+				t.Fatal("run did not finish after the operator response")
+			}
+			if !tc.fix {
 				if executeErr == nil || !strings.Contains(executeErr.Error(), "Validation was refused") {
 					t.Fatalf("Test did not honor the operator abort: %v", executeErr)
 				}
-			case <-ctx.Done():
-				t.Fatal("Test did not finish after the operator abort")
+				if primaryCalls.Load() != 1 || fallbackCalls.Load() != 0 {
+					t.Fatalf("operator abort reached a provider: primary=%d fallback=%d", primaryCalls.Load(), fallbackCalls.Load())
+				}
+				return
 			}
-			if primaryCalls.Load() != 1 || fallbackCalls.Load() != 0 {
-				t.Fatalf("operator abort reached a provider: primary=%d fallback=%d", primaryCalls.Load(), fallbackCalls.Load())
+			if executeErr != nil {
+				t.Fatalf("run did not finish after the authorized fix: %v", executeErr)
+			}
+			if primaryCalls.Load() != 3 || fallbackCalls.Load() != 0 {
+				t.Fatalf("authorized fix ran %d primary calls and %d fallback calls", primaryCalls.Load(), fallbackCalls.Load())
+			}
+			run, err = sctx.DB.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != types.RunCompleted || run.HeadSHA == headSHA {
+				t.Fatalf("authorized repair did not complete on a new head: %+v", run)
+			}
+			rounds, err = sctx.DB.GetRoundsByStep(step.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rounds) != 2 || rounds[0].FindingsJSON == nil || *rounds[0].FindingsJSON != *step.FindingsJSON ||
+				rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != db.RoundSelectionSourceUser ||
+				rounds[1].FindingsJSON == nil {
+				t.Fatalf("authorized fix did not retain the stopped round and its decision: %+v", rounds)
+			}
+			fresh, err := types.ParseFindingsJSON(*rounds[1].FindingsJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fresh.Verdict != types.TestVerdictGo || fresh.TestedHeadSHA != run.HeadSHA || types.HasTestOperatorStop(fresh) {
+				t.Fatalf("fresh passing Test result is missing for the repaired head: %s", *rounds[1].FindingsJSON)
+			}
+		})
+	}
+}
+
+func TestTestAnalyzer_OperatorStopRequiresExplicitAskUser(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+		stop   bool
+		reject bool
+	}{
+		{"ask-user", `"action":"ask-user","requires_operator_stop":true`, true, false},
+		{"omitted marker", `"action":"ask-user"`, false, false},
+		{"null marker", `"action":"ask-user","requires_operator_stop":null`, false, false},
+		{"false marker", `"action":"ask-user","requires_operator_stop":false`, false, false},
+		{"missing action", `"requires_operator_stop":true`, false, true},
+		{"legacy action", `"requires_human_review":true,"requires_operator_stop":true`, false, true},
+		{"auto-fix", `"action":"auto-fix","requires_operator_stop":true`, false, true},
+		{"no-op", `"action":"no-op","requires_operator_stop":true`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := `[{"severity":"info","description":"Validation refused",` + tc.fields + `}]`
+			output := json.RawMessage(fmt.Sprintf(cleanTestEvidence, item))
+			findings, err := parseTestAnalyzerOutput(&agent.Result{Output: output})
+			if stopped := types.HasTestOperatorStop(findings); (err != nil) != tc.reject || stopped != tc.stop {
+				t.Fatalf("operator stop = %v, error = %v. Want stop = %v, rejected = %v", stopped, err, tc.stop, tc.reject)
 			}
 		})
 	}

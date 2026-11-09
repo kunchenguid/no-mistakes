@@ -251,6 +251,7 @@ Gates with no findings or only `action: no-op` findings are approved as-is, and 
 The [`protected_paths` refusal rules](/no-mistakes/reference/repo-config/#protected_paths) are an exception to this automatic handling.
 So is an open [review question](/no-mistakes/concepts/review-conversation/), which is settled by an answer rather than by a verdict, and a review question history that cannot be read end to end: `--yes` stands aside at both instead of selecting findings.
 So is a Test budget-cut gate that reports `test-agent-unvalidated-work`: approval is refused there, so `--yes` stops at it and leaves the choice between `--action fix` and `no-mistakes axi abort` to the operator (see [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout)).
+A Test finding with `requires_operator_stop: true` also leaves the gate parked with `--yes`. The operator decides how to respond to the reported validation refusal.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.

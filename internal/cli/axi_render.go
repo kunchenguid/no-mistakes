@@ -669,6 +669,12 @@ func gateFields(gate stepView) []toon.Field {
 // gateFieldsForRun renders the gate with every follow-up command that accepts
 // --run carrying runID, so a caller that selected the run by id keeps naming it.
 func gateFieldsForRun(gate stepView, runID string) []toon.Field {
+	if gate.Name == string(types.StepTest) && pipeline.HasTestOperatorStop(gate.FindingsJSON) {
+		return gateFieldsWithHelp(gate, []string{
+			"Test stopped at a validation boundary. Ask the operator how to respond before continuing.",
+			fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, runID)),
+		})
+	}
 	respond := "no-mistakes axi respond" + runFlag(runID)
 	coverageHelp := "Run `" + respond + " --action complete-coverage` to review only the remaining paths using stored coverage for this source"
 	help := []string{
