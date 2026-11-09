@@ -26,7 +26,7 @@ func TestGitLabCodeRabbitCompletionWithoutPipelinePreservesReviewAndRegistration
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view 123 --output json --repo group/project": {
+		"glab mr view 123 --output json": {
 			stdout: `{"iid":123,"sha":"head","head_pipeline":null}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {stdout: "[]"},

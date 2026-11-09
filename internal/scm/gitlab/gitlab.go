@@ -598,12 +598,14 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 // the source revision a pipeline belongs to goes through it, so the identity
 // fields are parsed in one place.
 func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
+	return h.viewMRInRepository(ctx, id, "")
+}
+
+// viewMRInRepository shares the payload parser while letting the opt-in
+// verifier target a repository without changing the pipeline's default argv.
+func (h *Host) viewMRInRepository(ctx context.Context, id, repo string) (mrPayload, error) {
 	args := []string{"mr", "view", id, "--output", "json"}
-	if h.projectPath != "" {
-		repo := h.projectPath
-		if h.host != "" {
-			repo = "https://" + h.host + "/" + repo
-		}
+	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
 	cmd := h.cmd(ctx, "glab", args...)

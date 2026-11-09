@@ -9,7 +9,11 @@ import (
 )
 
 func (h *Host) GetPRRepositoryContent(ctx context.Context, number string) (scm.PRRepositoryContent, error) {
-	mr, err := h.viewMR(ctx, number)
+	repo := h.projectPath
+	if repo != "" && h.host != "" {
+		repo = "https://" + h.host + "/" + repo
+	}
+	mr, err := h.viewMRInRepository(ctx, number, repo)
 	if err != nil {
 		return scm.PRRepositoryContent{}, err
 	}
