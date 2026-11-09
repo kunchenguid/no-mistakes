@@ -669,17 +669,20 @@ func gateFields(gate stepView) []toon.Field {
 // gateFieldsForRun renders the gate with every follow-up command that accepts
 // --run carrying runID, so a caller that selected the run by id keeps naming it.
 func gateFieldsForRun(gate stepView, runID string) []toon.Field {
+	respond := "no-mistakes axi respond" + runFlag(runID)
+	fixHelp := "`" + respond + " --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response"
 	if gate.Name == string(types.StepTest) && pipeline.HasTestOperatorStop(gate.FindingsJSON) {
 		return gateFieldsWithHelp(gate, []string{
 			"Test stopped at a validation boundary. Ask the operator how to respond before continuing.",
+			"Only after the operator explicitly chooses fix, run " + fixHelp,
+			"Only after the operator explicitly chooses abort, run `" + respond + " --action abort --reason \"<operator's reason>\"` to reject this gate with the operator's reason",
 			fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, runID)),
 		})
 	}
-	respond := "no-mistakes axi respond" + runFlag(runID)
 	coverageHelp := "Run `" + respond + " --action complete-coverage` to review only the remaining paths using stored coverage for this source"
 	help := []string{
 		"Run `" + respond + " --action approve` to accept this step and continue",
-		"Run `" + respond + " --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",
+		"Run " + fixHelp,
 	}
 	if pipeline.HasReviewFixRoundLimit(gate.FindingsJSON) {
 		help = []string{

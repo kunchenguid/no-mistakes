@@ -459,6 +459,51 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 	}
 }
 
+// The public gate output must let callers carry out an explicit operator
+// decision. Missing commands, lost run scope, or approval guidance violate that contract.
+func TestStoppedTestGateResponseGuidance(t *testing.T) {
+	for _, scope := range []string{"", " --run run-1"} {
+		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+			t.Run(scope+"/"+string(status), func(t *testing.T) {
+				findings := `{"findings":[{"id":"stop-1","severity":"warning","action":"ask-user","description":"Operator decision required","requires_operator_stop":true},{"id":"fix-1","severity":"error","action":"auto-fix","description":"Synthetic failure"}]}`
+				run := &ipc.RunInfo{ID: "run-1", Status: types.RunRunning,
+					Steps: []ipc.StepResultInfo{{StepName: types.StepTest, Status: status, FindingsJSON: &findings}}}
+				var output bytes.Buffer
+				cmd := &cobra.Command{}
+				cmd.SetOut(&output)
+				runID := ""
+				if scope != "" {
+					runID = "run-1"
+				}
+				if err := renderDriveResultForRun(cmd, run, false, runID); err != nil {
+					t.Fatal(err)
+				}
+				out := output.String()
+				for _, want := range []string{
+					"Ask the operator how to respond before continuing",
+					"Only after the operator explicitly chooses fix",
+					"no-mistakes axi respond" + scope + " --action fix --findings <ids> [--ignore <ids>]",
+					"list every finding below in `--findings` or `--ignore`",
+					"unless an earlier round of this step already decided it",
+					"a finding that round chose to fix cannot be declined by a later response",
+					"Only after the operator explicitly chooses abort",
+					"no-mistakes axi respond" + scope + ` --action abort --reason \"<operator's reason>\"`,
+					"stop-1", "fix-1",
+				} {
+					if !strings.Contains(out, want) {
+						t.Errorf("gate output missing %q:\n%s", want, out)
+					}
+				}
+				for _, forbidden := range []string{"--action approve", "--action skip"} {
+					if strings.Contains(out, forbidden) {
+						t.Errorf("stopped gate offers %q:\n%s", forbidden, out)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestGateResolution(t *testing.T) {
 	tests := []struct {
 		name         string
