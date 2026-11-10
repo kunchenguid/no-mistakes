@@ -25,7 +25,7 @@ func TestReadSnapshotReapsDescendantsOnEveryExit(t *testing.T) {
 	}{
 		{name: "success", mode: "success"},
 		{name: "error", mode: "error"},
-		{name: "timeout", mode: "timeout"},
+		{name: "parent-cancellation", mode: "timeout"},
 		{name: "slow-startup", mode: "success", startup: "sleep 0.3\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,6 +155,58 @@ func TestReadSnapshotReapsDescendantsOnEveryExit(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+// The reader's configured deadline must bound execution independently of parent
+// cancellation. The readiness-gated cases above separately prove descendant
+// cleanup even when shell startup itself takes longer than the operation budget.
+// Replacing ReadSnapshot's WithTimeout with WithCancel must fail this case at
+// the outer guard while leaving the parent-cancellation case passing.
+func TestReadSnapshotOwnTimeout(t *testing.T) {
+	const operationWindow = 200 * time.Millisecond
+	dir := t.TempDir()
+	releaseFile := filepath.Join(dir, "release")
+	if err := syscall.Mkfifo(releaseFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := os.OpenFile(releaseFile, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release.Close()
+	t.Setenv("NM_QUOTA_RELEASE", releaseFile)
+	executable := filepath.Join(dir, "quota-axi")
+	// A shell builtin blocks without spawning a child or imposing another
+	// deadline that could accidentally substitute for the reader's timeout.
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nread release < \"$NM_QUOTA_RELEASE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := make(chan error, 1)
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		_, err := ReadSnapshot(ctx, executable, operationWindow)
+		results <- err
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case err := <-results:
+		elapsed := time.Since(start)
+		if ctx.Err() != nil || elapsed < operationWindow || elapsed >= operationWindow+2*time.Second || err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
+			t.Fatalf("reader did not enforce its own deadline: elapsed=%s parent=%v error=%v", elapsed, ctx.Err(), err)
+		}
+		t.Logf("reader timeout: elapsed=%s parent=%v error=%v", elapsed, ctx.Err(), err)
+	case <-time.After(5 * time.Second):
+		// This guard only fails the test. Deferred cancellation then cleans
+		// up; parent cancellation can never produce a passing result.
+		t.Fatal("reader did not return within the outer failure guard")
 	}
 }
 
