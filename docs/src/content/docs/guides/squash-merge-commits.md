@@ -54,6 +54,8 @@ pr:
 
 These fields are trusted-default-branch only, so the change takes effect after it lands on the default branch.
 
+`pr.appendix` also has a machine-local default (see [appendix precedence](/no-mistakes/reference/global-config/#prappendix)), but a non-empty repository value on the trusted default branch outranks it, so set it there for this recipe to apply to every contributor's runs.
+
 ## What stays in the commit
 
 The body keeps the pipeline signature and the `<!-- no-mistakes-pipeline-attestation:v1 ... -->` HTML comment. The [`require-no-mistakes`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation) check binds to that marker in the PR body, so no setting removes it. GitHub hides the comment in the rendered PR, but `git log` shows it.
