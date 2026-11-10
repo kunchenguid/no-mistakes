@@ -416,6 +416,7 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 	}{
 		{types.StepCI, protectedPath, "1 awaiting", "package.lock"},
 		{types.StepTest, unvalidatedWork, "2 awaiting", "fix_test.go"},
+		{types.StepTest, `{"findings":[{"id":"validation-refused","severity":"error","action":"ask-user","description":"Validation refused","requires_operator_stop":true},{"id":"test-verdict","severity":"error","action":"auto-fix","description":"Live validation failed"}]}`, "1 awaiting, 1 auto-fix", "Validation refused"},
 		{types.StepReview, `{"findings":[{"id":"review-fix-rounds-exhausted","severity":"warning","action":"ask-user","description":"Review used 1/1 fix rounds"}]}`, "1 awaiting", "Review used 1/1 fix rounds"},
 	} {
 		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
@@ -433,9 +434,10 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				var progress bytes.Buffer
+				before := responses.Load()
 				run, ciReady, err := driveRunWithReconciler(ctx, &progress, client, reconciler, parked.ID, true)
-				if err != nil || run != parked || ciReady || responses.Load() != 0 {
-					t.Fatalf("--yes resolved a refusal gate: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, responses.Load(), err)
+				if delta := responses.Load() - before; err != nil || run != parked || ciReady || delta != 0 {
+					t.Fatalf("--yes resolved a refusal gate: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, delta, err)
 				}
 				if !strings.Contains(progress.String(), "explicit response") {
 					t.Fatalf("missing explicit-response guidance: %s", progress.String())
@@ -451,7 +453,52 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 						t.Errorf("parked output missing %q: %s", want, output.String())
 					}
 				}
-				t.Logf("AXI output with --yes (automatic IPC responses: %d):\n%s%s", responses.Load(), progress.String(), output.String())
+				t.Logf("AXI output with --yes (automatic IPC responses: %d):\n%s%s", responses.Load()-before, progress.String(), output.String())
+			})
+		}
+	}
+}
+
+// The public gate output must let callers carry out an explicit operator
+// decision. Missing commands, lost run scope, or approval guidance violate that contract.
+func TestStoppedTestGateResponseGuidance(t *testing.T) {
+	for _, scope := range []string{"", " --run run-1"} {
+		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+			t.Run(scope+"/"+string(status), func(t *testing.T) {
+				findings := `{"findings":[{"id":"stop-1","severity":"warning","action":"ask-user","description":"Operator decision required","requires_operator_stop":true},{"id":"fix-1","severity":"error","action":"auto-fix","description":"Synthetic failure"}]}`
+				run := &ipc.RunInfo{ID: "run-1", Status: types.RunRunning,
+					Steps: []ipc.StepResultInfo{{StepName: types.StepTest, Status: status, FindingsJSON: &findings}}}
+				var output bytes.Buffer
+				cmd := &cobra.Command{}
+				cmd.SetOut(&output)
+				runID := ""
+				if scope != "" {
+					runID = "run-1"
+				}
+				if err := renderDriveResultForRun(cmd, run, false, runID); err != nil {
+					t.Fatal(err)
+				}
+				out := output.String()
+				for _, want := range []string{
+					"Ask the operator how to respond before continuing",
+					"Only after the operator explicitly chooses fix",
+					"no-mistakes axi respond" + scope + " --action fix --findings <ids> [--ignore <ids>]",
+					"list every finding below in `--findings` or `--ignore`",
+					"unless an earlier round of this step already decided it",
+					"a finding that round chose to fix cannot be declined by a later response",
+					"Only after the operator explicitly chooses abort",
+					"no-mistakes axi respond" + scope + ` --action abort --reason \"<operator's reason>\"`,
+					"stop-1", "fix-1",
+				} {
+					if !strings.Contains(out, want) {
+						t.Errorf("gate output missing %q:\n%s", want, out)
+					}
+				}
+				for _, forbidden := range []string{"--action approve", "--action skip"} {
+					if strings.Contains(out, forbidden) {
+						t.Errorf("stopped gate offers %q:\n%s", forbidden, out)
+					}
+				}
 			})
 		}
 	}

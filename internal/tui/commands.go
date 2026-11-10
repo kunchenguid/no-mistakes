@@ -132,6 +132,9 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) || pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) {
 		return nil
 	}
+	if step.StepName == types.StepTest && pipeline.HasTestOperatorStop(m.stepFindings[step.StepName]) {
+		return nil
+	}
 	// Only an answer settles an open review question, so yolo has no standing
 	// consent to give - exactly as --yes does not. Without this, the question
 	// is an ask-user finding on the ordinary channel, so

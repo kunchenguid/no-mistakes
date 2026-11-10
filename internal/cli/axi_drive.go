@@ -1326,6 +1326,10 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 				fmt.Fprintf(progress, "%s: unvalidated work in the run worktree requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
 			}
+			if gate.Name == string(types.StepTest) && pipeline.HasTestOperatorStop(gate.FindingsJSON) {
+				fmt.Fprintln(progress, "test: validation stopped and requires an explicit response")
+				return run, false, nil
+			}
 			gateKey := gate.Name + "\x00" + gate.Status
 			if pendingGate == gateKey {
 				// Duplicate or delayed events can race persistence after a response.

@@ -300,6 +300,7 @@ Evidence:
 - The "testing_summary" must account for the complete test step: baseline commands that already ran, scenarios driven, manual or evidence-producing checks, artifacts gathered, and the overall result.
 - Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
 - Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path for file artifacts, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
+- If a checker responsible for enforcing a validation boundary refuses to proceed and requires an operator decision, stop all dependent fixes and checks immediately. Preserve the refusal and report it as an "ask-user" finding with "requires_operator_stop": true. Record each dependent scenario you could not run as untested and explain why. This rule takes precedence over the instructions to work around missing setup and to drive each scenario.
 - If a scenario fails, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and re-drive that scenario.
 - Inspect specific environment variables by name if you need them; do not print the whole environment (env, printenv, set, export -p, or similar), because this transcript is persisted.
@@ -352,8 +353,8 @@ Rules:
 	findings.Items = append(findings.Items, verdictFindings(findings)...)
 	findings.Items = append(findings.Items, unselectedTestFindings(sctx, findings.Items)...)
 
-	needsApproval := hasBlockingFindings(findings.Items)
-	autoFixable := needsApproval
+	operatorStop := types.HasTestOperatorStop(findings)
+	blocking := hasBlockingFindings(findings.Items)
 
 	// Record any new test files the agent wrote as informational (no-op)
 	// findings. Their presence alone is not an actionable problem, so they
@@ -370,8 +371,8 @@ Rules:
 
 	findingsJSON, _ := json.Marshal(findings)
 	return &pipeline.StepOutcome{
-		NeedsApproval: needsApproval,
-		AutoFixable:   autoFixable,
+		NeedsApproval: operatorStop || blocking,
+		AutoFixable:   !operatorStop && blocking,
 		Findings:      string(findingsJSON),
 		ExitCode:      baselineExitCode,
 		FixSummary:    fixSummary,
@@ -444,7 +445,18 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 	}
 	var findings Findings
 	if err := unmarshalRequiredTestFindings(result.Output, &findings); err != nil {
-		return Findings{}, err
+		stops := reportedTestOperatorStops(result.Output)
+		if len(stops) == 0 {
+			return Findings{}, err
+		}
+		findings = Findings{
+			Items:          stops,
+			Summary:        "Live validation stopped pending an operator decision",
+			TestingSummary: fmt.Sprintf("Test evidence was rejected: %v", err),
+			Verdict:        types.TestVerdictInconclusive,
+		}
+	} else if !types.HasTestOperatorStop(findings) {
+		findings.Items = append(findings.Items, reportedTestOperatorStops(result.Output)...)
 	}
 	for i := range findings.Items {
 		if slices.Contains(testBudgetCutIDs, findings.Items[i].ID) {
@@ -453,6 +465,33 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 	}
 	findings.UnvalidatedSinceSHA = ""
 	return findings, nil
+}
+
+func reportedTestOperatorStops(raw json.RawMessage) []Finding {
+	var payload struct {
+		Findings json.RawMessage `json:"findings"`
+		Items    json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+	for _, candidate := range []json.RawMessage{payload.Findings, payload.Items} {
+		var items []json.RawMessage
+		if err := json.Unmarshal(candidate, &items); err != nil {
+			continue
+		}
+		var stops []Finding
+		for _, raw := range items {
+			var item Finding
+			if json.Unmarshal(raw, &item) == nil && item.RequiresOperatorStop && validateAnalyzerFinding(item) == nil {
+				stops = append(stops, item)
+			}
+		}
+		if len(stops) > 0 {
+			return stops
+		}
+	}
+	return nil
 }
 
 // The common RunOpts contract has no invocation-scoped, cross-adapter tool

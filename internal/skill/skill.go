@@ -419,6 +419,9 @@ is settled by ` + "`axi answer`" + `, never by a verdict, so ` + "`--yes`" + ` s
 there - as it does when the question history cannot be read end to end, which
 also parks for a human.
 
+When Test reports a validation refusal that requires an operator response, relay
+the finding and wait for the operator's decision. ` + "`--yes`" + ` leaves that gate parked.
+
 A ` + "`test-agent-unvalidated-work`" + ` finding means a timed-out Test agent left
 commits or changes no Test turn validated. Approval is rejected, so ` + "`--yes`" + `
 stops at that gate without responding. Relay what the finding names and do
