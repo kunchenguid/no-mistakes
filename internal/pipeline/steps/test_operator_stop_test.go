@@ -35,6 +35,7 @@ const reportedOperatorStop = `{
 }`
 
 func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
+	t.Parallel()
 	legacyReport := strings.Replace(reportedOperatorStop, `"findings":`, `"items":`, 1)
 	for _, tc := range []struct {
 		name      string
@@ -53,6 +54,7 @@ func TestTestStep_OperatorStopParksBeforeAnotherProviderCall(t *testing.T) {
 		{"operator authorizes a repair", reportedOperatorStop, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			gitCmd(t, dir, "checkout", "--detach", headSHA)
 			var primaryCalls, fallbackCalls atomic.Int32
