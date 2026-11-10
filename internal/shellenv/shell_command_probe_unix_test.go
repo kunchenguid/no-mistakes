@@ -139,3 +139,23 @@ func TestShellCommandGroupActiveStopsAtDeadlineBetweenProbes(t *testing.T) {
 		}
 	})
 }
+
+func TestShellCommandGroupActiveUsesCurrentMembership(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pgid := syscall.Getpgrp()
+		cmd := &exec.Cmd{Process: &os.Process{Pid: pgid}}
+		calls := 0
+		active, detail, err := shellCommandGroupActive(cmd, time.Second, func(context.Context) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return fmt.Appendf(nil, "%d S 4242 original\n", pgid), nil
+			}
+			// A previously seen PID may now be outside the group, or be
+			// reused. Its disappearance cannot clear a different member.
+			return fmt.Appendf(nil, "%d S 4242 reused\n%d S 4243 replacement\n", pgid+1, pgid), nil
+		})
+		if err != nil || !active || !strings.Contains(detail, "pid 4243 (replacement)") || strings.Contains(detail, "4242") {
+			t.Fatalf("active=%t detail=%q err=%v; want only current group membership", active, detail, err)
+		}
+	})
+}

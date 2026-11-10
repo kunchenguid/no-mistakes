@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -158,7 +159,9 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 // probes saw members still returns those last-observed members, since the
 // probe's error refuses completion without identifying anyone.
 func ShellCommandGroupActive(cmd *exec.Cmd, window time.Duration) (active bool, detail string, err error) {
-	return shellCommandGroupActive(cmd, window, shellCommandGroupPS)
+	return shellCommandGroupActive(cmd, window, func(ctx context.Context) ([]byte, error) {
+		return shellCommandGroupPS(ctx, cmd.Process.Pid)
+	})
 }
 
 func shellCommandGroupActive(cmd *exec.Cmd, window time.Duration, ps func(context.Context) ([]byte, error)) (active bool, detail string, err error) {
@@ -191,7 +194,7 @@ func shellCommandGroupActive(cmd *exec.Cmd, window time.Duration, ps func(contex
 }
 
 // probeShellCommandGroup takes one snapshot of the process group: the signal
-// probe establishes the group is not empty, then the ps table names every
+// probe establishes the group is not empty, then ps names every
 // member that has not finished execution.
 func probeShellCommandGroup(pgid int, timeout time.Duration, ps func(context.Context) ([]byte, error)) (bool, []groupMember, error) {
 	err := syscall.Kill(-pgid, 0)
@@ -237,10 +240,31 @@ func probeShellCommandGroup(pgid int, timeout time.Duration, ps func(context.Con
 	return len(members) > 0, members, nil
 }
 
-func shellCommandGroupPS(ctx context.Context) ([]byte, error) {
-	probe := exec.CommandContext(ctx, "ps", "-eo", "pgid=,stat=,pid=,command=")
+func shellCommandGroupPS(ctx context.Context, pgid int) ([]byte, error) {
+	args := []string{"-eo", "pgid=,stat=,pid=,command="}
+	if runtime.GOOS == "darwin" {
+		// Reading every host process's command can stall on unrelated
+		// processes and exhaust the completion window after our children
+		// already exited. Darwin can select the group before reading commands.
+		// Its legacy mode ignores -g, so explicitly select POSIX semantics.
+		args = []string{"-g", strconv.Itoa(pgid), "-o", "pgid=,stat=,pid=,command="}
+	}
+	probe := exec.CommandContext(ctx, "ps", args...)
+	if runtime.GOOS == "darwin" {
+		probe.Env = append(os.Environ(), "COMMAND_MODE=unix2003")
+	}
 	ConfigureShellCommand(probe)
-	return OutputShellCommand(probe)
+	out, err := OutputShellCommand(probe)
+	var exitErr *exec.ExitError
+	if runtime.GOOS == "darwin" && errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(strings.TrimSpace(string(out))) == 0 {
+		// A group may empty between kill(0) and ps. Darwin returns 1 for
+		// no matches. Confirm absence independently before accepting that
+		// exit, since inspection errors must still refuse completion.
+		if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+			return out, nil
+		}
+	}
+	return out, err
 }
 
 // groupGoneWithin reports whether the process group emptied out before the
