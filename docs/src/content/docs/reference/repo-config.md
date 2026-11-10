@@ -335,6 +335,8 @@ A contributor can keep the section off for their own runs without touching this 
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
 
+To keep the Intent section out of squash-merge commits that use the PR description, see [Readable squash-merge commits](/no-mistakes/guides/squash-merge-commits/).
+
 ### pr.intent
 
 Configure the reviewer-facing rendering of the generated `Intent` section. This repository-only setting is read from the trusted default branch, regardless of `allow_repo_commands`. It is not available in global config or `repository_overrides`.
@@ -382,6 +384,8 @@ An unrecognized value fails config parsing closed. Body size limits and truncati
 pr:
   appendix: minimal
 ```
+
+`minimal` keeps a squash-merge commit that uses the PR description short; see [Readable squash-merge commits](/no-mistakes/guides/squash-merge-commits/).
 
 ### pr.title_format
 
