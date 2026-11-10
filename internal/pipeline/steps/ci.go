@@ -763,6 +763,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// to the fix agent. Gated on the transient budget, so an opted-out
 			// repo pays no extra provider calls and keeps the prior behavior.
 			markPreRunInfraFailures(sctx, host, checks)
+			// A status whose shape says the CI service failed about itself -
+			// not a job verdict - is settled from its own log before anything
+			// reads the failing set: an acquisition failure leaves the failing
+			// set and parks naming that, an unreadable log becomes an ask-user
+			// finding, and only a genuine verdict stays to be repaired.
+			acquireInfrastructureFailures(sctx, host, pr, checks)
+			settleAcquisitionFailures(checks)
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
 			// provider-cancelled check is terminal enough to enter the transient
@@ -848,11 +855,20 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			sort.Strings(failing)
 			sort.Strings(unresolvedCancelled)
 			sort.Strings(awaitingRerun)
+			// An acquisition failure has no verdict to repair and no rerun to
+			// wait for, so it is reported through its own park; an unreadable
+			// one joins the ask-user issues. Neither is in failing at all.
+			acquisitionFailures := acquisitionFailureNames(checks)
+			acquisitionAmbiguity := unresolvedAcquisitionNames(checks)
+			if len(acquisitionAmbiguity) > 0 {
+				unresolvedCancelled = mergeCheckNames(unresolvedCancelled, acquisitionAmbiguity)
+			}
 			hasFailures := len(failing) > 0
-			hasIssues := hasFailures || mergeConflict || len(unresolvedCancelled) > 0
+			hasAcquisitionFailures := len(acquisitionFailures) > 0
+			hasIssues := hasFailures || mergeConflict || len(unresolvedCancelled) > 0 || hasAcquisitionFailures
 			// reportedIssues is what the step tells the user about; failing
 			// stays the set the fix agent is asked to repair.
-			reportedIssues := mergeCheckNames(failing, unresolvedCancelled)
+			reportedIssues := mergeCheckNames(failing, mergeCheckNames(unresolvedCancelled, acquisitionFailures))
 			timeoutFailingChecks = terminalCheckTargetsForNames(checks, mergeCheckNames(reportedIssues, awaitingRerun))
 			// Synthetic review requirements are decisions, including at timeout;
 			// never hand their IDs to the generic job-repair outcome.
@@ -892,6 +908,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				lastMonitorLog = ciMonitorStatus{}
+				// A failure with no code verdict behind it and nothing to wait
+				// for is settled now: an acquisition failure asks for restored
+				// CI access rather than a repair or a re-run. A genuine failure
+				// or merge conflict in the same observation takes the ordinary
+				// path, so it is still the only thing acted on.
+				if hasAcquisitionFailures && !hasFailures && !mergeConflict {
+					s.lastFixedChecks = ""
+					s.lastFixedCompletedAt = nil
+					sctx.DeferredFindings = ""
+					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+					sctx.Log(fmt.Sprintf("CI infrastructure failure: %s", ciAcquisitionSummary(acquisitionFailures)))
+					return acquisitionFailureOutcome(acquisitionFailures), nil
+				}
 				if mergeConflict && unlimited {
 					tipCtx, cancel := context.WithTimeout(ctx, defaultBaseBranchTipResolveWindow)
 					if tip, resolved := baseBranchTip(tipCtx); resolved {
@@ -921,15 +950,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					sctx.DeferredFindings = ""
 					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
 					findings := ciObservationFindings(ciIssues{
-						provider:            host.Provider(),
-						requiredReviews:     requiredReviews(sctx),
-						checks:              checks,
-						failing:             failing,
-						unresolvedCancelled: unresolvedCancelled,
-						mergeConflict:       mergeConflict,
-						reruns:              s.transientReruns.used,
-						botComments:         reviewBotComments(sctx, host, pr, checks),
-						greenBots:           reviewBotCommentsAlways(sctx),
+						provider:              host.Provider(),
+						requiredReviews:       requiredReviews(sctx),
+						checks:                checks,
+						failing:               failing,
+						unresolvedCancelled:   unresolvedCancelled,
+						unresolvedAcquisition: acquisitionAmbiguity,
+						mergeConflict:         mergeConflict,
+						reruns:                s.transientReruns.used,
+						botComments:           reviewBotComments(sctx, host, pr, checks),
+						greenBots:             reviewBotCommentsAlways(sctx),
 					})
 					if hold := humanHoldMessage(checks); hold != "" {
 						sctx.Log(hold)

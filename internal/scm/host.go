@@ -203,6 +203,25 @@ type Check struct {
 	// it can never be true for a genuine test or lint failure, whose job cleared
 	// setup and failed a later step.
 	PreRunFailure bool
+	// ProviderAttributedFailure marks a failed check status whose shape says the
+	// provider failed to acquire the repository instead of running (and failing)
+	// the repository's own commands: a commit status published by a CI service
+	// that is not GitHub's Actions run, failing with no Run-again target URL and
+	// a build-level page rather than a job page. It is set from provider
+	// structure only - never check names or log text - so a real test or lint
+	// failure, which the provider reports as a job verdict, is never marked.
+	//
+	// It is a QUESTION, not a verdict: the shape alone cannot prove no job ran
+	// (a CI service can attach a build-level URL to a job failure), so the CI
+	// step pairs it with log evidence before deciding anything. A check that is
+	// not marked here is never reclassified from log text, which is what keeps
+	// text from ever masking a genuine failure.
+	ProviderAttributedFailure bool
+	// RepositoryAcquisition is the CI step's own verdict, from the check's log,
+	// for a ProviderAttributedFailure: whether the service failed to obtain the
+	// repository, could not say, or showed a real verdict. Empty for every
+	// other check, which is never classified from log text.
+	RepositoryAcquisition RepositoryAcquisition
 	// AwaitingApproval marks a check the provider is holding until a human
 	// approves it - GitHub holds a first-time contributor's workflows that
 	// way, concluding the run action_required without running a single job.
@@ -538,6 +557,46 @@ type PreRunFailureDetector interface {
 	// so an unreadable job stays a genuine failure rather than being masked as
 	// infrastructure.
 	PreRunFailures(ctx context.Context, checks []Check) ([]bool, error)
+}
+
+// RepositoryAcquisition is how the CI step reads a ProviderAttributedFailure
+// check's own log: the CI service's attempt to obtain the repository before any
+// repository command ran.
+type RepositoryAcquisition string
+
+const (
+	// RepositoryAcquisitionInfrastructure is positive evidence that the action
+	// failed to clone or fetch the repository. The job never ran a repository
+	// command, so its red is not a verdict on the code.
+	RepositoryAcquisitionInfrastructure RepositoryAcquisition = "infrastructure"
+	// RepositoryAcquisitionAmbiguous is a log that cannot settle the question:
+	// the retrieval failed, returned nothing, or was cut short so no acquisition
+	// marker could be read completely. It is deliberately not
+	// RepositoryAcquisitionInfrastructure - an unreadable log is not evidence
+	// that the code is fine - and not "genuine" either, since the check's shape
+	// already says no job verdict was reported.
+	RepositoryAcquisitionAmbiguous RepositoryAcquisition = "ambiguous"
+	// RepositoryAcquisitionNone is a log of a real job verdict on the code: it
+	// was read completely and carries no acquisition failure, so the failure is
+	// the repository's to fix.
+	RepositoryAcquisitionNone RepositoryAcquisition = "none"
+)
+
+// RepositoryAcquisitionDetector decides, from log evidence, whether a check the
+// provider attributed to itself is a repository-acquisition failure.
+//
+// It is consulted only for checks the provider marked
+// Check.ProviderAttributedFailure, so no unmarked failure - every genuine job
+// verdict - is ever reclassified from log text: that is what prevents a test
+// that merely PRINTS an acquisition error from masking its own failure. Like
+// PreRunFailureDetector it is optional, and a backend that does not implement it
+// leaves those checks exactly as they are today.
+type RepositoryAcquisitionDetector interface {
+	// RepositoryAcquisitions returns a slice parallel to checks. Check names
+	// are not unique on a PR, so the result is positional. An error means the
+	// answer is unknown; callers treat an unknown answer like
+	// RepositoryAcquisitionAmbiguous rather than as no evidence.
+	RepositoryAcquisitions(ctx context.Context, pr *PR, branch, headSHA string, checks []Check) ([]RepositoryAcquisition, error)
 }
 
 // CheckRerunner re-runs the provider-side work behind a failed check without

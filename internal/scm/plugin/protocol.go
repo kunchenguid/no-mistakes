@@ -163,18 +163,39 @@ type wireCheck struct {
 	StartedAt   string `json:"started_at"`
 	CompletedAt string `json:"completed_at"`
 	ExecutionID string `json:"execution_id"`
+	// ProviderAttributed marks a failed check the CI service reported about
+	// ITSELF - a build-level failure with no job verdict behind it - rather
+	// than about a job it ran. It is the plugin author's own user-facing
+	// structural statement about the check, and it carries the same meaning
+	// as scm.Check.ProviderAttributedFailure: the CI step still settles it from
+	// the check's log before acting, so declaring it can never make a genuine
+	// test failure silent.
+	ProviderAttributed bool `json:"provider_attributed"`
 }
 
 type checksResult struct {
 	Checks *[]wireCheck `json:"checks"`
 }
 
-type mergeabilityResult struct {
-	State string `json:"state"`
+// checkLog is one "pr check-logs" answer, kept separate from wireCheck so a
+// checks list can never carry a log verdict by accident.
+type wireCheckLog struct {
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Output                string `json:"output"`
+	RepositoryAcquisition string `json:"repository_acquisition"`
 }
 
 type checkLogsResult struct {
 	Logs *string `json:"logs"`
+	// Checks is the optional per-check form. When present, the CI step reads
+	// each check's own log, which is what lets a provider attribute an
+	// acquisition failure to one check of a build.
+	Checks *[]wireCheckLog `json:"checks"`
+}
+
+type mergeabilityResult struct {
+	State string `json:"state"`
 }
 
 type mergedResult struct {

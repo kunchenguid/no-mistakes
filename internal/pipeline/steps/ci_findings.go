@@ -51,7 +51,11 @@ type ciIssues struct {
 	// that no rerun is going to replace (see cancelledAfterRerun and
 	// cancelledWithoutRerun).
 	unresolvedCancelled []string
-	mergeConflict       bool
+	// unresolvedAcquisition is the sorted list of provider-attributed checks
+	// whose failure could not be settled from their log (see
+	// acquireAmbiguityFindings).
+	unresolvedAcquisition []string
+	mergeConflict         bool
 	// behindBase is a green PR the forge refuses to merge until it is
 	// brought up to date with its base.
 	behindBase bool
@@ -148,6 +152,8 @@ func ciObservationFindings(issues ciIssues) Findings {
 	}
 	transient, transientSummary := unresolvedTransientFindings(issues.unresolvedCancelled, issues.checks, issues.reruns)
 	items = append(items, transient...)
+	acquisitionFindings := acquireAmbiguityFindings(issues.unresolvedAcquisition, issues.checks)
+	items = append(items, acquisitionFindings...)
 
 	var parts []string
 	if externalReviews > 0 {
@@ -171,6 +177,9 @@ func ciObservationFindings(issues ciIssues) Findings {
 	}
 	if len(transient) > 0 {
 		parts = append(parts, transientSummary)
+	}
+	if len(acquisitionFindings) > 0 {
+		parts = append(parts, ciAcquisitionAmbiguitySummary(len(acquisitionFindings)))
 	}
 	return Findings{Summary: strings.Join(parts, "; "), Items: items}
 }
@@ -217,6 +226,53 @@ func selectedFailingChecks(checks []scm.Check, names []string) []scm.Check {
 		}
 	}
 	return selected
+}
+
+// acquireAmbiguityFindings renders the checks whose provider-attributed failure
+// could not be settled from its log - the retrieval failed, returned nothing, or
+// lost its beginning - as ask-user findings: an unreadable log is not evidence
+// that the code is at fault and not evidence that it is fine, so it neither
+// spends a fix round nor reads green. A human who knows the pipeline can still
+// choose to fix.
+func acquireAmbiguityFindings(names []string, checks []scm.Check) []Finding {
+	var items []Finding
+	for _, name := range names {
+		check, found := acquisitionCheckNamed(checks, name)
+		if !found {
+			check = scm.Check{Name: name}
+		}
+		description := fmt.Sprintf("CI check failed and its log could not be read to tell a repository-acquisition failure from a code failure: %s - the CI service reported the build as failed without a job verdict, so decide whether to re-run the checks or fix the code", check.Name)
+		if link := strings.TrimSpace(check.Link); link != "" {
+			description += " - " + link
+		}
+		items = append(items, Finding{
+			Severity:    types.FindingSeverityWarning,
+			Action:      types.ActionAskUser,
+			Category:    types.FindingCategoryCIInfrastructure,
+			Check:       check.Name,
+			CheckID:     check.ProviderID,
+			Description: description,
+		})
+	}
+	return items
+}
+
+// ciAcquisitionAmbiguitySummary names how many provider-attributed failures
+// could not be settled because their logs were unreadable.
+func ciAcquisitionAmbiguitySummary(count int) string {
+	if count == 1 {
+		return "1 CI check failed without a readable log"
+	}
+	return fmt.Sprintf("%d CI checks failed without readable logs", count)
+}
+
+func acquisitionCheckNamed(checks []scm.Check, name string) (scm.Check, bool) {
+	for _, check := range checks {
+		if check.Name == name && check.RepositoryAcquisition == scm.RepositoryAcquisitionAmbiguous {
+			return check, true
+		}
+	}
+	return scm.Check{}, false
 }
 
 // ciCheckDescription keeps the "CI check failing: <name>" prefix every earlier

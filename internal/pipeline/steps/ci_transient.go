@@ -48,6 +48,61 @@ const (
 // treats a stale check as skipped rather than failed, and one mapping saying
 // "not a failure" while another says "re-run it" would make the outcome depend
 // on whether the provider happened to report a bucket.
+// acquireInfrastructureFailures asks the provider, for the failures it attributed
+// to itself (Check.ProviderAttributedFailure), whether the log shows it could not
+// obtain the repository at all - and decides what that means before any of it
+// reaches the fix agent:
+//
+//   - infrastructure leaves the check out of the failing set entirely, so it
+//     starts no auto_fix.ci round, and is reported to the operator as an
+//     acquisition failure naming the steps that never ran;
+//   - ambiguous (unreadable, empty, or head-truncated log) becomes an ask-user
+//     finding, which also starts no round but is never silent: the gate says the
+//     evidence could not be read, and a human may still choose to fix;
+//   - none is a genuine failure on the code and stays in the failing set.
+//
+// Only checks the provider already marked are consulted, so a genuine job verdict
+// is never reclassified from log text. It is gated on the transient rerun budget
+// like the pre-run detector: a repo that has not opted in pays no extra provider
+// calls and keeps the prior behavior.
+func acquireInfrastructureFailures(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, checks []scm.Check) {
+	if sctx.Config.CI.RerunTransient <= 0 {
+		return
+	}
+	detector, ok := host.(scm.RepositoryAcquisitionDetector)
+	if !ok {
+		return
+	}
+	var markedIdx []int
+	for i := range checks {
+		if checks[i].Failing() && checks[i].ProviderAttributedFailure {
+			markedIdx = append(markedIdx, i)
+		}
+	}
+	if len(markedIdx) == 0 {
+		return
+	}
+	marked := make([]scm.Check, len(markedIdx))
+	for j, idx := range markedIdx {
+		marked[j] = checks[idx]
+	}
+	classes, err := detector.RepositoryAcquisitions(sctx.Ctx, pr, sctx.Run.Branch, sctx.Run.HeadSHA, marked)
+	if err != nil {
+		// Unknown is not evidence of anything: leave every marked check a
+		// genuine failure, so an unreadable answer costs a round rather than
+		// silently excusing a real failure.
+		sctx.Log(fmt.Sprintf("warning: could not classify CI repository acquisition, treating the failure as genuine: %v", err))
+		return
+	}
+	if len(classes) != len(marked) {
+		sctx.Log(fmt.Sprintf("warning: CI acquisition classifier returned %d results for %d checks; ignoring", len(classes), len(marked)))
+		return
+	}
+	for j, idx := range markedIdx {
+		checks[idx].RepositoryAcquisition = classes[j]
+	}
+}
+
 func classifyCheckFailure(check scm.Check) failureClass {
 	if !checkFailedTerminally(check) {
 		return classUnknown
@@ -363,6 +418,14 @@ func (b *checkRerunBudget) cancelledWithoutRerun(checks []scm.Check) []string {
 	seen := map[string]struct{}{}
 	for _, check := range checks {
 		if check.Bucket != scm.CheckBucketCancel || b.used(check.Name) > 0 {
+			continue
+		}
+		// A check the CI step settled as a repository acquisition failure left
+		// the fail bucket for the cancel one, but no rerun can replace it and it
+		// is reported through its own park: asking for a decision here would
+		// report the same check twice, once as an infrastructure failure and
+		// once as an unexplained cancellation.
+		if check.RepositoryAcquisition != "" {
 			continue
 		}
 		if _, ok := seen[check.Name]; ok {
@@ -746,6 +809,87 @@ func unresolvedTransientChecks(names []string, checks []scm.Check) []scm.Check {
 		}
 	}
 	return unresolved
+}
+
+// settleAcquisitionFailures moves the settled repository-acquisition outcomes
+// out of the fail bucket, so no caller reading the failing set - the rerun
+// policy, the fix target snapshot, or the settled observation - can spend a fix
+// round on a check whose job never ran. Infrastructure and ambiguous both leave
+// the failing set (the findings below carry each to its own outcome); only a
+// genuine verdict stays.
+func settleAcquisitionFailures(checks []scm.Check) {
+	for i := range checks {
+		if !checks[i].Failing() {
+			continue
+		}
+		switch checks[i].RepositoryAcquisition {
+		case scm.RepositoryAcquisitionInfrastructure, scm.RepositoryAcquisitionAmbiguous:
+			checks[i].Bucket = scm.CheckBucketCancel
+		}
+	}
+}
+
+// acquisitionFailureNames returns the sorted names of the checks the provider
+// failed and whose log shows it could not obtain the repository.
+func acquisitionFailureNames(checks []scm.Check) []string {
+	var names []string
+	for _, check := range checks {
+		if check.RepositoryAcquisition == scm.RepositoryAcquisitionInfrastructure {
+			names = append(names, check.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// unresolvedAcquisitionNames returns the sorted names of provider-attributed
+// checks whose failure could not be settled from their log.
+func unresolvedAcquisitionNames(checks []scm.Check) []string {
+	var names []string
+	for _, check := range checks {
+		if check.RepositoryAcquisition == scm.RepositoryAcquisitionAmbiguous {
+			names = append(names, check.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// acquisitionFailureOutcome parks an observation whose every issue was the
+// provider failing to obtain the repository: no repository command ran, so no
+// agent round can change the outcome, and the gate names the acquisition failure
+// instead of reporting a build or test verdict the provider never reached.
+func acquisitionFailureOutcome(names []string) *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: ciAcquisitionSummary(names),
+		Items: []Finding{{
+			Severity:    types.FindingSeverityError,
+			Action:      types.ActionAskUser,
+			Category:    types.FindingCategoryCIInfrastructure,
+			Check:       strings.Join(names, ", "),
+			Description: ciAcquisitionDescription(names),
+		}},
+	}
+	encoded, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}
+}
+
+func ciAcquisitionSummary(names []string) string {
+	subject := "CI check"
+	if len(names) == 1 {
+		subject = fmt.Sprintf("CI check %s", names[0])
+	} else if len(names) > 1 {
+		subject = fmt.Sprintf("%d CI checks", len(names))
+	}
+	return fmt.Sprintf("%s failed to acquire the repository", subject)
+}
+
+func ciAcquisitionDescription(names []string) string {
+	subject := "the CI service"
+	if len(names) > 0 {
+		subject = "the CI service (" + strings.Join(names, ", ") + ")"
+	}
+	return fmt.Sprintf("%s could not clone or fetch the repository before running any of its steps, so none of the repository's commands ran and no code verdict exists. Nothing in the change can fix this: it needs the CI credentials or runner access restored, then the checks re-run.", subject)
 }
 
 func unresolvedTransientSummary(total, preRun int) string {
