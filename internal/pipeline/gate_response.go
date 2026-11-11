@@ -250,8 +250,12 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 		if !humanDecidedRound(round) {
 			continue
 		}
-		if round.FindingsJSON != nil {
-			findings, _ := types.ParseFindingsJSON(*round.FindingsJSON)
+		raw := round.FindingsJSON
+		if *round.SelectionSource == db.RoundSelectionSourceExternal {
+			raw = round.UserFindingsJSON
+		}
+		if raw != nil {
+			findings, _ := types.ParseFindingsJSON(*raw)
 			for _, item := range findings.Items {
 				keys[FindingDecisionKey(item)] = true
 			}

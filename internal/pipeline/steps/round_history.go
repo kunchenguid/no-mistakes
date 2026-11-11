@@ -409,6 +409,14 @@ func appendHumanDecisionLines(lines []string, stepName string, r *db.StepRound, 
 	if r == nil {
 		return lines
 	}
+	if selectionSourceValue(r.SelectionSource) == db.RoundSelectionSourceExternal {
+		if raw := withoutDriverInstructions(r.UserFindingsJSON); raw != nil {
+			for _, line := range renderRoundFindingLines(*raw) {
+				lines = append(lines, fmt.Sprintf("  - %s round %d user resolved externally: %s", sanitizePromptText(stepName), r.Round, line))
+			}
+		}
+		return lines
+	}
 	lines = appendDeclinedLines(lines, stepName, r, earlierFixes)
 	if selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
 		return lines

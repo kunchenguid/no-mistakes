@@ -384,7 +384,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, refusal
 		}
-		if len(rounds) == 0 || rounds[len(rounds)-1].ID != e.waitingRoundID || rounds[len(rounds)-1].SelectionSource != nil {
+		if len(rounds) == 0 || rounds[len(rounds)-1].ID != e.waitingRoundID {
 			e.mu.Unlock()
 			return RespondDispositions{}, fmt.Errorf("resolved_external requires an undecided current review round")
 		}
@@ -411,10 +411,18 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, err
 		}
-		empty := db.DeclinedSelectionJSON
-		if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &empty, db.RoundSelectionSourceExternal, &encoded, option.Origin); err != nil {
-			e.mu.Unlock()
-			return RespondDispositions{}, fmt.Errorf("record external review disposition: %w", err)
+		round := rounds[len(rounds)-1]
+		if round.SelectionSource != nil {
+			if *round.SelectionSource != db.RoundSelectionSourceExternal || round.UserFindingsJSON == nil || *round.UserFindingsJSON != encoded || round.SelectedFindingIDs == nil || *round.SelectedFindingIDs != db.DeclinedSelectionJSON {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("replay the recorded resolved_external subset and reason before changing this round's decision")
+			}
+		} else {
+			empty := db.DeclinedSelectionJSON
+			if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &empty, db.RoundSelectionSourceExternal, &encoded, option.Origin); err != nil {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("record external review disposition: %w", err)
+			}
 		}
 		findingIDs = idsInPayloadOrder(ids, gate)
 	}
@@ -477,6 +485,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 				refusal := reviewFixRoundLimitRefusal(used, limit, e.waitingFindings)
 				e.mu.Unlock()
 				return RespondDispositions{}, refusal
+			}
+		}
+		for _, round := range rounds {
+			if round.ID == e.waitingRoundID && round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceExternal {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("replay the recorded resolved_external subset and reason before fixing findings")
 			}
 		}
 		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)

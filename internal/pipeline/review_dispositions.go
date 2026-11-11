@@ -79,14 +79,15 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 			}
 			continue
 		}
+		for _, item := range selectedFindingIdentities([]*db.StepRound{round}) {
+			fixed[findingFingerprint(item)] = true
+		}
 		for _, item := range shown.Items {
 			key := findingFingerprint(item)
 			if shownCounts[key] != 1 {
 				continue
 			}
-			if ids[item.ID] {
-				fixed[key] = true
-			} else {
+			if !ids[item.ID] {
 				ignored[key] = true
 			}
 		}
