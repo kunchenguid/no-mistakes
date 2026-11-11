@@ -197,6 +197,31 @@ func TestCIStep_FixFailureOverPinnedFailedRepairParksAgain(t *testing.T) {
 	}
 }
 
+func TestCIStep_UnreportedFixOverPinnedFailedRepairDoesNotPublish(t *testing.T) {
+	t.Parallel()
+	f, first := runFailedVerificationRepairFixture(t, false, false)
+	assertFailedVerificationPark(t, first)
+	pinned := f.localHead(t)
+
+	f.sctx.Agent = &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{}, nil
+	}}
+	f.sctx.Ctx = context.Background()
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = first.Findings
+	outcome, err := (&CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		t.Fatal("an unreported fix over a pinned repair must park, not monitor")
+		return nil
+	}}).Execute(f.sctx)
+	if err != nil {
+		t.Fatalf("fix: %v\nlog:\n%s", err, f.log())
+	}
+	assertFailedVerificationPark(t, outcome)
+	if f.remoteHead(t) != f.headSHA {
+		t.Fatalf("remote head = %s, want it to stay at %s; the pinned repair %s was published", f.remoteHead(t), f.headSHA, pinned)
+	}
+}
+
 func runFailedVerificationRepair(t *testing.T, revalidate, userFix bool) *pipeline.StepOutcome {
 	t.Helper()
 	_, outcome := runFailedVerificationRepairFixture(t, revalidate, userFix)
