@@ -228,16 +228,18 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		if applied {
+		ownedBody := template != "" || hasPRAppendixMarkers(live.Body) || keepsPRUpdateText(sctx) || freshBody
+		keepAppliedTitle := !ownedBody && applied && sctx.Run.PRTitleFresh && suppliedPRTitle(sctx) != ""
+		if applied && !keepAppliedTitle {
 			logSuppliedPRTextUnused(sctx, "it was already applied earlier in this run, so later edits on the pull request are kept")
-		} else if !freshTitle && !freshBody {
+		} else if !applied && !freshTitle && !freshBody {
 			logSuppliedPRTextUnused(sctx, "the pull request already exists, and inherited text does not request an update")
 		}
 		updated := existing
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
 		// update_text: keep uses that same path when no template is configured.
-		if template != "" || hasPRAppendixMarkers(live.Body) || keepsPRUpdateText(sctx) || freshBody {
+		if ownedBody {
 			if _, err := parsePROwnedBody(live.Body); err != nil && !(freshBody && errors.Is(err, errUnownedLegacyAttestation)) {
 				if errors.Is(err, errUnownedLegacyAttestation) && template == "" && keepsPRUpdateText(sctx) {
 					return nil, fmt.Errorf("existing PR has an unowned legacy attestation; explicitly separate its generated evidence from the narrative once before using pr.update_text: keep")
@@ -318,12 +320,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		} else {
 			drafter := *s
-			drafter.titleReplaced = freshTitle
+			drafter.titleReplaced = freshTitle || keepAppliedTitle
 			content, err := drafter.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 			if err != nil {
 				return nil, err
 			}
-			if freshTitle {
+			if freshTitle || keepAppliedTitle {
 				content, err = applySuppliedPRTitle(sctx, content)
 				if err != nil {
 					return nil, err

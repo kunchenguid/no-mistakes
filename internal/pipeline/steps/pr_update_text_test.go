@@ -880,3 +880,66 @@ func TestPRFreshSuppliedTextAppliesOncePerRun(t *testing.T) {
 		t.Fatalf("second pass rewrote the maintainer's title:\n%s", logs)
 	}
 }
+
+func TestPRFreshTitleSurvivesARegenerateRestartInTheSameRun(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		existing bool
+	}{
+		{name: "existing_pr", existing: true},
+		{name: "created_then_restarted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				data, _ := json.Marshal(prContent{Title: "feat: regenerated", Body: "## What Changed\n\n- regenerated"})
+				return &agent.Result{Output: data}, nil
+			}}
+			sctx, createEnv, createLog := suppliedPRContext(t, ag, suppliedPRTitleText, "")
+			sctx.Run.PRTitleFresh = true
+			existingEnv, existingLog := fakeGH(t, "https://github.com/test/repo/pull/42")
+			bodyFile := envEntry(existingEnv, "FAKE_CLI_PR_BODY_FILE")
+			if tc.existing {
+				if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				sctx.Env = append(existingEnv, "FAKE_CLI_PR_TITLE="+keptAuthorTitle)
+				if _, err := (&PRStep{}).Execute(sctx); err != nil {
+					t.Fatal(err)
+				}
+				if logs := string(mustRead(t, existingLog)); !strings.Contains(logs, "--title "+suppliedPRTitleText) {
+					t.Fatalf("first pass did not apply the supplied title:\n%s", logs)
+				}
+			} else {
+				sctx.Env = createEnv
+				if _, err := (&PRStep{}).Execute(sctx); err != nil {
+					t.Fatal(err)
+				}
+				if logs := string(mustRead(t, createLog)); !strings.Contains(logs, "--title "+suppliedPRTitleText) {
+					t.Fatalf("creation did not use the supplied title:\n%s", logs)
+				}
+				if err := os.WriteFile(bodyFile, []byte("## What Changed\n\n- created\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				sctx.Env = append(existingEnv, "FAKE_CLI_PR_TITLE="+suppliedPRTitleText)
+			}
+			if sctx.Run.PRTextAppliedAt == nil {
+				t.Fatal("first pass did not record that the supplied text was applied")
+			}
+			if err := os.WriteFile(existingLog, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			logs := string(mustRead(t, existingLog))
+			if !strings.Contains(logs, "--title "+suppliedPRTitleText) || strings.Contains(logs, "feat: regenerated") {
+				t.Fatalf("regenerate restart replaced the supplied title:\n%s", logs)
+			}
+			if body := string(mustRead(t, bodyFile)); !strings.Contains(body, "- regenerated") {
+				t.Fatalf("regenerate restart did not rewrite the body:\n%s", body)
+			}
+		})
+	}
+}
