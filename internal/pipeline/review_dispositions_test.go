@@ -194,6 +194,39 @@ func TestFilterSettledReviewFindings_LegacyIgnoreOnlyFixIsStickyButApprovalIsNot
 	}
 }
 
+func TestFilterSettledReviewFindings_QuestionRowsSurviveRecordedDecisions(t *testing.T) {
+	question := types.Finding{ID: "question-q1", Category: types.FindingCategoryReviewQuestion, File: "first.go", Description: "still open", Severity: types.FindingSeverityWarning, Action: types.ActionAskUser}
+	ordinary := types.Finding{ID: "question-ordinary", File: "second.go", Description: "ordinary external fact", Severity: types.FindingSeverityWarning, Action: types.ActionAutoFix}
+	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{question, ordinary}})
+	question.ID = "question-q2"       // The reviewer can reissue an open question with a different ID.
+	ordinary.ID = "ordinary-reissued" // An ordinary finding can use a question-looking ID.
+	current, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{question, ordinary}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+	for _, source := range []string{db.RoundSelectionSourceExternal, db.RoundSelectionSourceUserIgnored} {
+		t.Run(source, func(t *testing.T) {
+			selection := db.DeclinedSelectionJSON
+			round := &db.StepRound{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &selection}
+			if source == db.RoundSelectionSourceExternal {
+				oldQuestion := question
+				oldQuestion.ID = "question-q1"
+				oldQuestion.UserInstructions = "incorrectly settled"
+				oldOrdinary := ordinary
+				oldOrdinary.ID = "question-ordinary"
+				oldOrdinary.UserInstructions = "verified externally"
+				resolved, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{oldQuestion, oldOrdinary}})
+				round.UserFindingsJSON = &resolved
+			}
+			filtered, err := filterSettledReviewFindings(current, []*db.StepRound{round})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := types.ParseFindingsJSON(filtered)
+			if err != nil || len(got.Items) != 1 || got.Items[0].ID != "question-q2" {
+				t.Fatalf("open question was filtered or ordinary fact remained: %+v %v", got.Items, err)
+			}
+		})
+	}
+}
+
 func TestFilterSettledReviewFindings_AmbiguousFingerprintFailsClosed(t *testing.T) {
 	item := types.Finding{ID: "first", File: "first.go", Severity: types.FindingSeverityInfo, Description: "same", Action: types.ActionNoOp}
 	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})

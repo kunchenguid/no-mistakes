@@ -394,6 +394,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			return RespondDispositions{}, fmt.Errorf("read review findings: %w", err)
 		}
 		ids := uniqueNonEmpty(findingIDs)
+		for _, item := range types.FilterFindings(items, ids).Items {
+			if item.Category == types.FindingCategoryReviewQuestion {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("resolved_external cannot settle an open review question; use axi answer")
+			}
+		}
 		resolved := types.ExcludeFindings(items, ids)
 		remaining := make(map[string]bool, len(resolved.Items))
 		for _, item := range resolved.Items {

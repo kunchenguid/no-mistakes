@@ -68,6 +68,9 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 				return "", fmt.Errorf("read external review disposition: %w", err)
 			}
 			for _, item := range resolved.Items {
+				if item.Category == types.FindingCategoryReviewQuestion {
+					continue // A recorded external fact cannot answer a review question.
+				}
 				if item.UserInstructions == "" {
 					return "", fmt.Errorf("external review disposition is missing its reason")
 				}
@@ -83,6 +86,9 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 			fixed[findingFingerprint(item)] = true
 		}
 		for _, item := range shown.Items {
+			if item.Category == types.FindingCategoryReviewQuestion {
+				continue
+			}
 			key := findingFingerprint(item)
 			if shownCounts[key] != 1 {
 				continue
@@ -100,6 +106,10 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	removed := false
 	filtered.Items = make([]types.Finding, 0, len(current.Items))
 	for _, item := range current.Items {
+		if item.Category == types.FindingCategoryReviewQuestion {
+			filtered.Items = append(filtered.Items, item)
+			continue
+		}
 		key := findingFingerprint(item)
 		if counts[key] == 1 && (external[key] || (ignored[key] && !fixed[key])) {
 			removed = true
