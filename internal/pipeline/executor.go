@@ -2126,6 +2126,7 @@ rounds:
 				sctx.CoverageContinuation = nil
 				sctx.PreviousFindings = ""
 				sctx.DeferredFindings = ""
+				BindUncertifiedPipelineRange(sctx)
 				nextTrigger = "external"
 				continue rounds
 

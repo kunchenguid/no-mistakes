@@ -8,6 +8,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -82,6 +83,83 @@ func TestFilterSettledReviewFindings_ExternalSettlementOverridesEarlierFix(t *te
 	}
 }
 
+func TestExecutor_ExternalSettlementBindsNewFixerProvenance(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := coverageWorkdir(t, database, run)
+	fromSHA := run.HeadSHA
+	var toSHA string
+	calls := 0
+	item := types.Finding{ID: "A", File: "first.go", Description: "external fact", Severity: types.FindingSeverityInfo, Action: types.ActionNoOp}
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		switch calls {
+		case 1:
+			if sctx.UncertifiedToSHA != "" {
+				t.Error("initial review unexpectedly has fixer provenance")
+			}
+		case 2:
+			if !sctx.Fixing {
+				t.Error("requested fix did not run in fix mode")
+			}
+			if _, err := git.Run(sctx.Ctx, workDir, "-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixer change"); err != nil {
+				return nil, err
+			}
+			var err error
+			toSHA, err = git.HeadSHA(sctx.Ctx, workDir)
+			if err != nil {
+				return nil, err
+			}
+			if err := database.UpdateRunHeadSHA(run.ID, toSHA); err != nil {
+				return nil, err
+			}
+			sctx.Run.HeadSHA = toSHA
+			PersistUncertifiedPipelineRange(sctx, fromSHA, toSHA)
+		case 3:
+			if sctx.Fixing || sctx.SkipFixExecution || sctx.FinalizingAnswers || sctx.CoverageContinuation != nil {
+				t.Error("external settlement did not return to static review")
+			}
+			if sctx.UncertifiedFromSHA != fromSHA || sctx.UncertifiedToSHA != toSHA || sctx.UncertifiedSourceRunID != run.ID {
+				t.Errorf("static rereview lost fixer provenance: from=%q to=%q source=%q", sctx.UncertifiedFromSHA, sctx.UncertifiedToSHA, sctx.UncertifiedSourceRunID)
+			}
+		default:
+			t.Errorf("unexpected review turn %d", calls)
+		}
+		return dispositionCoverageOutcome(t, sctx, []types.Finding{item}, []string{"first.go", "second.go"}), nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		done <- exec.Execute(ctx, run, repo, workDir)
+	}()
+	t.Cleanup(func() { cancel(); <-finished })
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("read parked review: %+v %v", steps, err)
+	}
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"A"}, nil, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForRounds(t, database, steps[0].ID, 2, types.StepStatusFixReview)
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"A"}, nil, nil, nil, "verified outside worktree"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("external settlement did not complete")
+	}
+	if calls != 3 {
+		t.Fatalf("review turns = %d, want 3", calls)
+	}
+}
+
 func TestExecutor_RecoveredExternalDecisionReplaysWithoutReplacement(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := coverageWorkdir(t, database, run)
@@ -123,11 +201,17 @@ func TestExecutor_RecoveredExternalDecisionReplaysWithoutReplacement(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, run.BaseSHA, run.HeadSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
 	calls := 0
 	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
 		calls++
 		if sctx.Fixing {
 			t.Error("external replay ran a fixer")
+		}
+		if sctx.UncertifiedFromSHA != run.BaseSHA || sctx.UncertifiedToSHA != run.HeadSHA || sctx.UncertifiedSourceRunID != run.ID {
+			t.Errorf("external replay lost fixer provenance: from=%q to=%q source=%q", sctx.UncertifiedFromSHA, sctx.UncertifiedToSHA, sctx.UncertifiedSourceRunID)
 		}
 		return dispositionCoverageOutcome(t, sctx, []types.Finding{item}, []string{"first.go", "second.go"}), nil
 	}}
