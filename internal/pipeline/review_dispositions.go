@@ -101,7 +101,7 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	filtered.Items = make([]types.Finding, 0, len(current.Items))
 	for _, item := range current.Items {
 		key := findingFingerprint(item)
-		if counts[key] == 1 && !fixed[key] && (ignored[key] || external[key]) {
+		if counts[key] == 1 && (external[key] || (ignored[key] && !fixed[key])) {
 			removed = true
 			continue
 		}

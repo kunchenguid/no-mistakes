@@ -32,16 +32,23 @@ func TestExternalDecisionReachesEveryHistoryChannel(t *testing.T) {
 	}
 	later := &pipeline.StepContext{DB: f.db, Repo: f.repo, Run: laterRun, StepResultID: laterSR.ID}
 	pipeline.BindBranchDecisions(later)
+	rounds, err := f.db.GetRoundsByStep(f.reviewSR.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := &pipeline.StepContext{PreviousRunReviewRounds: rounds, UncertifiedPriorRounds: rounds}
 	for name, output := range map[string]string{
-		"own":        roundHistoryPromptSection(own),
-		"other step": runDecisionsPromptSection(f.testStepContext()),
-		"later run":  branchDecisionsPromptSection(later),
+		"own":         roundHistoryPromptSection(own),
+		"other step":  runDecisionsPromptSection(f.testStepContext()),
+		"later run":   branchDecisionsPromptSection(later),
+		"superseded":  supersededReviewHistoryPromptSection(prior),
+		"uncertified": uncertifiedRoundHistoryPromptSection(prior),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(output, "external-A") || !strings.Contains(output, "verified outside worktree") {
 				t.Fatalf("external decision or reason missing from emitted prompt: %s", output)
 			}
-			if name != "own" && strings.Contains(output, "undecided-B") {
+			if (name == "other step" || name == "later run") && strings.Contains(output, "undecided-B") {
 				t.Fatalf("external subset included undecided finding: %s", output)
 			}
 			if strings.Contains(output, "declined:") || strings.Contains(output, "user_chose_to_ignore:") {

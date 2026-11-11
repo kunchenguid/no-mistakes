@@ -44,6 +44,44 @@ func TestFilterSettledReviewFindings_UserAddedFixSurvivesLaterOmission(t *testin
 	}
 }
 
+func TestFilterSettledReviewFindings_ExternalSettlementOverridesEarlierFix(t *testing.T) {
+	item := types.Finding{ID: "A", File: "first.go", Description: "external fact", Severity: types.FindingSeverityInfo}
+	shown, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
+	item.UserInstructions = "verified outside worktree"
+	resolved, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
+	user, external := db.RoundSelectionSourceUser, db.RoundSelectionSourceExternal
+	selected, empty := `["A"]`, db.DeclinedSelectionJSON
+	rounds := []*db.StepRound{
+		{FindingsJSON: &shown, SelectionSource: &user, SelectedFindingIDs: &selected},
+		{FindingsJSON: &shown, UserFindingsJSON: &resolved, SelectionSource: &external, SelectedFindingIDs: &empty},
+	}
+	for _, representation := range []string{"carried", "fresh"} {
+		t.Run(representation, func(t *testing.T) {
+			current := item
+			current.UserInstructions = ""
+			if representation == "fresh" {
+				current.ID = "reissued-A"
+				current.Line = 30
+			}
+			raw, err := types.MarshalFindingsJSON(types.Findings{
+				Items:               []types.Finding{current},
+				ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			filtered, err := filterSettledReviewFindings(raw, rounds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := types.ParseFindingsJSON(filtered)
+			if err != nil || len(got.Items) != 0 {
+				t.Fatalf("acknowledged external settlement remained blocked: %+v %v", got, err)
+			}
+		})
+	}
+}
+
 func TestExecutor_RecoveredExternalDecisionReplaysWithoutReplacement(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := coverageWorkdir(t, database, run)

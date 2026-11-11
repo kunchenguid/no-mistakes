@@ -663,8 +663,8 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownS
 			}
 		}
 	case db.RoundSelectionSourceExternal:
-		if r.UserFindingsJSON != nil {
-			if lines := renderRoundFindingLines(*r.UserFindingsJSON); len(lines) > 0 {
+		if userFindings != nil {
+			if lines := renderRoundFindingLines(*userFindings); len(lines) > 0 {
 				b.WriteString("\nuser_resolved_external:")
 				for _, line := range lines {
 					b.WriteString("\n  - ")
