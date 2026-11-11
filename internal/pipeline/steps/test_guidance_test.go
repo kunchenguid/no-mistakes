@@ -195,7 +195,7 @@ func TestTestStep_InstructionsFileFailsClosed(t *testing.T) {
 	trusted := commitTrustedFiles(t, dir, map[string][]byte{
 		"ok.md":       []byte("Run it.\n"),
 		"binary.md":   {0xff, 0xfe},
-		"nul.md":      []byte("a\x00b"),
+		"nul-byte.md": []byte("a\x00b"),
 		"large.md":    []byte(strings.Repeat("x", config.MaxTrustedInstructionsFileBytes+1)),
 		"blank.md":    []byte(" \n\t"),
 		"markers.md":  []byte("<<<<<<<\n=======\n>>>>>>>\n"),
@@ -211,7 +211,7 @@ func TestTestStep_InstructionsFileFailsClosed(t *testing.T) {
 		"git dir":   ".git/config",
 		"symlink":   "link.md",
 		"non-UTF-8": "binary.md",
-		"NUL":       "nul.md",
+		"NUL":       "nul-byte.md",
 		"oversize":  "large.md",
 		"blank":     "blank.md",
 		"markers":   "markers.md",
