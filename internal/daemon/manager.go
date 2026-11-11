@@ -239,7 +239,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if _, err := m.db.RunCommitIdentity(run.ID); err != nil {
 		return nil, err
 	}
-	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
+	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, agentEnvironment(forgeCtx, run), quotaRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -489,11 +489,21 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 	return ag, record, nil
 }
 
-func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
-	if ctx == nil {
-		return runenv.Overlay{}
+// agentEnvironment is the forge profile overlay plus the launching caller's
+// CLAUDE_CONFIG_DIR, so a run started from a non-default Claude profile
+// authenticates with that profile on launch and on recovery.
+func agentEnvironment(ctx *forgecontext.Context, run *db.Run) runenv.Overlay {
+	var overlay runenv.Overlay
+	if ctx != nil {
+		overlay = ctx.Environment.Clone()
 	}
-	return ctx.Environment
+	if run.ClaudeConfigDir != nil {
+		if overlay.Set == nil {
+			overlay.Set = map[string]string{}
+		}
+		overlay.Set[runenv.ClaudeConfigDirEnvVar] = *run.ClaudeConfigDir
+	}
+	return overlay
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -1046,7 +1056,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
 	}
 	if params.LaunchNonce != "" {
-		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile, params.ReviewerProfile)
+		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.ClaudeConfigDir, params.PiProfile, params.ReviewerProfile)
 		if err != nil {
 			return "", err
 		}
@@ -1055,7 +1065,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 	if m.restart.beforeStartRun != nil {
 		m.restart.beforeStartRun()
 	}
-	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile, params.ReviewerProfile)
+	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.ClaudeConfigDir, params.PiProfile, params.ReviewerProfile)
 	if errors.Is(err, errRestartPending) {
 		// The restart was scheduled while this push waited for its branch:
 		// hold it rather than drop it, since the hook never retries. A
@@ -1089,13 +1099,13 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartF
 	if repo == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo %s", params.RepoID)
 	}
-	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile, params.ReviewerProfile)
+	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.ClaudeConfigDir, params.PiProfile, params.ReviewerProfile)
 }
 
 // startFreshLaunch owns proof identity under the branch lock. A nonce may
 // replay only its immutable submitted-head, generation, and persisted-intent
 // digest. It must never fall back to ordinary same-head reattachment.
-func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (ipc.LaunchReceipt, error) {
+func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, claudeConfigDir string, profiles ...agentcfg.RunSelection) (ipc.LaunchReceipt, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return ipc.LaunchReceipt{}, err
@@ -1204,7 +1214,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, profiles...)
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, claudeConfigDir, profiles...)
 		if err != nil {
 			return "", err
 		}
@@ -1346,11 +1356,11 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 // retarget can prove it is moving the same still-open review object.
 // A supplied clean caller head must match the selected head before any run
 // starts or is superseded. It never changes head selection.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (string, error) {
-	return m.handleRerun(ctx, repoID, branch, previousRunID, skipSteps, intent, prBaseBranch, omitIntent, callerHeadSHA, planID, closingIssues, prText, false, nil, profiles...)
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, claudeConfigDir string, profiles ...agentcfg.RunSelection) (string, error) {
+	return m.handleRerun(ctx, repoID, branch, previousRunID, skipSteps, intent, prBaseBranch, omitIntent, callerHeadSHA, planID, closingIssues, prText, false, nil, claudeConfigDir, profiles...)
 }
 
-func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, freshLaunch bool, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
+func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, freshLaunch bool, homes *runenv.TranscriptHomes, claudeConfigDir string, profiles ...agentcfg.RunSelection) (string, error) {
 	if m.restartPending() {
 		return "", errRestartPending
 	}
@@ -1444,7 +1454,7 @@ func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRu
 	if homes == nil {
 		homes = selectedRun.TranscriptHomes
 	}
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, inheritRunPRText(selectedRun, prText), homes, profiles...)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, inheritRunPRText(selectedRun, prText), homes, claudeConfigDir, profiles...)
 }
 
 // inheritRunPRText keeps the selected run's supplied PR text, field by field,
@@ -1684,21 +1694,21 @@ func loadRepoConfigAtSHA(ctx context.Context, dir, sha, purpose string) (*config
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, profiles ...agentcfg.RunSelection) (string, error) {
-	return m.startRunWithPRText(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, prBaseBranch, omitIntent, planID, closingIssues, db.RunPRText{}, nil, profiles...)
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, claudeConfigDir string, profiles ...agentcfg.RunSelection) (string, error) {
+	return m.startRunWithPRText(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, prBaseBranch, omitIntent, planID, closingIssues, db.RunPRText{}, nil, claudeConfigDir, profiles...)
 }
 
 // startRunWithPRText is startRun with caller-supplied PR text.
-func (m *RunManager) startRunWithPRText(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, omitIntent, "", planID, closingIssues, prText, homes, profiles...)
+func (m *RunManager) startRunWithPRText(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, claudeConfigDir string, profiles ...agentcfg.RunSelection) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, omitIntent, "", planID, closingIssues, prText, homes, claudeConfigDir, profiles...)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, claudeConfigDir string, profiles ...agentcfg.RunSelection) (string, error) {
 	return m.withBranchLock(repo.ID, branch, func() (string, error) {
-		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, profiles...)
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, claudeConfigDir, profiles...)
 	})
 }
 
@@ -1714,7 +1724,7 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // startRunWithIntentSourceLocked performs run creation while the caller owns
 // the repository/branch lock. Proof fields are empty for ordinary launches,
 // and retry is nil for every run that does not continue a failed one.
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, homes *runenv.TranscriptHomes, claudeConfigDir string, profiles ...agentcfg.RunSelection) (string, error) {
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
@@ -1855,6 +1865,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 	}
 
+	if claudeConfigDir != "" && !filepath.IsAbs(claudeConfigDir) {
+		trackStartFailure("invalid_claude_config_dir")
+		return "", fmt.Errorf("%s must be an absolute path, got %q", runenv.ClaudeConfigDirEnvVar, claudeConfigDir)
+	}
+
 	plan, err := verificationplan.Resolve(m.paths.RunInputsDir(), planID, repo.ID, branch, headSHA)
 	if err != nil {
 		return "", err
@@ -1908,7 +1923,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithTranscriptHomes(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, pin, reviewer)
+	run, err := m.db.InsertRunWithClaudeConfigDir(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, claudeConfigDir, pin, reviewer)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -2166,7 +2181,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
 	// fail-closed check. The quota-aware record is fresh-read here (a nil
 	// input) and persisted beside the gates pin below.
-	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), nil)
+	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, agentEnvironment(forgeCtx, run), nil)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")

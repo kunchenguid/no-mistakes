@@ -202,6 +202,11 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 
+			claudeConfigDir := strings.TrimSpace(os.Getenv(runenv.ClaudeConfigDirEnvVar))
+			if err := client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+				return err
+			}
+
 			if err := client.RequireTranscriptHomes(); err != nil {
 				return err
 			}
@@ -234,6 +239,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
 				ReviewerProfile:        reviewer,
+				ClaudeConfigDir:        claudeConfigDir,
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,

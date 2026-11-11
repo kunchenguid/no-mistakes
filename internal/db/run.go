@@ -116,7 +116,10 @@ type Run struct {
 	// quotarouting.Record JSON), written at run setup when the feature is on
 	// and appended to when a mid-run quota switch moves the run. Empty for
 	// runs from before the feature and whenever it is off. It is local-only.
-	QuotaRouting     string
+	QuotaRouting string
+	// ClaudeConfigDir is the launching caller's CLAUDE_CONFIG_DIR; nil keeps
+	// the daemon's own environment for Claude.
+	ClaudeConfigDir  *string
 	VerificationPlan *verificationplan.Snapshot
 	// ClosingIssueRefs are the explicit issues (axi run --closes) the generated
 	// PR should close, canonicalized by internal/closingissues.
@@ -135,7 +138,7 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, claude_config_dir, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
 
 func (d *DB) runColumns() (string, error) {
 	return d.readProjection("runs", runColumns, runScanTargets(&Run{}, &sql.NullString{})...)
@@ -150,7 +153,7 @@ func runScanTargets(r *Run, storedClosingIssues *sql.NullString) []any {
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
+		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.ClaudeConfigDir, &r.QuotaRouting, &r.VerificationPlan,
 		storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -198,15 +201,15 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 }
 
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent, prBaseBranch string) (*Run, error) {
-	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "", "", "", prBaseBranch, false, nil)
+	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "", "", "", prBaseBranch, false, nil, "")
 }
 
 // InsertRunWithIntentAndLaunchNonce persists an optional proof binding and the
 // caller-side omit-intent decision. The partial unique index remains the
 // duplicate defense across daemon processes; callers additionally serialize
 // selection under their branch lock.
-func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, profiles ...agentcfg.RunSelection) (*Run, error) {
-	return d.InsertRunWithPRText(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, RunPRText{}, profiles...)
+func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, claudeConfigDir string, profiles ...agentcfg.RunSelection) (*Run, error) {
+	return d.InsertRunWithClaudeConfigDir(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, RunPRText{}, nil, claudeConfigDir, profiles...)
 }
 
 // RunPRText is a caller-supplied PR title and description. An empty field
@@ -251,6 +254,12 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 // InsertRunWithTranscriptHomes records discovery roots in the creation write,
 // before a run can be observed or resumed by the daemon.
 func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (*Run, error) {
+	return d.InsertRunWithClaudeConfigDir(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, prText, homes, "", profiles...)
+}
+
+// InsertRunWithClaudeConfigDir is InsertRunWithTranscriptHomes that also binds
+// the launching caller's CLAUDE_CONFIG_DIR in the creation write.
+func (d *DB) InsertRunWithClaudeConfigDir(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, claudeConfigDir string, profiles ...agentcfg.RunSelection) (*Run, error) {
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -304,9 +313,12 @@ func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA strin
 	if prText.Body != "" {
 		r.PRBody = &prText.Body
 	}
+	if claudeConfigDir != "" {
+		r.ClaudeConfigDir = &claudeConfigDir
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, claude_config_dir, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.ClaudeConfigDir, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
