@@ -479,4 +479,8 @@ COMMIT;`,
 	// Old rows default false, preserving their existing-PR behavior.
 	`ALTER TABLE runs ADD COLUMN pr_title_fresh BOOLEAN NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN pr_body_fresh BOOLEAN NOT NULL DEFAULT 0`,
+	// Set once this run's fresh supplied PR text has been published, so a CI
+	// repair restart or recovery re-running the PR step treats it as inherited
+	// and never reverts later edits on the live PR.
+	`ALTER TABLE runs ADD COLUMN pr_text_applied_at INTEGER`,
 }

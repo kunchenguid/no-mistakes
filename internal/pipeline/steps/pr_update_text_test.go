@@ -823,3 +823,60 @@ func TestPRSuppliedBodyOnBitbucketCarriesTheVisibleAttestation(t *testing.T) {
 		t.Fatalf("Bitbucket body = %q", content.Body)
 	}
 }
+
+func TestPRFreshSuppliedTextAppliesOncePerRun(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := suppliedPRContext(t, noDraftAgent(t), suppliedPRTitleText, suppliedPRBodyText)
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+keptAuthorTitle)
+	sctx.Run.PRTitleFresh, sctx.Run.PRBodyFresh = true, true
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	first := string(mustRead(t, bodyFile))
+	if !strings.HasPrefix(first, suppliedPRBodyText) {
+		t.Fatalf("first pass did not apply the supplied description:\n%s", first)
+	}
+	if logs := string(mustRead(t, logFile)); !strings.Contains(logs, "--title "+suppliedPRTitleText) {
+		t.Fatalf("first pass did not apply the supplied title:\n%s", logs)
+	}
+
+	const maintainerNarrative = "Maintainer rewrote the description after the first publication.\n"
+	edited := maintainerNarrative + strings.TrimPrefix(first, suppliedPRBodyText)
+	if err := os.WriteFile(bodyFile, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const maintainerTitle = "Maintainer title"
+	sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+maintainerTitle)
+	recovered, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.PRTextAppliedAt == nil {
+		t.Fatal("first pass did not durably record that the supplied text was applied")
+	}
+	recovered.PRTitle, recovered.PRBody = sctx.Run.PRTitle, sctx.Run.PRBody
+	recovered.PRTitleFresh, recovered.PRBodyFresh = true, true
+	sctx.Run = recovered
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	second := string(mustRead(t, bodyFile))
+	if !strings.HasPrefix(second, maintainerNarrative) || strings.Contains(second, "Detects plaintext cf profiles") {
+		t.Fatalf("second pass reverted the maintainer's description:\n%s", second)
+	}
+	if publishedAttestationHead(t, second) != sctx.Run.HeadSHA {
+		t.Fatalf("second pass lost the attestation:\n%s", second)
+	}
+	assertKeptEvidence(t, second, config.PRAppendixFull, keptRiskLine)
+	if logs := string(mustRead(t, logFile)); strings.Contains(logs, "--title") {
+		t.Fatalf("second pass rewrote the maintainer's title:\n%s", logs)
+	}
+}

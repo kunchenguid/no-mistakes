@@ -201,8 +201,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
-		freshTitle := sctx.Run.PRTitleFresh && suppliedPRTitle(sctx) != ""
-		freshBody := sctx.Run.PRBodyFresh && suppliedPRBody(sctx) != ""
+		applied := sctx.Run.PRTextAppliedAt != nil
+		freshTitle := sctx.Run.PRTitleFresh && !applied && suppliedPRTitle(sctx) != ""
+		freshBody := sctx.Run.PRBodyFresh && !applied && suppliedPRBody(sctx) != ""
 		if err := verifyPublishedPR(sctx, host, existing); err != nil {
 			return nil, err
 		}
@@ -227,7 +228,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		if !freshTitle && !freshBody {
+		if applied {
+			logSuppliedPRTextUnused(sctx, "it was already applied earlier in this run, so later edits on the pull request are kept")
+		} else if !freshTitle && !freshBody {
 			logSuppliedPRTextUnused(sctx, "the pull request already exists, and inherited text does not request an update")
 		}
 		updated := existing
@@ -349,6 +352,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if err := verifyPublishedPR(sctx, host, updated); err != nil {
 			return nil, err
 		}
+		if freshTitle || freshBody {
+			if err := markSuppliedPRTextApplied(sctx); err != nil {
+				return nil, err
+			}
+		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
 				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
@@ -391,6 +399,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent{Title: content.Title, Body: content.Body})
 	if err != nil {
 		return nil, err
+	}
+	if sctx.Run.PRTitleFresh || sctx.Run.PRBodyFresh {
+		if err := markSuppliedPRTextApplied(sctx); err != nil {
+			return nil, err
+		}
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
 		if template != "" || keepsPRUpdateText(sctx) || suppliedBody {
@@ -437,6 +450,18 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+func markSuppliedPRTextApplied(sctx *pipeline.StepContext) error {
+	if sctx.Run.PRTextAppliedAt != nil {
+		return nil
+	}
+	ts, err := sctx.DB.MarkRunPRTextApplied(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("record supplied PR text publication: %w", err)
+	}
+	sctx.Run.PRTextAppliedAt = &ts
+	return nil
 }
 
 // retargetExistingPRIfNeeded moves an already-open PR onto a per-run
