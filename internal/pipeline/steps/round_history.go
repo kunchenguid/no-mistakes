@@ -651,8 +651,9 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownS
 			}
 		}
 	case db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored:
-		// The user resolved this round's gate with approve, skip, or abort,
-		// so the selection is an explicit empty set and every finding they saw
+		// The user resolved this gate with approve, skip, or abort, or
+		// explicitly ignored findings without selecting a fix. The selection
+		// is an explicit empty set and every finding they saw
 		// is declined - except one an earlier round already chose to fix, which
 		// keeps that decision. There is no user_chose_to_fix half to render.
 		if len(declined) > 0 {

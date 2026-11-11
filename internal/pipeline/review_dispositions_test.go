@@ -65,7 +65,10 @@ func TestExecutor_SettledFindingDoesNotBlockCoverageContinuation(t *testing.T) {
 				}
 			})
 			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-			var err error
+			parkedSteps, err := database.GetStepsByRun(run.ID)
+			if err != nil || len(parkedSteps) != 1 {
+				t.Fatalf("read parked Review step: %+v %v", parkedSteps, err)
+			}
 			if mode == "ignore" {
 				_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, []string{"original"}, nil, nil, "")
 			} else {
@@ -78,7 +81,7 @@ func TestExecutor_SettledFindingDoesNotBlockCoverageContinuation(t *testing.T) {
 			if mode == "ignore" {
 				status = types.StepStatusFixReview
 			}
-			waitForStepStatus(t, database, run.ID, types.StepReview, status)
+			waitForRounds(t, database, parkedSteps[0].ID, 2, status)
 			deadline := time.Now().Add(5 * time.Second)
 			for attempt := 0; attempt < 2; attempt++ {
 				for {
@@ -93,7 +96,7 @@ func TestExecutor_SettledFindingDoesNotBlockCoverageContinuation(t *testing.T) {
 					time.Sleep(5 * time.Millisecond)
 				}
 				if attempt == 0 {
-					waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+					waitForRounds(t, database, parkedSteps[0].ID, 3, types.StepStatusAwaitingApproval)
 				}
 			}
 			select {
@@ -150,7 +153,11 @@ func TestExecutor_ExternalDispositionRequiresReasonAndKeepsOtherFindingsBlocking
 	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"settled"}, nil, nil, nil, "verified outside review worktree"); err != nil {
 		t.Fatal(err)
 	}
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	parkedSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(parkedSteps) != 1 {
+		t.Fatalf("read parked Review step: %+v %v", parkedSteps, err)
+	}
+	waitForRounds(t, database, parkedSteps[0].ID, 2, types.StepStatusAwaitingApproval)
 	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionCompleteCoverage, nil, nil, nil, nil, "", ResponseOptions{Coverage: coverageBinding(t, database, run.ID)}); err == nil || !strings.Contains(err.Error(), "outstanding") {
 		t.Fatalf("unsettled error/warning did not block coverage: %v", err)
 	}

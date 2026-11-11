@@ -358,7 +358,7 @@ Every successful fix response echoes what it recorded in a `recorded:` object: `
 It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--instructions-file`, `--add-finding`, `--add-finding-file`, and `--reason`.
 The CLI supplies the observed head, step result, and latest round binding automatically.
 
-`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It starts another static Review turn without a fix or approval. Later rereviews can reissue the same finding under a different ID or line; the recorded decision suppresses only an unambiguous matching fingerprint. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
+`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. See the [Review settlement rules](/no-mistakes/reference/pipeline-steps/#coverage-continuation) for rereview and coverage behavior. Describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. If recovery parks the round after recording the decision but before starting the rereview, repeat the same finding subset and reason. A different external decision or a fix response cannot replace that recorded decision.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
@@ -627,11 +627,12 @@ Each round has these fields:
   An explicit empty findings array stays `[]` and does not mean that earlier findings were resolved.
 - `selected_finding_ids`: IDs selected for fixing **after this round**, or `null` when no selection was recorded.
   `[]` is an explicit selection of nothing, distinct from no decision.
-- `selection_source`: the recorded source (`user`, `auto_fix`, or `user_declined`), or `null`.
+- `selection_source`: the recorded source (`user`, `auto_fix`, `user_declined`, `user_ignored`, or `resolved_external`), or `null`.
   An automatic selection does not mean the user declined the remaining findings.
   `user_declined` does not distinguish approve, skip, and abort; this export does not infer a verdict or whether a fix succeeded.
+  `user_ignored` records an ignore-only fix response. `resolved_external` records only the externally settled subset in `user_findings`, with its reason in each finding's `user_instructions`; neither source selects findings for fixing.
 - `response_origin`: the recorded caller classification (`interactive`, `auto_yes`, or `unknown`).
-- `user_findings`: the merged finding array dispatched after user edits or additions, or `null` when absent.
+- `user_findings`: the merged finding array dispatched after user edits or additions, the externally settled subset for `resolved_external`, or `null` when absent.
 - `fix_summary`: the recorded fix result, or `null` when absent.
 - `duration_ms` and `created_at`: recorded duration in milliseconds and creation time in Unix seconds.
 
@@ -938,10 +939,9 @@ parked. Round creation is not a park or response timestamp. The run's
 aggregate across waits. Neither reconstructs earlier gates.
 
 `response_origin` records `interactive`, `auto_yes`, or `unknown` as stored. It
-does not identify a person. `selection_source` is separate and can be `user`,
-`user_declined`, `auto_fix`, or `null`. `user_declined` does not prove human action
-or distinguish approve, skip and abort. `selected_finding_ids: []` records an
-explicit empty selection, while `null` means no stored selection.
+does not identify a person. `selection_source` and `selected_finding_ids` use the
+[round export contract](#json-contract-version-1). The source does not prove human
+action.
 
 The `ci` step and its repair rounds describe no-mistakes monitoring, repair and
 wait work. `repair_published` records publication of a local repair round.
