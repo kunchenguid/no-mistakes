@@ -77,6 +77,59 @@ func TestCIStep_RejectedSummaryStillWithholdsFailedVerification(t *testing.T) {
 	}
 }
 
+func TestCIStep_DeclinedFailedVerificationPinsAgentCommit(t *testing.T) {
+	t.Parallel()
+	f := newCIGuardFixture(t, false, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "agent.txt"), []byte("agent commit\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "add", "agent.txt")
+		gitCmd(t, dir, "commit", "-m", "agent commit")
+	}, `{"summary":"external failure","code_change_needed":false,"verification_passed":false,"verification_ran":"`+failedVerificationRan+`"}`)
+	f.sctx.Fixing = true
+	outcome := f.repairRound(t)
+	assertFailedVerificationPark(t, outcome)
+	if f.remoteHead(t) != f.headSHA {
+		t.Fatalf("remote head = %s, want the pre-repair head %s", f.remoteHead(t), f.headSHA)
+	}
+	local := f.localHead(t)
+	if local == f.headSHA {
+		t.Fatal("the agent commit is missing")
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != local {
+		t.Fatalf("recorded head = %s, want the pinned agent commit %s", run.HeadSHA, local)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA == local {
+		t.Fatalf("push binding = %v, want it to stay off the unpublished commit", run.LastPushedSHA)
+	}
+}
+
+func TestCIStep_DeclinedFailedVerificationLeavesDirtyWorkUncommitted(t *testing.T) {
+	t.Parallel()
+	f := newCIGuardFixture(t, false, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("keep these bytes\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}, `{"summary":"external failure","code_change_needed":false,"verification_passed":false,"verification_ran":"`+failedVerificationRan+`"}`)
+	f.sctx.Fixing = true
+	outcome := f.repairRound(t)
+	assertFailedVerificationPark(t, outcome)
+	if f.remoteHead(t) != f.headSHA || f.localHead(t) != f.headSHA {
+		t.Fatalf("heads moved: local=%s remote=%s original=%s", f.localHead(t), f.remoteHead(t), f.headSHA)
+	}
+	if staged := gitCmd(t, f.dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("staged paths = %q, want nothing staged", staged)
+	}
+	got, err := os.ReadFile(filepath.Join(f.dir, "dirty.txt"))
+	if err != nil || string(got) != "keep these bytes\n" {
+		t.Fatalf("dirty bytes = %q, %v", got, err)
+	}
+}
+
 func TestCIStep_FixOverPinnedFailedRepairRunsTheFixerAndKeepsOneFinding(t *testing.T) {
 	t.Parallel()
 	f, first := runFailedVerificationRepairFixture(t, false, false)
