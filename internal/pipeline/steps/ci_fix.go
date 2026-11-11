@@ -381,9 +381,12 @@ CI logs:
 	if err := refuseUnfinishedGitOperation(sctx); err != nil {
 		return ciRepairResult{}, err
 	}
-	// A declined conclusion is decided before commitRepair. Otherwise the
-	// controller commits or publishes this round's work.
+	// A declined conclusion does not commit this round's uncommitted work.
+	// Failed verification still pins an agent commit and does not publish it.
 	if !rebase && conclusionErr == nil && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+		if s.repairVerification.failed() {
+			return s.pinReportedVerificationFailure(sctx, conclusion.Summary)
+		}
 		return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
@@ -981,6 +984,24 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 // unverified. It does not publish, does not restamp the attestation, and
 // does not revoke the review approval. recordLocalRepair would do that
 // revocation and the caller would restart at Review.
+func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
+	headSHA, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran, Summary: summary}, fmt.Errorf("resolve head after failed verification: %w", err)
+	}
+	if !ciHeadAwaitsRecording(sctx, headSHA) {
+		return ciRepairResult{
+			NoCodeChangeNeeded: true,
+			Summary:            summary,
+			VerificationFailed: true,
+			VerificationRan:    s.repairVerification.ran,
+		}, nil
+	}
+	repair, err := s.recordRepair(sctx, headSHA)
+	repair.Summary = summary
+	return repair, err
+}
+
 func (s *CIStep) pinFailedVerificationRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	result := ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran}
 	if strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
