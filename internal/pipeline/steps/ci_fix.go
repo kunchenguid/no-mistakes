@@ -174,6 +174,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			sctx.Log("CI repair reported failed verification; pinned locally and not published")
 		}
 		s.pendingFixSummary = repair.Summary
+		if repair.VerificationUnreported {
+			return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, repair.Summary), nil
+		}
 		return ciVerificationFailedOutcome(targets.Findings, sctx.DeferredFindings, repair), nil
 	}
 	if err != nil {
@@ -726,8 +729,9 @@ type ciRepairResult struct {
 	// VerificationFailed is true when the fix conclusion reported
 	// verification_passed false. The commit is pinned and not published,
 	// and the caller parks instead of restarting Review or Test.
-	VerificationFailed bool
-	VerificationRan    string
+	VerificationFailed     bool
+	VerificationUnreported bool
+	VerificationRan        string
 }
 
 // ciRepairVerification is the fix conclusion's verification_passed report.
@@ -952,7 +956,7 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // still chooses publication or a Review restart only when verification was
 // not reported as failed.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
-	if s.repairVerification.failed() {
+	if s.repairVerification.failed() || (!s.repairVerification.reported && pinnedByFailedVerification(sctx, sctx.Run.HeadSHA)) {
 		return s.pinFailedVerificationRepair(sctx, headSHA)
 	}
 	if ciRevalidatesRepairs(sctx) {
@@ -1006,7 +1010,7 @@ func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summ
 // does not revoke the review approval. recordLocalRepair would do that
 // revocation and the caller would restart at Review.
 func (s *CIStep) pinFailedVerificationRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
-	result := ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran}
+	result := ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran, VerificationUnreported: !s.repairVerification.reported}
 	if strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
 		sctx.Log("CI repair reported failed verification; not publishing")
 		return result, nil
