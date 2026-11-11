@@ -172,3 +172,96 @@ func TestLoadRepo_UnknownTestKeysAreReportedNotRejected(t *testing.T) {
 		t.Fatalf("unknown keys are not bounded: %v", flooded.UnknownTestKeys)
 	}
 }
+
+// Keys that reach test: through a YAML merge key (<<: *anchor) are checked like
+// keys written in place, with the decoder's precedence: an explicit key wins
+// over a merged one, and the first of several merge sources wins.
+func TestLoadRepo_UnknownTestKeysFollowYAMLMergeKeys(t *testing.T) {
+	cases := map[string]struct {
+		yaml string
+		want []string
+	}{
+		"merged test block": {`x-defaults: &defaults
+  instructions: run it
+  path_instruction: []
+test:
+  <<: *defaults
+  prepare: true
+`, []string{"test.path_instruction"}},
+		"merged evidence block": {`x-evidence: &evidence
+  store_in_repo: true
+  compactt: true
+test:
+  evidence:
+    <<: *evidence
+    dir: out
+`, []string{"test.evidence.compactt"}},
+		"merged path rule": {`x-rule: &rule
+  instructions: drive the browser
+  instruction_file: web.md
+test:
+  path_instructions:
+    - <<: *rule
+      path: apps/web/**
+`, []string{"test.path_instructions[0].instruction_file"}},
+		"explicit key overrides a merged value": {`x-defaults: &defaults
+  evidence:
+    compactt: true
+test:
+  <<: *defaults
+  evidence:
+    compact: true
+`, nil},
+		"first merge source wins": {`x-a: &a
+  evidence:
+    compact: true
+x-b: &b
+  evidence:
+    compactt: true
+  prepair: true
+test:
+  <<: [*a, *b]
+`, []string{"test.prepair"}},
+		"nested merge": {`x-inner: &inner
+  bogus: 1
+x-outer: &outer
+  <<: *inner
+  prepare: true
+test:
+  <<: *outer
+`, []string{"test.bogus"}},
+		"unknown key written beside a merge": {`x-defaults: &defaults
+  prepare: true
+test:
+  <<: *defaults
+  prepare: false
+  path_instruction: []
+`, []string{"test.path_instruction"}},
+	}
+	for name, tc := range cases {
+		cfg, err := LoadRepoFromBytes([]byte(tc.yaml))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if !reflect.DeepEqual(cfg.UnknownTestKeys, tc.want) {
+			t.Errorf("%s: UnknownTestKeys = %v, want %v", name, cfg.UnknownTestKeys, tc.want)
+		}
+	}
+
+	// The merged values are what the decoder applies, so the check and the
+	// config agree on which copy of a key counts.
+	cfg, err := LoadRepoFromBytes([]byte(`x-rule: &rule
+  instructions: drive the browser
+test:
+  path_instructions:
+    - <<: *rule
+      path: apps/web/**
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Test.PathInstructions) != 1 || cfg.Test.PathInstructions[0].Instructions != "drive the browser" || len(cfg.UnknownTestKeys) != 0 {
+		t.Fatalf("merged rule = %#v, unknown %v", cfg.Test.PathInstructions, cfg.UnknownTestKeys)
+	}
+}

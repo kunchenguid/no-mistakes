@@ -1355,6 +1355,7 @@ Like `test.instructions`, this field is honored **only from the trusted default-
 
 A key under `test:` that no-mistakes does not recognize, such as a misspelled `path_instruction`, is not an error, because failing the trusted copy's parse would stop every run of the repository.
 Instead the Test step log warns about each unknown key, including nested keys under `test.evidence` and `test.path_instructions` entries, and names the copy of `.no-mistakes.yaml` that carries it. The key has no effect.
+Keys merged in through a YAML merge key (`<<: *anchor`) are checked too, with the same precedence the YAML decoder uses: a key written in the mapping overrides a merged one, and the first of several merge sources wins.
 
 ### test.allow_approve_over_failure
 

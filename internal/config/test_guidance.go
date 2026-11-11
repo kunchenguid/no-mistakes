@@ -189,17 +189,14 @@ func unknownYAMLKeys(node *yaml.Node, t reflect.Type, prefix string, depth int) 
 			}
 			fields[name] = field.Type
 		}
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			key := node.Content[i].Value
-			if key == "<<" {
-				continue
-			}
+		for _, entry := range effectiveMappingEntries(node, 0) {
+			key := entry.key
 			fieldType, ok := fields[key]
 			if !ok {
 				out = append(out, prefix+"."+displayYAMLKey(key))
 				continue
 			}
-			out = append(out, unknownYAMLKeys(node.Content[i+1], fieldType, prefix+"."+key, depth+1)...)
+			out = append(out, unknownYAMLKeys(entry.value, fieldType, prefix+"."+key, depth+1)...)
 		}
 	case reflect.Slice:
 		if node.Kind != yaml.SequenceNode {
@@ -210,6 +207,76 @@ func unknownYAMLKeys(node *yaml.Node, t reflect.Type, prefix string, depth int) 
 		}
 	}
 	return out
+}
+
+// mappingEntry is one key of a mapping as the decoder sees it once merge keys
+// are applied.
+type mappingEntry struct {
+	key   string
+	value *yaml.Node
+}
+
+// effectiveMappingEntries returns the keys a mapping decodes with, applying
+// YAML merge keys (<<) the way gopkg.in/yaml.v3 does: the mapping's own keys
+// win over merged ones, and among several merge sources the first one that
+// sets a key wins. A merged mapping's own merge keys are applied recursively.
+// Each key appears once, with the value node the decoder actually uses, so an
+// unknown key that arrives only through an anchor is still reported while an
+// explicitly overridden merged value is not inspected.
+func effectiveMappingEntries(node *yaml.Node, depth int) []mappingEntry {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	if node.Kind != yaml.MappingNode || depth > 8 {
+		return nil
+	}
+	var entries []mappingEntry
+	seen := map[string]bool{}
+	var merges []*yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			merges = append(merges, value)
+			continue
+		}
+		if seen[key.Value] {
+			continue
+		}
+		seen[key.Value] = true
+		entries = append(entries, mappingEntry{key: key.Value, value: value})
+	}
+	for _, merge := range merges {
+		for merge.Kind == yaml.AliasNode && merge.Alias != nil {
+			merge = merge.Alias
+		}
+		sources := []*yaml.Node{merge}
+		if merge.Kind == yaml.SequenceNode {
+			sources = merge.Content
+		}
+		for _, source := range sources {
+			for _, entry := range effectiveMappingEntries(source, depth+1) {
+				if seen[entry.key] {
+					continue
+				}
+				seen[entry.key] = true
+				entries = append(entries, entry)
+			}
+		}
+	}
+	return entries
+}
+
+// isYAMLMergeKey matches the merge key the way gopkg.in/yaml.v3 does: a plain
+// << scalar, not a quoted "<<" string key.
+func isYAMLMergeKey(node *yaml.Node) bool {
+	if node.Kind != yaml.ScalarNode || node.Value != "<<" {
+		return false
+	}
+	switch node.Tag {
+	case "", "!", "!!merge", "tag:yaml.org,2002:merge":
+		return true
+	}
+	return false
 }
 
 // displayYAMLKey keeps an unknown key printable and short in a log line.
