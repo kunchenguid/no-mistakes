@@ -580,12 +580,6 @@ func (t ciFixTargets) description() string {
 	return desc
 }
 
-// ciRepairParkOutcome parks the step over the findings a repair round could
-// not clear, re-labelled ask-user: the fix agent has already concluded that
-// no code change is warranted, or the repair could not be settled, so
-// letting the auto_fix.ci loop pick the same findings up again would spend a
-// round on a question only a human can answer. summary carries the agent's
-// conclusion or the settlement error.
 func ciVerificationFailedOutcome(selected Findings, deferredRaw string, repair ciRepairResult) *pipeline.StepOutcome {
 	detail := "The CI fixer reported that its own verification failed."
 	if ran := strings.TrimSpace(repair.VerificationRan); ran != "" {
@@ -618,6 +612,12 @@ func ciVerificationFailedOutcome(selected Findings, deferredRaw string, repair c
 	return outcome
 }
 
+// ciRepairParkOutcome parks the step over the findings a repair round could
+// not clear, re-labelled ask-user: the fix agent has already concluded that
+// no code change is warranted, or the repair could not be settled, so
+// letting the auto_fix.ci loop pick the same findings up again would spend a
+// round on a question only a human can answer. summary carries the agent's
+// conclusion or the settlement error.
 func ciRepairParkOutcome(findings Findings, deferredRaw, summary string) *pipeline.StepOutcome {
 	parked := types.FindingsMetadata(findings)
 	parked.Summary = summary

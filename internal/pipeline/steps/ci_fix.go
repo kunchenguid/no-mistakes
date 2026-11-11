@@ -199,6 +199,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			s.lastFixAgentCrash = cause
 		}
 		sctx.Log(fmt.Sprintf("warning: CI fix failed: %v", err))
+		if pinnedByFailedVerification(sctx, sctx.Run.HeadSHA) {
+			return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
+		}
 		return nil, nil
 	}
 	if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
@@ -857,11 +860,6 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 	return s.recordRepair(sctx, headSHA)
 }
 
-// ciHeadAwaitsRecording reports whether a fix round that committed nothing
-// itself still has a head for recordRepair: one the agent committed, or a
-// repair already recorded locally but never published, such as the commit of a
-// fix agent that ran out of budget. Without the second case a later round that
-// adds nothing would leave that repair stranded behind the old published head.
 func (s *CIStep) unrecordedRepairResult() ciRepairResult {
 	if !s.repairVerification.failed() {
 		return ciRepairResult{}
@@ -869,6 +867,11 @@ func (s *CIStep) unrecordedRepairResult() ciRepairResult {
 	return ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran}
 }
 
+// ciHeadAwaitsRecording reports whether a fix round that committed nothing
+// itself still has a head for recordRepair: one the agent committed, or a
+// repair already recorded locally but never published, such as the commit of a
+// fix agent that ran out of budget. Without the second case a later round that
+// adds nothing would leave that repair stranded behind the old published head.
 func ciHeadAwaitsRecording(sctx *pipeline.StepContext, headSHA string) bool {
 	return headSHA != sctx.Run.HeadSHA || ciRepairUnpublished(sctx, headSHA)
 }
@@ -980,10 +983,6 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 	return s.publishRepair(sctx, headSHA)
 }
 
-// pinFailedVerificationRepair records a repair the fixer reported as
-// unverified. It does not publish, does not restamp the attestation, and
-// does not revoke the review approval. recordLocalRepair would do that
-// revocation and the caller would restart at Review.
 func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
 	headSHA, err := stepGitHeadSHA(sctx)
 	if err != nil {
@@ -1002,6 +1001,10 @@ func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summ
 	return repair, err
 }
 
+// pinFailedVerificationRepair records a repair the fixer reported as
+// unverified. It does not publish, does not restamp the attestation, and
+// does not revoke the review approval. recordLocalRepair would do that
+// revocation and the caller would restart at Review.
 func (s *CIStep) pinFailedVerificationRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	result := ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran}
 	if strings.EqualFold(headSHA, sctx.Run.HeadSHA) {

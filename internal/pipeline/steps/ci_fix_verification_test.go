@@ -169,6 +169,34 @@ func TestCIStep_FixOverPinnedFailedRepairRunsTheFixerAndKeepsOneFinding(t *testi
 	}
 }
 
+func TestCIStep_FixFailureOverPinnedFailedRepairParksAgain(t *testing.T) {
+	t.Parallel()
+	f, first := runFailedVerificationRepairFixture(t, false, false)
+	assertFailedVerificationPark(t, first)
+	pinned := f.localHead(t)
+
+	f.sctx.Agent = &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return nil, errors.New("agent exploded")
+	}}
+	f.sctx.Ctx = context.Background()
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = first.Findings
+	outcome, err := (&CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		t.Fatal("a failed fix over a pinned repair must park, not monitor the unpublished head")
+		return nil
+	}}).Execute(f.sctx)
+	if err != nil {
+		t.Fatalf("fix: %v\nlog:\n%s", err, f.log())
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want a park", outcome)
+	}
+	assertFailedVerificationPark(t, outcome)
+	if f.localHead(t) != pinned {
+		t.Fatalf("local head moved off the pinned repair")
+	}
+}
+
 func runFailedVerificationRepair(t *testing.T, revalidate, userFix bool) *pipeline.StepOutcome {
 	t.Helper()
 	_, outcome := runFailedVerificationRepairFixture(t, revalidate, userFix)
