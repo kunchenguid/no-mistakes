@@ -26,8 +26,8 @@ const maxAxiRunPRBodyBytes = (65516 - len(prBodyPushOptionPrefix)) / 4 * 3
 // bindPRTextFlags adds --pr-title and --pr-body-file. There is deliberately no
 // inline body flag: Markdown is exactly the text a caller's shell would expand.
 func bindPRTextFlags(cmd *cobra.Command, title, bodyFile *string) {
-	cmd.Flags().StringVar(title, "pr-title", "", "PR title to use verbatim when this run creates the PR (pr.title_format still applies)")
-	cmd.Flags().StringVar(bodyFile, "pr-body-file", "", "read the PR description to use verbatim when this run creates the PR from this file; '-' reads stdin to EOF")
+	cmd.Flags().StringVar(title, "pr-title", "", "PR title to use when creating or updating the PR (pr.title_format still applies)")
+	cmd.Flags().StringVar(bodyFile, "pr-body-file", "", "read the PR description to use when creating or updating the PR from this file; '-' reads stdin to EOF")
 }
 
 // resolvePRTextFlags reads and validates --pr-title and --pr-body-file before
@@ -116,8 +116,9 @@ func parsePRTextPushOptions(options []string) (db.RunPRText, error) {
 }
 
 // requireDaemonHonorsRunPRText refuses supplied PR text before any push when
-// the running daemon predates it: it would drop the unknown fields and open a
-// PR with drafted text. The probe is a method such a daemon refuses.
+// the daemon cannot update an existing PR with it. A create-only daemon
+// already answers OK=true, so the second capability must be explicit. The
+// caller cannot safely infer whether this run will find a PR on the forge.
 func requireDaemonHonorsRunPRText(client closingIssueRefsUpdateClient, text db.RunPRText) error {
 	if !hasRunPRText(text) {
 		return nil
@@ -127,22 +128,25 @@ func requireDaemonHonorsRunPRText(client closingIssueRefsUpdateClient, text db.R
 	if err == nil && !result.OK {
 		err = errors.New("daemon declined the supplied PR text capability")
 	}
+	if err == nil && !result.ExistingPRUpdates {
+		err = errors.New("daemon supports supplied PR text on creation only")
+	}
 	if err != nil {
-		return fmt.Errorf("the running daemon is too old to honor --pr-title or --pr-body-file (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+		return fmt.Errorf("the running daemon is too old to honor --pr-title or --pr-body-file for existing PR updates (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
 	}
 	return nil
 }
 
 // conflictingActiveRunPRText reports when supplied PR text would be discarded
-// by reattaching to an in-flight run that carries different (or no) text.
+// by reattaching to an in-flight run that carries different or inherited text.
 func conflictingActiveRunPRText(run *ipc.RunInfo, text db.RunPRText) error {
 	if run == nil {
 		return nil
 	}
-	if text.Title != "" && run.PRTitleDigest != db.PRTextDigest(text.Title, "") {
+	if text.Title != "" && (run.PRTitleDigest != db.PRTextDigest(text.Title, "") || !run.PRTitleFresh) {
 		return fmt.Errorf("active run %s is already in progress without this --pr-title", run.ID)
 	}
-	if text.Body != "" && run.PRBodyDigest != db.PRTextDigest("", text.Body) {
+	if text.Body != "" && (run.PRBodyDigest != db.PRTextDigest("", text.Body) || !run.PRBodyFresh) {
 		return fmt.Errorf("active run %s is already in progress without this --pr-body-file description", run.ID)
 	}
 	return nil

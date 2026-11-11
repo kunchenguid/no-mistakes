@@ -1416,7 +1416,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 
 	// Capability probe for --pr-title / --pr-body-file: see ipc.ProbeRunPRTextResult.
 	srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
-		return &ipc.ProbeRunPRTextResult{OK: true}, nil
+		return &ipc.ProbeRunPRTextResult{OK: true, ExistingPRUpdates: true}, nil
 	})
 	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
@@ -1708,6 +1708,8 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
 		OmitIntent:         r.OmitIntent,
+		PRTitleFresh:       r.PRTitleFresh,
+		PRBodyFresh:        r.PRBodyFresh,
 		QuotaRouting:       r.QuotaRouting,
 		PiProfile:          r.PiProfile,
 		ReviewerProfile:    r.ReviewerProfile,

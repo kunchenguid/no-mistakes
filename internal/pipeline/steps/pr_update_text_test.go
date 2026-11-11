@@ -536,7 +536,7 @@ func TestPRSuppliedBodySurvivesALaterRegenerateRun(t *testing.T) {
 	}
 }
 
-func TestPRSuppliedTextIsNotAppliedToAnExistingPR(t *testing.T) {
+func TestPRInheritedTextIsNotAppliedToAnExistingPR(t *testing.T) {
 	t.Parallel()
 	const drafted = "## What Changed\n\n- regenerated"
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
@@ -562,9 +562,144 @@ func TestPRSuppliedTextIsNotAppliedToAnExistingPR(t *testing.T) {
 	if logs := string(mustRead(t, logFile)); strings.Contains(logs, suppliedPRTitleText) {
 		t.Fatalf("supplied title reached an existing PR:\n%s", logs)
 	}
-	want := "supplied PR title and description not applied: the pull request already exists, and supplied text applies only when a run creates it"
+	want := "supplied PR title and description not applied: the pull request already exists, and inherited text does not request an update"
 	if !slices.Contains(logged, want) {
 		t.Fatalf("step did not say the text went unused: %q", logged)
+	}
+}
+
+func TestPRFreshSuppliedTextUpdatesExistingPR(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, title, body                              string
+		freshTitle, freshBody                          bool
+		wantDraft, wantSuppliedBody, wantSuppliedTitle bool
+	}{
+		{name: "no_flags", wantDraft: true},
+		{name: "title_only", title: suppliedPRTitleText, freshTitle: true, wantDraft: true, wantSuppliedTitle: true},
+		{name: "body_only", body: suppliedPRBodyText, freshBody: true, wantSuppliedBody: true},
+		{name: "both", title: suppliedPRTitleText, body: suppliedPRBodyText, freshTitle: true, freshBody: true, wantSuppliedTitle: true, wantSuppliedBody: true},
+		{name: "inherited_both", title: suppliedPRTitleText, body: suppliedPRBodyText, wantDraft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				if !tc.wantDraft {
+					t.Fatal("supplied body caused drafting")
+				}
+				data, _ := json.Marshal(prContent{Title: "feat: regenerated", Body: "## What Changed\n\n- regenerated"})
+				return &agent.Result{Output: data}, nil
+			}}
+			sctx, _, _ := suppliedPRContext(t, ag, tc.title, tc.body)
+			env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+			bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+			if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+keptAuthorTitle)
+			sctx.Run.PRTitleFresh, sctx.Run.PRBodyFresh = tc.freshTitle, tc.freshBody
+			if tc.freshBody {
+				if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"95"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			body := string(mustRead(t, bodyFile))
+			if got := strings.HasPrefix(body, suppliedPRBodyText); got != tc.wantSuppliedBody {
+				t.Fatalf("supplied narrative used = %v, want %v:\n%s", got, tc.wantSuppliedBody, body)
+			}
+			if got := strings.Contains(body, "- regenerated"); got != tc.wantDraft {
+				t.Fatalf("drafted narrative used = %v, want %v:\n%s", got, tc.wantDraft, body)
+			}
+			if publishedAttestationHead(t, body) != sctx.Run.HeadSHA {
+				t.Fatalf("attestation head mismatch:\n%s", body)
+			}
+			if tc.wantSuppliedBody {
+				assertKeptEvidence(t, body, config.PRAppendixFull, keptRiskLine)
+				if !strings.Contains(body, "## Issues\n\nCloses #95") {
+					t.Fatalf("requested issue reference missing:\n%s", body)
+				}
+			}
+			logs := string(mustRead(t, logFile))
+			if got := strings.Contains(logs, "--title "+suppliedPRTitleText); got != tc.wantSuppliedTitle {
+				t.Fatalf("supplied title used = %v, want %v:\n%s", got, tc.wantSuppliedTitle, logs)
+			}
+			if tc.name == "body_only" && strings.Contains(logs, "--title") {
+				t.Fatalf("body-only update changed the title:\n%s", logs)
+			}
+		})
+	}
+}
+
+func TestPRFreshDescriptionReplacesLegacyUnownedAttestation(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := suppliedPRContext(t, noDraftAgent(t), suppliedPRTitleText, suppliedPRBodyText)
+	env, _ := fakeGH(t, "https://github.com/test/repo/pull/42")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	legacy := "## What Changed\n\nOld generated text.\n\n<!-- no-mistakes-pipeline-attestation:v1 {} -->"
+	if err := os.WriteFile(bodyFile, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = env
+	sctx.Run.PRTitleFresh, sctx.Run.PRBodyFresh = true, true
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	body := string(mustRead(t, bodyFile))
+	if !strings.HasPrefix(body, suppliedPRBodyText) || strings.Contains(body, "Old generated text") {
+		t.Fatalf("legacy body was not replaced:\n%s", body)
+	}
+	if _, err := parsePROwnedBody(body); err != nil {
+		t.Fatalf("replacement body lacks a valid owned appendix: %v", err)
+	}
+}
+
+func TestPRFreshTitleKeepsBodyUnderUpdateTextKeep(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := suppliedPRContext(t, noDraftAgent(t), suppliedPRTitleText, "")
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = env
+	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+	sctx.Run.PRTitleFresh = true
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	body := string(mustRead(t, bodyFile))
+	if !strings.HasPrefix(body, keptAuthorBody) || publishedAttestationHead(t, body) != sctx.Run.HeadSHA {
+		t.Fatalf("keep body or attestation changed unexpectedly:\n%s", body)
+	}
+	if logs := string(mustRead(t, logFile)); !strings.Contains(logs, "--title "+suppliedPRTitleText) {
+		t.Fatalf("fresh title did not update the PR:\n%s", logs)
+	}
+}
+
+func TestPRFreshDescriptionOnExistingPRRequiresTemplateHeadings(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := templateTestContext(t)
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = env
+	body := "## Testing\n\nNo overview heading.\n"
+	sctx.Run.PRBody = &body
+	sctx.Run.PRBodyFresh = true
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "# Overview") {
+		t.Fatalf("template heading refusal = %v", err)
+	}
+	if got := string(mustRead(t, bodyFile)); got != keptAuthorBody {
+		t.Fatalf("invalid description changed live body: %q", got)
+	}
+	if logs := string(mustRead(t, logFile)); strings.Contains(logs, "pr edit") {
+		t.Fatalf("invalid description reached publication:\n%s", logs)
 	}
 }
 
