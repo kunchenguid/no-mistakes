@@ -12,8 +12,9 @@ const (
 	RoundSelectionSourceAutoFix = "auto_fix"
 	// RoundSelectionSourceUserDeclined records that a caller resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort, or a fix response that declined every finding the gate
-	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
+	// skip, or abort. Legacy rows also use this source for ignore-only fix
+	// responses; new ones use RoundSelectionSourceUserIgnored. Before this
+	// existed, those three resolutions wrote no
 	// finding-level state at all, so "the caller declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
@@ -39,10 +40,11 @@ type StepRound struct {
 	ID           string
 	StepResultID string
 	Round        int
-	// Trigger is "initial", "auto_fix", "coverage", or "answer" (a review turn resumed
-	// once every question it left open was answered - not a fix round, since
-	// no code changed). "coverage" starts another static review without a fix
-	// or verdict; legacy "user_fix" is treated as "auto_fix".
+	// Trigger includes "initial", "auto_fix", "coverage", "external", and "answer"
+	// (a review turn resumed once every question it left open was answered -
+	// not a fix round, since no code changed). "coverage" and "external" start
+	// static reviews without a fix or verdict; legacy "user_fix" is treated
+	// as "auto_fix".
 	Trigger          string
 	FindingsJSON     *string // nullable - findings produced by this round
 	ReviewedHeadSHA  *string // non-authoritative commit candidate captured by a review round
