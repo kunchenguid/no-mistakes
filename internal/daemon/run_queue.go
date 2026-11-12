@@ -169,8 +169,9 @@ func (m *RunManager) extractQueuedForBranchLocked(repoID, branch string) []queue
 
 // cancelQueuedRun records a queued run terminal without starting or resuming
 // its executor and releases its setup resources. A recovered run's head must
-// be preserved before its worktree is removed. It frees no execution slot in
-// this daemon lifetime, so no pump follows.
+// be preserved before its worktree is removed; its temp dir is removed
+// either way. It frees no execution slot in this daemon lifetime, so no pump
+// follows.
 func (m *RunManager) cancelQueuedRun(qe queuedRun, cause string) {
 	var head string
 	var verified bool
@@ -205,6 +206,12 @@ func (m *RunManager) cancelQueuedRun(qe queuedRun, cause string) {
 	}
 	if err == nil && (qe.recovered == nil || verified) {
 		m.removeRunWorktree(qe.repoID, qe.runID, qe.gateDir, qe.wtDir, "queued_run_cancelled")
+	} else {
+		// The checkout stays because its head could not be preserved, but the
+		// temp dir is scratch: sweep it alone (an empty worktree names no
+		// scope) and remove it, or a build started from it outlives the run.
+		m.sweepRunWorktreeProcesses(qe.repoID, qe.runID, "")
+		m.removeRunTempDir(qe.runID)
 	}
 	qe.cancel(nil)
 	qe.agent.Close()

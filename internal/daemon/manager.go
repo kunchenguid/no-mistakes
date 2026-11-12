@@ -744,8 +744,29 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // by a worktree_roots edit made while the run was executing. The ordering rule
 // and its rationale live on procreap.SweepRunWorktree, which every removal site
 // in every package goes through.
+//
+// The run's private temp directory (paths.RunTempDir, every agent turn's
+// TMPDIR) is swept in the same pass: an agent that copied a project there and
+// started a build from it is standing outside the worktree, and the directory
+// is removed right after (removeRunTempDir).
 func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
-	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, wtDir, "run_cleanup")
+	procreap.SweepRunWorktrees(m.paths.WorktreesDir(), []procreap.Worktree{
+		{Dir: wtDir, RepoID: repoID, RunID: runID},
+		{Dir: m.paths.RunTempDir(runID), RepoID: repoID, RunID: runID},
+	}, "run_cleanup")
+}
+
+// removeRunTempDir removes a finished run's private temp directory. It is
+// scratch by definition - nothing in it is the run's result - so unlike the
+// worktree it has no protected-path or retention exception. Best effort.
+func (m *RunManager) removeRunTempDir(runID string) {
+	if strings.TrimSpace(runID) == "" {
+		return
+	}
+	dir := m.paths.RunTempDir(runID)
+	if err := os.RemoveAll(dir); err != nil {
+		slog.Warn("failed to remove run temp dir", "run_id", runID, "path", dir, "error", err)
+	}
 }
 
 // cleanupRunEvidence tidies up after one finished run, then bounds the whole
@@ -810,6 +831,7 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 // different routes. reason distinguishes the routes in the log.
 func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
 	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
+	m.removeRunTempDir(runID)
 	run, err := m.db.GetRun(runID)
 	if err != nil {
 		slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)

@@ -3,6 +3,8 @@ package procreap
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -547,5 +549,83 @@ func TestSweepIgnoresNamedWorktreeWithoutRunIdentity(t *testing.T) {
 	}
 	if len(victims) != 0 || fake.anySignalTo(100) {
 		t.Fatalf("worktree without a run identity was swept: victims=%v signals=%+v", victimPIDs(victims), fake.signals)
+	}
+}
+
+// TestSweepReachesTheRunTempRootByShape covers issue #1519: an agent that copies
+// a project to a scratch directory and builds there is standing outside the run
+// worktree, but in the run's own temp directory (<NM_HOME>/tmp/<run>,
+// the agent's TMPDIR). The unscoped sweep reaches it under the same guards as
+// the worktrees root - an active run is spared, a young process is spared - and
+// a hand-made directory under the shared system temp dir, or a process standing
+// in the temp root itself, stays out of reach.
+func TestSweepReachesTheRunTempRootByShape(t *testing.T) {
+	base := t.TempDir()
+	worktreesRoot := filepath.Join(base, "worktrees")
+	tempRoot := filepath.Join(base, "tmp")
+	fake := &fakeSystem{
+		procs: []Process{
+			{PID: 100, PPID: 1, PGID: 100, Command: "xcodebuild test", Elapsed: 40 * time.Hour},
+			{PID: 101, PPID: 1, PGID: 101, Command: "xcodebuild test", Elapsed: 40 * time.Hour},
+			{PID: 102, PPID: 1, PGID: 102, Command: "xcodebuild test", Elapsed: time.Minute},
+			{PID: 103, PPID: 1, PGID: 103, Command: "xcodebuild test", Elapsed: 40 * time.Hour},
+			{PID: 104, PPID: 1, PGID: 104, Command: "root-level", Elapsed: 40 * time.Hour},
+		},
+		cwds: map[int]string{
+			100: filepath.Join(tempRoot, "doneRun", "nm-doneRun", "driver"),
+			101: filepath.Join(tempRoot, "activeRun", "driver"),
+			102: filepath.Join(tempRoot, "youngRun"),
+			103: filepath.Join(base, "system-tmp", "nm-doneRun", "driver"),
+			104: tempRoot,
+		},
+	}
+	fake.install(t)
+
+	var asked []string
+	victims, err := Sweep(Options{
+		WorktreesRoot: worktreesRoot,
+		TempRoot:      tempRoot,
+		MinAge:        DefaultMinAge,
+		RunActive: func(repoID, runID string) bool {
+			asked = append(asked, repoID+"/"+runID)
+			return runID == "activeRun"
+		},
+	})
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if got := victimPIDs(victims); len(got) != 1 || got[0] != 100 {
+		t.Fatalf("Sweep victims = %v, want [100]", got)
+	}
+	sort.Strings(asked)
+	if want := []string{"/activeRun", "/doneRun"}; !reflect.DeepEqual(asked, want) {
+		t.Fatalf("RunActive asked about %v, want %v (run ID only, no repository)", asked, want)
+	}
+	if want := filepath.Join(tempRoot, "doneRun"); victims[0].Worktree != want {
+		t.Fatalf("victim scope = %q, want the run temp dir %q", victims[0].Worktree, want)
+	}
+	for _, pid := range []int{101, 102, 103, 104} {
+		if fake.anySignalTo(pid) {
+			t.Fatalf("process %d must not be signalled: %+v", pid, fake.signals)
+		}
+	}
+}
+
+// TestSweepWithoutTempRootNeverReachesIt pins that the temp root is opt-in: a
+// caller that names only the worktrees root keeps today's reach exactly.
+func TestSweepWithoutTempRootNeverReachesIt(t *testing.T) {
+	base := t.TempDir()
+	fake := &fakeSystem{
+		procs: []Process{{PID: 100, PPID: 1, PGID: 100, Command: "xcodebuild test", Elapsed: 40 * time.Hour}},
+		cwds:  map[int]string{100: filepath.Join(base, "tmp", "doneRun")},
+	}
+	fake.install(t)
+
+	victims, err := Sweep(Options{WorktreesRoot: filepath.Join(base, "worktrees"), MinAge: DefaultMinAge})
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if len(victims) != 0 || fake.anySignalTo(100) {
+		t.Fatalf("a sweep without TempRoot reached the temp root: victims=%v signals=%+v", victimPIDs(victims), fake.signals)
 	}
 }

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -1148,4 +1150,76 @@ func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, dr
 		return nil, err
 	}
 	return &agent.Result{Text: "done"}, nil
+}
+
+// TestRunAgent_PointsTMPDIRAtTheRunTempDir covers issue #1519: an agent's
+// scratch work (mktemp, a copied project an agent builds from) must land in a
+// directory the run owns, so run cleanup can sweep the processes standing in it
+// and remove it. The directory is created on the first turn, and a TMPDIR the
+// caller supplied explicitly still wins.
+func TestRunAgent_PointsTMPDIRAtTheRunTempDir(t *testing.T) {
+	t.Parallel()
+	tempDir := filepath.Join(t.TempDir(), "tmp", "run1")
+	callerDir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		tempDir string
+		env     []string
+		want    string // effective TMPDIR in opts.Env; "" means none set
+	}{
+		{name: "run temp dir", tempDir: tempDir, want: tempDir},
+		{name: "caller entry wins", tempDir: tempDir, env: []string{"TMPDIR=" + callerDir}, want: callerDir},
+		{name: "no run temp dir", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			ag := &hangingAgent{name: "env", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				got = opts.Env
+				return &agent.Result{Text: "ok"}, nil
+			}}
+			sctx := &StepContext{Ctx: context.Background(), Agent: ag, Config: &config.Config{AgentTimeout: time.Second}, TempDir: tc.tempDir}
+			if _, err := sctx.RunAgent(agent.RunOpts{Prompt: "work", Env: tc.env}); err != nil {
+				t.Fatal(err)
+			}
+			effective := ""
+			for _, entry := range got {
+				if value, ok := strings.CutPrefix(entry, "TMPDIR="); ok {
+					effective = value // later entries override earlier ones
+				}
+			}
+			if effective != tc.want {
+				t.Fatalf("effective TMPDIR = %q, want %q (env %q)", effective, tc.want, got)
+			}
+			if tc.tempDir != "" {
+				if info, err := os.Stat(tc.tempDir); err != nil || !info.IsDir() {
+					t.Fatalf("run temp dir was not created before the turn: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestRunAgent_UncreatableRunTempDirKeepsTheInheritedTMPDIR pins the fallback:
+// losing the cleanup scope must never fail the turn or point the agent at a
+// directory that does not exist.
+func TestRunAgent_UncreatableRunTempDirKeepsTheInheritedTMPDIR(t *testing.T) {
+	t.Parallel()
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	ag := &hangingAgent{name: "env", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		got = opts.Env
+		return &agent.Result{Text: "ok"}, nil
+	}}
+	sctx := &StepContext{Ctx: context.Background(), Agent: ag, Config: &config.Config{AgentTimeout: time.Second}, TempDir: filepath.Join(blocker, "run1")}
+	if _, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"}); err != nil {
+		t.Fatalf("an uncreatable run temp dir failed the turn: %v", err)
+	}
+	for _, entry := range got {
+		if strings.HasPrefix(entry, "TMPDIR=") {
+			t.Fatalf("TMPDIR was pointed at an uncreatable directory: %q", got)
+		}
+	}
 }

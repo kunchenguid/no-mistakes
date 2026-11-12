@@ -221,6 +221,25 @@ func (p *Paths) WorktreeDir(repoID, runID string) string {
 	return filepath.Join(p.root, "worktrees", repoID, runID)
 }
 
+// RunTempRoot holds one private temp directory per run, keyed by run ID alone.
+// It is flat, unlike WorktreesDir, because the directory becomes TMPDIR and
+// tools create Unix sockets under it: every byte counts against the AF_UNIX
+// path limit (104 bytes on macOS), and run IDs are already unique.
+//
+// Every agent invocation of a run gets its own directory as TMPDIR (see
+// RunTempDir), so the scratch work an agent and the tools it calls put in the
+// temp dir (mktemp, Xcode, npm, Python's tempfile) lands in a directory this
+// process owns instead of the shared system temp dir. That is what makes a
+// process an agent started there reachable by the orphan sweep (see
+// internal/procreap), which matches on cwd, and what lets run cleanup remove the
+// scratch with the run. EnsureDirs leaves creation to the first agent turn.
+func (p *Paths) RunTempRoot() string { return filepath.Join(p.root, "tmp") }
+
+// RunTempDir is the private temp directory of a single run.
+func (p *Paths) RunTempDir(runID string) string {
+	return filepath.Join(p.root, "tmp", runID)
+}
+
 func (p *Paths) LogsDir() string { return filepath.Join(p.root, "logs") }
 func (p *Paths) RunLogDir(runID string) string {
 	return filepath.Join(p.root, "logs", runID)
