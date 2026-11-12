@@ -618,6 +618,9 @@ func TestRunPRTextRoundTripAndClaimMatching(t *testing.T) {
 	if stored.PRTitle == nil || *stored.PRTitle != text.Title || stored.PRBody == nil || *stored.PRBody != text.Body {
 		t.Fatalf("stored PR text = %v / %v", stored.PRTitle, stored.PRBody)
 	}
+	if !stored.PRTitleFresh || !stored.PRBodyFresh {
+		t.Fatalf("stored PR text freshness = %v / %v", stored.PRTitleFresh, stored.PRBodyFresh)
+	}
 	plain, err := d.InsertRun(repo.ID, "other", "head", "base")
 	if err != nil {
 		t.Fatal(err)

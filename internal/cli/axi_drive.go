@@ -216,13 +216,14 @@ func newAxiRunCmd() *cobra.Command {
 			"close nothing. Reattaching may add references until the PR body has been\n" +
 			"composed. It cannot be combined with --skip pr.\n\n" +
 			"--pr-title TEXT and --pr-body-file PATH (- reads stdin) supply the PR\n" +
-			"title and description, used verbatim when this run creates the PR: the\n" +
+			"title and description when this run creates or updates the PR: the\n" +
 			"usual appendix (Intent, evidence in the pr.appendix mode, Issues) and the\n" +
 			"attestation follow the description. Either works alone; the other is\n" +
 			"drafted. pr.title_format applies to a supplied title. Under pr.template\n" +
 			"the description must keep the template's top-level # headings. A supplied\n" +
 			"description is owned author text that later runs keep byte for byte. On\n" +
-			"an existing PR neither is applied. Empty, oversized, multi-line titles,\n" +
+			"an existing PR freshly passed flags replace only their named fields;\n" +
+			"inherited rerun values do not request an update. Empty or oversized titles,\n" +
 			"control or bidi characters, and no-mistakes markers are refused before any\n" +
 			"push. They are inherited by rerun and retry, and cannot be combined with\n" +
 			"--skip pr.\n\n" +

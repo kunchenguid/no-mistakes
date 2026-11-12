@@ -127,15 +127,20 @@ type Run struct {
 	// PRTitle and PRBody are the caller-supplied PR title and description
 	// (axi run --pr-title / --pr-body-file), already validated. They are
 	// written only when the run is inserted, so a launch receipt can compare
-	// them without a race, and the PR step publishes them only when this run
-	// creates the PR. Nil means none was supplied.
-	PRTitle   *string
-	PRBody    *string
-	CreatedAt int64
-	UpdatedAt int64
+	// them without a race. Nil means none was supplied. Freshness is persisted
+	// separately so inherited rerun/retry values cannot update an existing PR.
+	PRTitle      *string
+	PRBody       *string
+	PRTitleFresh bool
+	PRBodyFresh  bool
+	// PRTextAppliedAt is non-nil once the PR step has published this run's
+	// fresh supplied text; later PR-step passes in the run treat it as inherited.
+	PRTextAppliedAt *int64
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, pr_title_fresh, pr_body_fresh, pr_text_applied_at, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile`
 
 func (d *DB) runColumns() (string, error) {
 	return d.readProjection("runs", runColumns, runScanTargets(&Run{}, &sql.NullString{})...)
@@ -152,7 +157,7 @@ func runScanTargets(r *Run, storedClosingIssues *sql.NullString) []any {
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		storedClosingIssues, &r.ClosingIssueRefsLockedAt,
-		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
+		&r.PRTitle, &r.PRBody, &r.PRTitleFresh, &r.PRBodyFresh, &r.PRTextAppliedAt, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
 		&r.ReviewerProfile,
 	}
@@ -214,6 +219,10 @@ func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA 
 type RunPRText struct {
 	Title string
 	Body  string
+	// Inherited fields remain available for PR creation, but cannot opt an
+	// existing PR into a metadata rewrite on a plain rerun or retry.
+	InheritedTitle bool
+	InheritedBody  bool
 }
 
 // PRTextDigest binds a caller-supplied PR title and description for strict
@@ -300,13 +309,15 @@ func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA strin
 	r.OmitIntent = omitIntent
 	if prText.Title != "" {
 		r.PRTitle = &prText.Title
+		r.PRTitleFresh = !prText.InheritedTitle
 	}
 	if prText.Body != "" {
 		r.PRBody = &prText.Body
+		r.PRBodyFresh = !prText.InheritedBody
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, pr_title_fresh, pr_body_fresh, transcript_homes, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.PRTitleFresh, r.PRBodyFresh, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -670,6 +681,16 @@ func (d *DB) UpdateRunPRURL(id, prURL string) error {
 		return fmt.Errorf("update run pr url: %w", err)
 	}
 	return nil
+}
+
+// MarkRunPRTextApplied records that the run's fresh supplied PR text has been
+// published. The first timestamp wins.
+func (d *DB) MarkRunPRTextApplied(id string) (int64, error) {
+	ts := now()
+	if _, err := d.sql.Exec(`UPDATE runs SET pr_text_applied_at = COALESCE(pr_text_applied_at, ?), updated_at = ? WHERE id = ?`, ts, ts, id); err != nil {
+		return 0, fmt.Errorf("mark run pr text applied: %w", err)
+	}
+	return ts, nil
 }
 
 // PushBinding records the exact target and commit proven by a successful

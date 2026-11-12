@@ -697,6 +697,9 @@ func TestRetryInheritsTheSuppliedPRText(t *testing.T) {
 	if run.PRTitle == nil || *run.PRTitle != text.Title || run.PRBody == nil || *run.PRBody != text.Body {
 		t.Fatalf("retried run PR text = %v / %v", run.PRTitle, run.PRBody)
 	}
+	if run.PRTitleFresh || run.PRBodyFresh {
+		t.Fatalf("retry marked inherited PR text fresh: %v / %v", run.PRTitleFresh, run.PRBodyFresh)
+	}
 }
 
 func TestRunInfoReportsACarriedStepsWorkFromTheRunItWasCarriedFrom(t *testing.T) {

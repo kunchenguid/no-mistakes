@@ -119,8 +119,8 @@ type PushReceivedParams struct {
 	// generated PR should close.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
 	// PRTitle and PRBody are the caller-supplied PR title and description
-	// (axi run --pr-title / --pr-body-file), used only when the run creates
-	// the PR.
+	// (axi run --pr-title / --pr-body-file), used when the run creates the PR
+	// and, when freshly supplied, to update an existing PR.
 	PRTitle string `json:"pr_title,omitempty"`
 	PRBody  string `json:"pr_body,omitempty"`
 }
@@ -182,12 +182,13 @@ type ProbeOmitIntentResult struct {
 // ProbeRunPRTextParams is the empty request for MethodProbeRunPRText.
 type ProbeRunPRTextParams struct{}
 
-// ProbeRunPRTextResult answers MethodProbeRunPRText, the capability check for
-// pr_title and pr_body. An older daemon would drop those unknown fields and
-// open a PR with drafted text instead; it refuses the unknown method, so a
-// client that reaches OK=true knows the supplied text is honored.
+// ProbeRunPRTextResult answers MethodProbeRunPRText. OK confirms the daemon
+// accepts supplied text on PR creation. ExistingPRUpdates is a separate
+// capability: a create-only daemon already returns OK=true, so a new client
+// must require this field before it starts a run with supplied text.
 type ProbeRunPRTextResult struct {
-	OK bool `json:"ok"`
+	OK                bool `json:"ok"`
+	ExistingPRUpdates bool `json:"existing_pr_updates"`
 }
 
 // ProbeTranscriptHomesResult confirms that launch requests preserve the caller's
@@ -601,9 +602,12 @@ type RunInfo struct {
 	OmitIntent bool `json:"omit_intent,omitempty"`
 	// PRTitleDigest and PRBodyDigest identify the run's caller-supplied PR
 	// title and description (db.PRTextDigest of each alone), so a reattach can
-	// refuse different text without the text riding every run listing.
+	// refuse different text without the text riding every run listing. Freshness
+	// must also match: inherited text cannot honor a fresh update request.
 	PRTitleDigest string `json:"pr_title_digest,omitempty"`
 	PRBodyDigest  string `json:"pr_body_digest,omitempty"`
+	PRTitleFresh  bool   `json:"pr_title_fresh,omitempty"`
+	PRBodyFresh   bool   `json:"pr_body_fresh,omitempty"`
 	// QuotaRouting is the run's quota-aware agent-ordering record (the raw
 	// quotarouting.Record JSON) when the feature is on for this run, empty
 	// otherwise. Local-only observability; see internal/quotarouting.

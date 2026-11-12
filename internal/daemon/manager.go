@@ -1280,7 +1280,8 @@ func normalizeRunPRText(prText db.RunPRText) (db.RunPRText, error) {
 	if err := steps.ValidateRunPRBody(prText.Body); err != nil {
 		return db.RunPRText{}, fmt.Errorf("pr body: %w", err)
 	}
-	return db.RunPRText{Title: title, Body: prText.Body}, nil
+	prText.Title = title
+	return prText, nil
 }
 
 func validateLaunchNonce(nonce string) error {
@@ -1453,15 +1454,19 @@ func inheritRunPRText(run *db.Run, requested db.RunPRText) db.RunPRText {
 	inherited := db.RunPRText{}
 	if run != nil && run.PRTitle != nil {
 		inherited.Title = *run.PRTitle
+		inherited.InheritedTitle = true
 	}
 	if run != nil && run.PRBody != nil {
 		inherited.Body = *run.PRBody
+		inherited.InheritedBody = true
 	}
 	if requested.Title != "" {
 		inherited.Title = requested.Title
+		inherited.InheritedTitle = false
 	}
 	if requested.Body != "" {
 		inherited.Body = requested.Body
+		inherited.InheritedBody = false
 	}
 	return inherited
 }

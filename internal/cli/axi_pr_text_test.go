@@ -110,7 +110,7 @@ func TestPRTextPushOptionsRoundTrip(t *testing.T) {
 func TestConflictingActiveRunPRText(t *testing.T) {
 	t.Parallel()
 	text := db.RunPRText{Title: "Add widget", Body: "Our words.\n"}
-	run := &ipc.RunInfo{ID: "run-text", PRTitleDigest: db.PRTextDigest(text.Title, ""), PRBodyDigest: db.PRTextDigest("", text.Body)}
+	run := &ipc.RunInfo{ID: "run-text", PRTitleDigest: db.PRTextDigest(text.Title, ""), PRBodyDigest: db.PRTextDigest("", text.Body), PRTitleFresh: true, PRBodyFresh: true}
 	for _, requested := range []db.RunPRText{{}, text, {Title: text.Title}, {Body: text.Body}} {
 		if err := conflictingActiveRunPRText(run, requested); err != nil {
 			t.Fatalf("matching %+v should reattach: %v", requested, err)
@@ -124,6 +124,18 @@ func TestConflictingActiveRunPRText(t *testing.T) {
 	if err := conflictingActiveRunPRText(&ipc.RunInfo{ID: "run-plain"}, db.RunPRText{Title: "Add widget"}); err == nil {
 		t.Fatal("PR text reattached to a run without it")
 	}
+	run.PRTitleFresh = false
+	if err := conflictingActiveRunPRText(run, db.RunPRText{Title: text.Title}); err == nil {
+		t.Fatal("fresh title reattached to a run with inherited matching title")
+	}
+	run.PRTitleFresh = true
+	run.PRBodyFresh = false
+	if err := conflictingActiveRunPRText(run, db.RunPRText{Body: text.Body}); err == nil {
+		t.Fatal("fresh description reattached to a run with inherited matching description")
+	}
+	if err := conflictingActiveRunPRText(run, db.RunPRText{}); err != nil {
+		t.Fatalf("run without fresh PR text should still reattach: %v", err)
+	}
 }
 
 func TestAxiRunPRTextRefusesOlderDaemon(t *testing.T) {
@@ -133,6 +145,7 @@ func TestAxiRunPRTextRefusesOlderDaemon(t *testing.T) {
 	}{
 		{name: "probe method unknown"},
 		{name: "probe declined", probe: func() (interface{}, error) { return &ipc.ProbeRunPRTextResult{OK: false}, nil }},
+		{name: "create-only daemon", probe: func() (interface{}, error) { return &ipc.ProbeRunPRTextResult{OK: true}, nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			launched := olderDaemonFixture(t, nil, func(srv *ipc.Server) {
@@ -161,7 +174,7 @@ func TestAxiRunPRTextStrictClaimBindsTheResolvedText(t *testing.T) {
 	claims := make(chan ipc.ClaimLaunchReceiptParams, 1)
 	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
 		srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
-			return &ipc.ProbeRunPRTextResult{OK: true}, nil
+			return &ipc.ProbeRunPRTextResult{OK: true, ExistingPRUpdates: true}, nil
 		})
 		srv.HandleStream(ipc.MethodSubscribe, hangSubscribe)
 		srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
@@ -187,6 +200,28 @@ func TestAxiRunPRTextStrictClaimBindsTheResolvedText(t *testing.T) {
 	}
 	if claim := <-claims; claim.PRTextDigest != db.PRTextDigest("Add widget", body) {
 		t.Fatalf("claim PR text digest = %q", claim.PRTextDigest)
+	}
+}
+
+func TestRerunPRTextRefusesCreateOnlyDaemon(t *testing.T) {
+	launched := olderDaemonFixture(t, func() (interface{}, error) {
+		return &ipc.ProbeOmitIntentResult{OK: true}, nil
+	}, func(srv *ipc.Server) {
+		srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
+			return &ipc.ProbeRunPRTextResult{OK: true}, nil
+		})
+	})
+	var out bytes.Buffer
+	cmd := newRerunCmd()
+	cmd.SetArgs([]string{"--pr-title", "Updated title"})
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "supports supplied PR text on creation only") {
+		t.Fatalf("create-only daemon accepted rerun replacement: %v\n%s", err, out.String())
+	}
+	if len(*launched) != 0 {
+		t.Fatalf("rerun started before capability refusal: %v", *launched)
 	}
 }
 
