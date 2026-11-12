@@ -26,13 +26,13 @@ After refusal, run `no-mistakes axi sync --recover` from the registered working 
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 [`push.external_publisher`](#pushexternal_publisher) is also trusted-only, regardless of `allow_repo_commands`.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -145,6 +145,11 @@ test:
   # Product startup and live-validation runbook, read only from the trusted default branch.
   instructions: |
     Start the app with `make dev`, then drive the checkout flow in a browser.
+  # Extra runbook text for the paths a change touches, also trusted-only.
+  # instructions_file reads a file from the trusted default-branch commit.
+  path_instructions:
+    - path: "apps/web/**"
+      instructions_file: apps/web/TESTING.md
   evidence:
     store_in_repo: true
     attach_media: true
@@ -1288,7 +1293,69 @@ Repository-specific runbook for standing the product up during live validation.
 The Test step injects these instructions into its repair and evidence prompts so each agent can start and drive the real product the way an end user would.
 Like `document.instructions`, this field steers its own gate, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`. A contributor's pushed branch cannot rewrite the runbook that validates that branch.
 
+The runbook is prompt text, so it is flattened before injection exactly like [`document.instructions`](#documentinstructions): merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are removed, and each line's runs of whitespace, including leading indentation, collapse to a single space.
+Line breaks survive, but nested lists, indented code blocks, and YAML or Markdown structure that depends on indentation do not. Write the runbook as flat prose or a one-level list.
+
 An operator can add their own runbook for this repository through a machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-documentation-and-test-guidance) entry; it is rendered as a separate, labeled section before this field's and never replaces it.
+
+### test.instructions_file
+
+The file-backed form of [`test.instructions`](#testinstructions): a repository-relative path whose contents become the runbook.
+
+| | |
+| --- | --- |
+| Type | `string` (literal repository-relative path) |
+| Default | Empty |
+
+```yaml
+test:
+  instructions_file: docs/TESTING.md
+```
+
+The file is read the same way as [`pr.template`](#prtemplate): the daemon reads it as a literal Git tree entry from the pinned trusted default-branch commit, never through the pushed worktree, so a pushed branch that edits the file does not change the runbook that validates it.
+The path must be a literal repository-relative path with no `..`, `.git`, leading `/` or `-`, backslash, colon, or control characters; that is checked when the config is parsed.
+When the Test step runs, the entry must be a regular file (not a symlink or submodule) holding 1 to 16,384 bytes of UTF-8 text without NUL bytes. A missing, oversize, non-UTF-8, or otherwise unreadable file fails the Test step before any agent turn, rather than running without the guidance.
+The contents are flattened like `test.instructions`, and the prompt labels the runbook with the file's path.
+
+`test.instructions` and `test.instructions_file` are mutually exclusive; setting both fails when the config is parsed.
+This field is trusted-only for the same reason as `test.instructions`, regardless of `allow_repo_commands`, and it is repository-only: the global config refuses it.
+
+### test.path_instructions
+
+Extra live-validation guidance, scoped to the paths a change touches. It is the Test step's counterpart of [`review.path_instructions`](#reviewpath_instructions), for repositories where how to stand up and drive the product differs by directory, such as a monorepo.
+
+| | |
+| --- | --- |
+| Type | `object[]` with `path` (`string`) and one of `instructions` (`string`, multiline) or `instructions_file` (`string`) |
+| Default | Empty |
+
+```yaml
+test:
+  instructions: |
+    Use the shared dev database container from `make db`.
+  path_instructions:
+    - path: "apps/web/**"
+      instructions: |
+        Start the web app with `npm run dev -w apps/web` and drive it in a browser.
+    - path: "apps/api/**"
+      instructions_file: apps/api/TESTING.md
+```
+
+Each matched rule is injected into the Test repair and evidence prompts after the repository runbook, labeled with its path and the files it matched, in the same block format as `review.path_instructions`.
+
+- **Matching** uses the same glob syntax and duplicate handling as `review.path_instructions`. It runs against the full changed-file list between the base and the current head, and is not filtered by [`ignore_patterns`](#ignore_patterns), so a pushed branch cannot drop a rule by ignoring its path.
+- **Files.** `instructions_file` is read from the pinned trusted default-branch commit with the same rules as [`test.instructions_file`](#testinstructions_file). Every entry's file is read on every Test run, matched or not, so a broken entry fails the first run instead of the first run that touches its path.
+- **Limits.** The limits are those of `review.path_instructions`: at most 32 entries, and at most 16,384 bytes for the rendered section. Inline entries are checked when the config is parsed; file-backed entries are checked again after their files are read, and an overrun fails the Test step.
+- **Validation.** A missing `path`, an invalid glob, an entry with both or neither of `instructions` and `instructions_file`, an `instructions` value that renders empty, or an invalid `instructions_file` path fails when the config is parsed, on whichever copy is parsed.
+- **Unchanged prompt.** With nothing configured, or nothing matching the change, the Test prompts are exactly what they would be without this setting. The step log names the rules it applied and the rules that matched nothing.
+
+Like `test.instructions`, this field is honored **only from the trusted default-branch copy**, regardless of `allow_repo_commands`, and the global config refuses it.
+
+### Unknown `test` keys
+
+A key under `test:` that no-mistakes does not recognize, such as a misspelled `path_instruction`, is not an error, because failing the trusted copy's parse would stop every run of the repository.
+Instead the Test step log warns about each unknown key, including nested keys under `test.evidence` and `test.path_instructions` entries, and names the copy of `.no-mistakes.yaml` that carries it. The key has no effect.
+Keys merged in through a YAML merge key (`<<: *anchor`) are checked too, with the same precedence the YAML decoder uses: a key written in the mapping overrides a merged one, and the first of several merge sources wins.
 
 ### test.allow_approve_over_failure
 

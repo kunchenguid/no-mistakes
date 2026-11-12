@@ -6,12 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -63,48 +61,20 @@ func configuredPRTemplate(sctx *pipeline.StepContext) string {
 	return sctx.Config.PR.Template
 }
 
-// loadPRTemplate never opens a worktree file. The daemon pins TrustedConfigSHA
-// after a fresh default-branch fetch, including on recovery. Resolve the literal
-// tree entry first (rejecting symlinks/submodules), then size-check and read that
-// immutable blob. Neither pushed paths nor allow_repo_commands choose its bytes.
+// loadPRTemplate never opens a worktree file: readTrustedTreeFile reads the
+// literal tree entry from the pinned TrustedConfigSHA.
 func loadPRTemplate(ctx context.Context, dir, sha, name string) (string, error) {
 	if name == "" {
 		return "", nil
 	}
-	if err := config.ValidatePRTemplatePath(name); err != nil {
+	data, err := readTrustedTreeFile(ctx, dir, sha, "pr.template", name, maxPRTemplateBytes)
+	if err != nil {
 		return "", err
 	}
-	if (len(sha) != 40 && len(sha) != 64) || !isHexObjectID(sha) {
-		return "", fmt.Errorf("pr.template requires a pinned trusted default-branch commit")
-	}
-	entry, err := git.RunRaw(ctx, dir, "ls-tree", "-z", sha, "--", ":(literal)"+name)
-	if err != nil {
-		return "", fmt.Errorf("read trusted pr.template tree: %w", err)
-	}
-	metadata, entryName, ok := strings.Cut(strings.TrimSuffix(string(entry), "\x00"), "\t")
-	fields := strings.Fields(metadata)
-	if !ok || entryName != name || len(fields) != 3 || fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") || !isHexObjectID(fields[2]) {
-		return "", fmt.Errorf("pr.template %q must name a regular file in the pinned trusted tree (no symlinks or submodules)", name)
-	}
-	sizeText, err := git.Run(ctx, dir, "cat-file", "-s", fields[2])
-	if err != nil {
-		return "", fmt.Errorf("read trusted pr.template size: %w", err)
-	}
-	size, err := strconv.Atoi(sizeText)
-	if err != nil || size <= 0 || size > maxPRTemplateBytes {
-		return "", fmt.Errorf("pr.template must contain 1..%d bytes", maxPRTemplateBytes)
-	}
-	data, err := git.RunRaw(ctx, dir, "cat-file", "blob", fields[2])
-	if err != nil {
-		return "", fmt.Errorf("read trusted pr.template blob: %w", err)
-	}
-	if len(data) != size || !utf8.Valid(data) || strings.ContainsRune(string(data), '\x00') || strings.TrimSpace(string(data)) == "" {
-		return "", fmt.Errorf("pr.template must contain nonempty UTF-8 Markdown without NUL bytes")
-	}
-	if hasPRAppendixMarkers(string(data)) || strings.Contains(string(data), pipelineAttestationCommentPrefix) {
+	if hasPRAppendixMarkers(data) || strings.Contains(data, pipelineAttestationCommentPrefix) {
 		return "", fmt.Errorf("pr.template must not contain reserved no-mistakes publication markers")
 	}
-	return string(data), nil
+	return data, nil
 }
 
 func isHexObjectID(s string) bool {
