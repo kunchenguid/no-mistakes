@@ -938,11 +938,6 @@ func (h *Host) readPipelineJobs(ctx context.Context, pipelineID int) ([]byte, er
 	return jobsOut, nil
 }
 
-// pipelineTriggerJobs lists a pipeline's trigger jobs. GitLab 19.2 renamed the
-// route from "bridges" to "trigger_jobs" and deprecated the old name; neither
-// is removed. The current name is read first, and an instance that predates it
-// answers with GitLab's route-not-found response, so the deprecated name is
-// retried once for that instance rather than failing a read it can still serve.
 // glabStdout runs glab and returns stdout alone for the JSON decoder, plus
 // stdout and stderr together for failure classification and messages: glab
 // prints notices on stderr, which must not reach a successful read's decoder.
@@ -954,6 +949,11 @@ func (h *Host) glabStdout(ctx context.Context, args []string) (stdout, combined 
 	return stdout, append(append([]byte{}, stdout...), stderr.Bytes()...), err
 }
 
+// pipelineTriggerJobs lists a pipeline's trigger jobs. GitLab 19.2 renamed the
+// route from "bridges" to "trigger_jobs" and deprecated the old name; neither
+// is removed. The current name is read first, and an instance that predates it
+// answers with GitLab's route-not-found response, so the deprecated name is
+// retried once for that instance rather than failing a read it can still serve.
 func (h *Host) pipelineTriggerJobs(ctx context.Context, pipelineID int) ([]gitlabTriggerJob, error) {
 	out, combined, err := h.glabStdout(ctx, h.pipelineRouteArgs(pipelineID, "trigger_jobs"))
 	if err != nil && gitlabRouteUnavailable(combined) {
