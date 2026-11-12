@@ -119,8 +119,8 @@ type PushReceivedParams struct {
 	// generated PR should close.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
 	// PRTitle and PRBody are the caller-supplied PR title and description
-	// (axi run --pr-title / --pr-body-file), used only when the run creates
-	// the PR.
+	// (axi run --pr-title / --pr-body-file), used when the run creates the PR
+	// and, when freshly supplied, to update an existing PR.
 	PRTitle string `json:"pr_title,omitempty"`
 	PRBody  string `json:"pr_body,omitempty"`
 }
