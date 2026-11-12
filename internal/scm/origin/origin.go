@@ -155,6 +155,17 @@ func isMissingExecutable(err error) bool {
 	return false
 }
 
+// originOutput runs cmd and returns stdout alone for the JSON decoder, plus
+// stdout and stderr together for failure classification and messages: the CLI
+// or a wrapper may print a warning on stderr, which must not reach a
+// successful read's decoder.
+func originOutput(cmd *exec.Cmd) (stdout, combined []byte, err error) {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err = cmd.Output()
+	return stdout, append(append([]byte{}, stdout...), stderr.Bytes()...), err
+}
+
 type originPR struct {
 	Number       json.Number        `json:"number"`
 	URL          string             `json:"url"`
@@ -263,17 +274,17 @@ func (h *Host) listPRs(ctx context.Context, branch, state string) ([]originPR, e
 		"--json", listJSONFields,
 		"--limit", "100",
 	)
-	out, err := h.cmd(ctx, "origin", args...).CombinedOutput()
+	out, combined, err := originOutput(h.cmd(ctx, "origin", args...))
 	if err != nil {
-		return nil, fmt.Errorf("origin pr list: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("origin pr list: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return nil, fmt.Errorf("origin pr list: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("origin pr list: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	var items []originPR
 	if err := json.Unmarshal(trimmed, &items); err != nil {
-		return nil, fmt.Errorf("origin pr list: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("origin pr list: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	if items == nil {
 		return nil, errors.New("origin pr list: expected JSON array")
@@ -301,9 +312,11 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	)
 	cmd := h.cmd(ctx, "origin", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
-	out, err := cmd.CombinedOutput()
+	var createStderr bytes.Buffer
+	cmd.Stderr = &createStderr
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("origin pr create: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("origin pr create: %s: %w", strings.TrimSpace(string(out)+createStderr.String()), err)
 	}
 	// The URL the CLI printed identifies the PR this create made; only without
 	// one fall back to the newest live PR for the branch.
@@ -359,17 +372,17 @@ func (h *Host) viewPR(ctx context.Context, pr *scm.PR) (originPR, error) {
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", viewJSONFields)
-	out, err := h.cmd(ctx, "origin", args...).CombinedOutput()
+	out, combined, err := originOutput(h.cmd(ctx, "origin", args...))
 	if err != nil {
-		return originPR{}, fmt.Errorf("origin pr view: %s: %w", strings.TrimSpace(string(out)), err)
+		return originPR{}, fmt.Errorf("origin pr view: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return originPR{}, fmt.Errorf("origin pr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return originPR{}, fmt.Errorf("origin pr view: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	var view originPR
 	if err := json.Unmarshal(trimmed, &view); err != nil {
-		return originPR{}, fmt.Errorf("origin pr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return originPR{}, fmt.Errorf("origin pr view: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	return view, nil
 }
@@ -446,24 +459,24 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	}
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", checkJSONFields)
-	out, err := h.cmd(ctx, "origin", args...).CombinedOutput()
+	out, combined, err := originOutput(h.cmd(ctx, "origin", args...))
 	if err != nil {
-		msg := strings.ToLower(string(out))
+		msg := strings.ToLower(string(combined))
 		if strings.Contains(msg, "no checks") || strings.Contains(msg, "no ci") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("origin pr checks: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("origin pr checks: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
 		if strings.TrimSpace(string(out)) == "" {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("origin pr checks: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("origin pr checks: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	var raw []originCheck
 	if err := json.Unmarshal(trimmed, &raw); err != nil {
-		return nil, fmt.Errorf("origin pr checks: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("origin pr checks: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, r := range raw {

@@ -407,10 +407,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	// -c/--closed, -M/--merged, -A/--all); passing the unknown flag fails the
 	// whole command. Rely on the open-by-default behavior.
 	args = append(args, "--output", "json")
-	cmd := h.cmd(ctx, "glab", args...)
-	out, err := cmd.CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, args)
 	if err != nil {
-		return nil, fmt.Errorf("glab mr list: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("glab mr list: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
@@ -464,10 +463,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	if h.draft {
 		args = append(args, "--draft")
 	}
-	cmd := h.cmd(ctx, "glab", args...)
-	out, err := cmd.CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, args)
 	if err != nil {
-		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	url := extractMRURL(out)
 	pr := &scm.PR{URL: url}
@@ -608,14 +606,13 @@ func (h *Host) viewMRInRepository(ctx context.Context, id, repo string) (mrPaylo
 	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
-	cmd := h.cmd(ctx, "glab", args...)
-	out, err := cmd.CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, args)
 	if err != nil {
-		return mrPayload{}, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
+		return mrPayload{}, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	mr, ok := parseMRPayload(out)
 	if !ok {
-		return mrPayload{}, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return mrPayload{}, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	return mr, nil
 }
@@ -878,10 +875,9 @@ func (h *Host) mergeResultIncludes(ctx context.Context, mergedSHA, revision stri
 	if !isHexCommitSHA(mergedSHA) {
 		return false, fmt.Errorf("read GitLab merge-result commit %s: not a commit id", mergedSHA)
 	}
-	cmd := h.cmd(ctx, "glab", "api", fmt.Sprintf("projects/%s/repository/commits/%s", encodeProjectPath(h.projectPath), mergedSHA))
-	out, err := cmd.CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, []string{"api", fmt.Sprintf("projects/%s/repository/commits/%s", encodeProjectPath(h.projectPath), mergedSHA)})
 	if err != nil {
-		return false, fmt.Errorf("read GitLab merge-result commit %s: %s: %w", mergedSHA, strings.TrimSpace(string(out)), err)
+		return false, fmt.Errorf("read GitLab merge-result commit %s: %s: %w", mergedSHA, strings.TrimSpace(string(combined)), err)
 	}
 	var commit struct {
 		ID        string   `json:"id"`
@@ -889,7 +885,7 @@ func (h *Host) mergeResultIncludes(ctx context.Context, mergedSHA, revision stri
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 || json.Unmarshal(trimmed, &commit) != nil {
-		return false, fmt.Errorf("read GitLab merge-result commit %s: invalid JSON output: %s", mergedSHA, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("read GitLab merge-result commit %s: invalid JSON output: %s", mergedSHA, strings.TrimSpace(string(combined)))
 	}
 	if !sameCommitSHA(commit.ID, mergedSHA) {
 		return false, fmt.Errorf("read GitLab merge-result commit %s: response identified commit %s", mergedSHA, strings.TrimSpace(commit.ID))

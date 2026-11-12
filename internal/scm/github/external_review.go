@@ -85,9 +85,9 @@ func (h *Host) getExternalReview(ctx context.Context, pr *scm.PR, reviewer strin
 	args := []string{"api", "--hostname", h.host, "--method", "GET", endpoint,
 		"-f", "app_id=" + strconv.FormatInt(appID, 10), "-f", "filter=latest",
 		"-f", "per_page=100", "--paginate", "--slurp"}
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 	if err != nil {
-		return result, fmt.Errorf("read external review check runs: %s: %w", strings.TrimSpace(string(out)), err)
+		return result, fmt.Errorf("read external review check runs: %s: %w", detail, err)
 	}
 	var pages []struct {
 		Total *int `json:"total_count"`
@@ -172,9 +172,9 @@ func (h *Host) getExternalReview(ctx context.Context, pr *scm.PR, reviewer strin
 	case found:
 		result.State = reviewCompletionComplete
 		if !strings.EqualFold(h.host, "github.com") {
-			authorOut, err := h.cmd(ctx, "gh", "api", "--hostname", h.host, "users/"+url.PathEscape(appSlug+"[bot]")).CombinedOutput()
+			authorOut, detail, err := stdoutOnly(h.cmd(ctx, "gh", "api", "--hostname", h.host, "users/"+url.PathEscape(appSlug+"[bot]")))
 			if err != nil {
-				return result, fmt.Errorf("resolve instance CodeRabbit user: %s: %w", strings.TrimSpace(string(authorOut)), err)
+				return result, fmt.Errorf("resolve instance CodeRabbit user: %s: %w", detail, err)
 			}
 			var author struct {
 				ID int64 `json:"id"`

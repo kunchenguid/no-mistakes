@@ -251,9 +251,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append([]string{"pr", "list", "--repo", h.repoSlug}, account...)
 		args = append(args, "--json=number,state,url,head,base")
 	}
-	out, err := h.cmd(ctx, "tea", args...).CombinedOutput()
+	out, combined, err := teaOutput(h.cmd(ctx, "tea", args...))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(combined)), err)
 	}
 	if strings.TrimSpace(string(out)) == "" {
 		return nil, nil
@@ -265,7 +265,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		// delimiter) - it must surface as an error rather than be read as
 		// absence, which would otherwise cause the PR step to attempt a
 		// duplicate create or report a misleading creation failure.
-		return nil, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(combined)))
 	}
 	var items []giteaPRListItem
 	if gen == tea1 {
@@ -278,7 +278,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		err = json.Unmarshal(trimmed, &items)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(combined)))
 	}
 	base = strings.TrimSpace(base)
 	for _, item := range items {
@@ -309,9 +309,12 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--title", content.Title,
 		bodyFlag, content.Body,
 	)
-	out, err := h.cmd(ctx, "tea", args...).CombinedOutput()
+	createCmd := h.cmd(ctx, "tea", args...)
+	var createStderr bytes.Buffer
+	createCmd.Stderr = &createStderr
+	out, err := createCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(out)+createStderr.String()), err)
 	}
 	// tea 0.x's pulls create has no --output json flag, so the robust path is
 	// to re-list the PR by head branch rather than scrape the human-readable
@@ -434,13 +437,13 @@ func (h *Host) viewPR(ctx context.Context, number string) (giteaPRView, error) {
 		args = append([]string{"pr", "view", strings.TrimSpace(number), "--repo", h.repoSlug}, account...)
 		args = append(args, "--json=number,state,url,head,base,head_sha,merged")
 	}
-	out, err := h.cmd(ctx, "tea", args...).CombinedOutput()
+	out, combined, err := teaOutput(h.cmd(ctx, "tea", args...))
 	if err != nil {
-		return giteaPRView{}, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(out)), err)
+		return giteaPRView{}, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return giteaPRView{}, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(out)))
+		return giteaPRView{}, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(combined)))
 	}
 	var view giteaPRView
 	if gen == tea1 {
@@ -451,7 +454,7 @@ func (h *Host) viewPR(ctx context.Context, number string) (giteaPRView, error) {
 		err = json.Unmarshal(trimmed, &view)
 	}
 	if err != nil {
-		return giteaPRView{}, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(out)))
+		return giteaPRView{}, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(combined)))
 	}
 	return view, nil
 }
@@ -536,9 +539,9 @@ func (h *Host) listRuns(ctx context.Context) ([]giteaRunSummary, error) {
 	}
 	endpoint := fmt.Sprintf("/repos/%s/%s/actions/runs?limit=50", owner, repo)
 	args := append([]string{"api"}, account...)
-	out, err := h.cmd(ctx, "tea", append(args, endpoint)...).CombinedOutput()
+	out, combined, err := teaOutput(h.cmd(ctx, "tea", append(args, endpoint)...))
 	if err != nil {
-		return nil, fmt.Errorf("tea api actions runs: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("tea api actions runs: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
@@ -548,7 +551,7 @@ func (h *Host) listRuns(ctx context.Context) ([]giteaRunSummary, error) {
 		WorkflowRuns []giteaRunSummary `json:"workflow_runs"`
 	}
 	if err := json.Unmarshal(trimmed, &resp); err != nil {
-		return nil, fmt.Errorf("tea api actions runs: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("tea api actions runs: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	return resp.WorkflowRuns, nil
 }
@@ -586,9 +589,9 @@ func (h *Host) runJobs(ctx context.Context, runID string) ([]giteaJob, error) {
 	}
 	endpoint := fmt.Sprintf("/repos/%s/%s/actions/runs/%s/jobs", owner, repo, runID)
 	args := append([]string{"api"}, account...)
-	out, err := h.cmd(ctx, "tea", append(args, endpoint)...).CombinedOutput()
+	out, combined, err := teaOutput(h.cmd(ctx, "tea", append(args, endpoint)...))
 	if err != nil {
-		return nil, fmt.Errorf("tea api actions runs jobs: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("tea api actions runs jobs: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
@@ -598,7 +601,7 @@ func (h *Host) runJobs(ctx context.Context, runID string) ([]giteaJob, error) {
 		Jobs []giteaJob `json:"jobs"`
 	}
 	if err := json.Unmarshal(trimmed, &resp); err != nil {
-		return nil, fmt.Errorf("tea api actions runs jobs: invalid JSON output: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("tea api actions runs jobs: invalid JSON output: %s", strings.TrimSpace(string(combined)))
 	}
 	return resp.Jobs, nil
 }
@@ -893,6 +896,16 @@ func splitOwnerRepo(slug string) (owner, repo string, ok bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+// teaOutput runs cmd and returns stdout alone for the JSON decoder, plus
+// stdout and stderr together for failure messages: tea or a wrapper may print
+// a warning on stderr, which must not reach a successful read's decoder.
+func teaOutput(cmd *exec.Cmd) (stdout, combined []byte, err error) {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err = cmd.Output()
+	return stdout, append(append([]byte{}, stdout...), stderr.Bytes()...), err
 }
 
 // bytesTrimToJSON skips any banner text before the first '{' or '[', mirroring

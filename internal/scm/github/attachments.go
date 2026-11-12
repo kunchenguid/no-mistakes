@@ -446,9 +446,9 @@ func (h *Host) userAssetRepo(ctx context.Context) (int64, string, error) {
 	}
 	args = append(args, "graphql", "-f", "query="+userAssetRepoQuery,
 		"-F", "owner="+parts[0], "-F", "name="+parts[1])
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 	if err != nil {
-		return 0, "", fmt.Errorf("gh api repository for user-attachments: %s: %w", strings.TrimSpace(string(out)), err)
+		return 0, "", fmt.Errorf("gh api repository for user-attachments: %s: %w", detail, err)
 	}
 	var response struct {
 		Data struct {

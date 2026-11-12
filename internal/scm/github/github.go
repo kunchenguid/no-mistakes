@@ -949,6 +949,9 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 	totalCount := -1
 	runIDs := make(map[int64]struct{})
 	for pageIndex, page := range pages {
+		if page.WorkflowRuns == nil {
+			return nil, fmt.Errorf("workflow run page %d has no workflow_runs collection", pageIndex+1)
+		}
 		if page.TotalCount == nil || *page.TotalCount < 0 {
 			return nil, fmt.Errorf("workflow run page %d has no valid total_count", pageIndex+1)
 		}
@@ -958,7 +961,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			return nil, fmt.Errorf("workflow run page %d total_count is %d, want %d", pageIndex+1, *page.TotalCount, totalCount)
 		}
 		for _, run := range page.WorkflowRuns {
-			if run.ID == 0 {
+			if run.ID <= 0 {
 				return nil, fmt.Errorf("workflow run page %d contains a run without an id", pageIndex+1)
 			}
 			if _, exists := runIDs[run.ID]; exists {
@@ -1607,9 +1610,9 @@ func (h *Host) getReviewComments(ctx context.Context, pr *scm.PR, verifiedBotUse
 		if cursor != "" {
 			args = append(args, "-F", "cursor="+cursor)
 		}
-		out, commandErr := h.cmd(ctx, "gh", args...).CombinedOutput()
+		out, detail, commandErr := stdoutOnly(h.cmd(ctx, "gh", args...))
 		if commandErr != nil {
-			return nil, fmt.Errorf("gh api PR review comments: %s: %w", strings.TrimSpace(string(out)), commandErr)
+			return nil, fmt.Errorf("gh api PR review comments: %s: %w", detail, commandErr)
 		}
 		var response struct {
 			Data struct {
@@ -1688,9 +1691,9 @@ func (h *Host) getReviewThreadComments(ctx context.Context, threadID, cursor str
 		args = append(args, "--hostname", h.host)
 	}
 	args = append(args, "graphql", "-f", "query="+reviewThreadCommentsQuery, "-F", "id="+threadID, "-F", "cursor="+cursor)
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 	if err != nil {
-		return reviewCommentConnection{}, fmt.Errorf("gh api PR review comments for a thread: %s: %w", strings.TrimSpace(string(out)), err)
+		return reviewCommentConnection{}, fmt.Errorf("gh api PR review comments for a thread: %s: %w", detail, err)
 	}
 	var response struct {
 		Data struct {

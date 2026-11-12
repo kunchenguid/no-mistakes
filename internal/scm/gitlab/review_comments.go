@@ -121,9 +121,9 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 	if h.host != "" {
 		args = append(args, "--hostname", h.host)
 	}
-	out, err := h.cmd(ctx, "glab", args...).CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, args)
 	if err != nil {
-		return nil, fmt.Errorf("glab api MR discussions: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("glab api MR discussions: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	discussions, err := decodeGitlabDiscussions(out)
 	if err != nil {
@@ -237,9 +237,9 @@ func (h *Host) codeRabbitReviewCheck(ctx context.Context, pr *scm.PR) (scm.Check
 	if h.host != "" {
 		args = append(args, "--hostname", h.host)
 	}
-	out, err := h.cmd(ctx, "glab", args...).CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, args)
 	if err != nil {
-		return scm.Check{}, false, fmt.Errorf("read GitLab merge request versions: %s: %w", strings.TrimSpace(string(out)), err)
+		return scm.Check{}, false, fmt.Errorf("read GitLab merge request versions: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	versions, err := decodeGitlabMRVersions(out)
 	if err != nil {
@@ -258,9 +258,9 @@ func (h *Host) codeRabbitReviewCheck(ctx context.Context, pr *scm.PR) (scm.Check
 	if h.host != "" {
 		discussionArgs = append(discussionArgs, "--hostname", h.host)
 	}
-	discussionsOut, err := h.cmd(ctx, "glab", discussionArgs...).CombinedOutput()
+	discussionsOut, discussionsCombined, err := h.glabStdout(ctx, discussionArgs)
 	if err != nil {
-		return scm.Check{}, false, fmt.Errorf("read GitLab discussions for required review: %s: %w", strings.TrimSpace(string(discussionsOut)), err)
+		return scm.Check{}, false, fmt.Errorf("read GitLab discussions for required review: %s: %w", strings.TrimSpace(string(discussionsCombined)), err)
 	}
 	discussions, err := decodeGitlabDiscussions(discussionsOut)
 	if err != nil {
