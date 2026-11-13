@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
@@ -223,11 +224,7 @@ func pipelineEvidenceRoot(p *paths.Paths, cfg *config.Config, run *db.Run) strin
 // A directory whose run row is still pending or running is never touched, at
 // any step - the same active-run guard cleanupOrphanWorktrees uses, for the
 // same reason: only a settled run's leftovers are safe to remove.
-func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Time, additionalRoots ...string) {
-	reapEvidenceWithCleanup(d, root, policy, now, nil, additionalRoots...)
-}
-
-func reapEvidenceWithCleanup(d *db.DB, root string, policy evidenceReapPolicy, now time.Time, beforeRemove func(repoID, runID, path string), additionalRoots ...string) {
+func reapEvidence(d *db.DB, p *paths.Paths, root string, policy evidenceReapPolicy, now time.Time, additionalRoots ...string) {
 	type candidate struct {
 		path    string
 		modTime time.Time
@@ -293,30 +290,31 @@ func reapEvidenceWithCleanup(d *db.DB, root string, policy evidenceReapPolicy, n
 		return candidates[i].modTime.Before(candidates[j].modTime)
 	})
 
-	removed := 0
+	var toRemove []candidate
 	survivors := make([]candidate, 0, len(candidates))
 	for _, c := range candidates {
 		expired := policy.Retention > 0 && now.Sub(c.modTime) > policy.Retention
 		if c.isEmpty || expired {
-			if beforeRemove != nil {
-				beforeRemove(c.repoID, c.runID, c.path)
-			}
-			if removeEvidenceDir(c.path, c.runID) {
-				removed++
-			}
+			toRemove = append(toRemove, c)
 			continue
 		}
 		survivors = append(survivors, c)
 	}
 
 	if policy.MaxRuns > 0 && len(survivors) > policy.MaxRuns {
-		for _, c := range survivors[:len(survivors)-policy.MaxRuns] {
-			if beforeRemove != nil {
-				beforeRemove(c.repoID, c.runID, c.path)
-			}
-			if removeEvidenceDir(c.path, c.runID) {
-				removed++
-			}
+		toRemove = append(toRemove, survivors[:len(survivors)-policy.MaxRuns]...)
+	}
+
+	sweepable := make([]procreap.Worktree, 0, len(toRemove))
+	for _, c := range toRemove {
+		sweepable = append(sweepable, procreap.Worktree{Dir: c.path, RepoID: c.repoID, RunID: c.runID})
+	}
+	sweepRunWorktrees(p.WorktreesDir(), sweepable, "run_cleanup")
+
+	removed := 0
+	for _, c := range toRemove {
+		if removeEvidenceDir(c.path, c.runID) {
+			removed++
 		}
 	}
 
@@ -339,15 +337,11 @@ func removeEvidenceDir(path, runID string) bool {
 // moving files would not repair them, and a wholesale removal could delete
 // artifacts a run started before the upgrade is still writing. Reaping by the
 // same rules, with the same active-run guard, is bounded and surprises nobody.
-func reapLegacyEvidence(d *db.DB, current string, policy evidenceReapPolicy, now time.Time, additionalRoots ...string) {
-	reapLegacyEvidenceWithCleanup(d, current, policy, now, nil, additionalRoots...)
-}
-
-func reapLegacyEvidenceWithCleanup(d *db.DB, current string, policy evidenceReapPolicy, now time.Time, beforeRemove func(repoID, runID, path string), additionalRoots ...string) {
+func reapLegacyEvidence(d *db.DB, p *paths.Paths, current string, policy evidenceReapPolicy, now time.Time, additionalRoots ...string) {
 	legacy := filepath.Join(os.TempDir(), legacyEvidenceDirName)
 	roots := append([]string{current}, additionalRoots...)
 	roots = append(roots, legacy)
-	reapEvidenceWithCleanup(d, roots[0], policy, now, beforeRemove, roots[1:]...)
+	reapEvidence(d, p, roots[0], policy, now, roots[1:]...)
 	// Remove the root itself once it is empty; os.Remove fails harmlessly while
 	// anything remains.
 	if !worktrees.Contains(current, legacy) {

@@ -21,9 +21,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
-	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 func TestProtectedPathRefusalRetainsWorktreeButReapsProcessesAndEvidence(t *testing.T) {
@@ -372,18 +370,57 @@ func TestStartupEvidenceReapSweepsProcessesBeforeRemoval(t *testing.T) {
 	evidenceDir := filepath.Join(f.root, runID)
 	pid := startOrphanInWorktree(t, evidenceDir)
 
-	reapEvidenceWithCleanup(f.db, f.root, evidenceReapPolicy{Retention: time.Hour}, time.Now(), func(repoID, gotRunID, path string) {
-		if repoID != f.repo.ID || gotRunID != runID || worktrees.Canonical(path) != worktrees.Canonical(evidenceDir) {
-			t.Errorf("cleanup target = (%q, %q, %q), want (%q, %q, %q)", repoID, gotRunID, path, f.repo.ID, runID, evidenceDir)
-		}
-		procreap.SweepRunWorktree(f.p.WorktreesDir(), repoID, gotRunID, path, "run_cleanup")
-	})
+	reapEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: time.Hour}, time.Now())
 
 	if !pidGoneWithin(pid, 10*time.Second) {
 		t.Fatalf("orphan %d in expired startup evidence survived reaping", pid)
 	}
 	if _, err := os.Stat(evidenceDir); !os.IsNotExist(err) {
 		t.Fatalf("expired evidence directory still exists: %v", err)
+	}
+}
+
+func TestRunCleanupReapsExpiredEvidenceProcessesFromOtherRuns(t *testing.T) {
+	f := newEvidenceFixture(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	currentRoot := f.root
+	f.root = t.TempDir()
+	expiredID := f.seed("expired", types.RunCompleted, 48*time.Hour, map[string]string{"artifact": "evidence"})
+	expiredDir := filepath.Join(f.root, expiredID)
+	if err := f.db.SetRunEvidenceDir(expiredID, expiredDir); err != nil {
+		t.Fatal(err)
+	}
+	expiredPID := startOrphanInWorktree(t, expiredDir)
+	f.root = currentRoot
+	currentID := f.seed("current", types.RunCompleted, 0, map[string]string{"artifact": "evidence"})
+	currentPID := startOrphanInWorktree(t, filepath.Join(f.root, currentID))
+	retainedID := f.seed("retained", types.RunCompleted, time.Hour, map[string]string{"artifact": "evidence"})
+	retainedPID := startOrphanInWorktree(t, filepath.Join(f.root, retainedID))
+	activeID := f.seed("active", types.RunRunning, 48*time.Hour, map[string]string{"artifact": "evidence"})
+	activePID := startOrphanInWorktree(t, filepath.Join(f.root, activeID))
+
+	m := NewRunManager(f.db, f.p, nil)
+	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
+	cfg.Test.Evidence.Retention = 24 * time.Hour
+	m.cleanupRunEvidence(cfg, currentID)
+
+	for _, pid := range []int{expiredPID, currentPID} {
+		if !pidGoneWithin(pid, 10*time.Second) {
+			t.Errorf("orphan %d survived run cleanup", pid)
+		}
+	}
+	for _, pid := range []int{retainedPID, activePID} {
+		if !processIsAlive(pid) {
+			t.Errorf("cleanup killed process %d in retained or active evidence", pid)
+		}
+	}
+	if _, err := os.Stat(expiredDir); !os.IsNotExist(err) {
+		t.Errorf("expired evidence survived cleanup: %v", err)
+	}
+	for _, id := range []string{currentID, retainedID, activeID} {
+		if !f.exists(id) {
+			t.Errorf("cleanup removed evidence that should be retained: %s", id)
+		}
 	}
 }
 
