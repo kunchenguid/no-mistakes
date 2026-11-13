@@ -234,7 +234,8 @@ func TestSuppliedPRTextExistingPRJourney(t *testing.T) {
 		if failed == nil {
 			continue
 		}
-		if st, _ := findStep(failed.Steps, types.StepPR); failed.Status.Terminal() || (st.Status != types.StepStatusPending && st.Status != types.StepStatusRunning) {
+		// Step rows are inserted one by one, so an early poll can miss the PR row.
+		if st, ok := findStep(failed.Steps, types.StepPR); failed.Status.Terminal() || (ok && st.Status != types.StepStatusPending && st.Status != types.StepStatusRunning) {
 			break
 		}
 	}
