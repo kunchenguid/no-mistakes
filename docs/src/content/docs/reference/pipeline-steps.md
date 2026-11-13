@@ -295,6 +295,7 @@ Pushes the validated branch to the configured push target.
 - Fails closed when the remote safety check cannot verify whether the push would discard existing remote work
 - Uses `--force-with-lease=<ref>:<sha>` with an explicit SHA anchor for allowed existing-branch rewrites
 - Pushes the exact verified commit SHA instead of mutable worktree `HEAD`
+- When the push fails, the step error carries git's stderr and any stdout, so output a local `pre-push` hook prints on stdout (as lefthook and prek do) is visible
 - Treats the branch as already pushed when the remote already points at that verified commit
 - Uses regular push for new branches, and for an append-only update to an existing branch - one whose remote head is already an ancestor of the head being pushed, so nothing can be discarded and the remote itself, rather than a lease anchor, enforces the no-rewrite property an open PR's head depends on. This holds under either [`rebase.strategy`](/no-mistakes/reference/repo-config/#rebasestrategy), since it is a property of the update rather than of how the update was produced
 - When the local gate mirror exists, applies the [private mirror reconciliation contract](/no-mistakes/concepts/gate-model/#private-mirror-reconciliation), including Decision 41-A for the run's exact submitted or last pushed head, while preserving newer descendants through shared worktree refs; skips a missing mirror
