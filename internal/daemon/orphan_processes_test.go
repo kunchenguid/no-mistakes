@@ -21,7 +21,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 func TestProtectedPathRefusalRetainsWorktreeButReapsProcessesAndEvidence(t *testing.T) {
@@ -343,6 +345,45 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
 	}
 	if !processIsAlive(otherPID) {
 		t.Fatalf("run cleanup reached another run's worktree and killed %d", otherPID)
+	}
+}
+
+// TestSweepRunEvidenceProcessesReapsLeakedChildAtRunCleanup ensures evidence
+// directories receive the same scoped cleanup as run worktrees.
+func TestSweepRunEvidenceProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	m := NewRunManager(nil, p, nil)
+	evidence := filepath.Join(t.TempDir(), "evidence", "run1")
+	pid := startOrphanInWorktree(t, evidence)
+
+	m.sweepRunEvidenceProcesses("repo1", "run1", evidence)
+
+	if !pidGoneWithin(pid, 10*time.Second) {
+		t.Fatalf("orphan %d in the finished run's evidence directory survived cleanup", pid)
+	}
+}
+
+func TestStartupEvidenceReapSweepsProcessesBeforeRemoval(t *testing.T) {
+	f := newEvidenceFixture(t)
+	runID := f.seed("evidence-orphan", types.RunCompleted, 48*time.Hour, map[string]string{"artifact": "keep until reap"})
+	evidenceDir := filepath.Join(f.root, runID)
+	pid := startOrphanInWorktree(t, evidenceDir)
+
+	reapEvidenceWithCleanup(f.db, f.root, evidenceReapPolicy{Retention: time.Hour}, time.Now(), func(repoID, gotRunID, path string) {
+		if repoID != f.repo.ID || gotRunID != runID || worktrees.Canonical(path) != worktrees.Canonical(evidenceDir) {
+			t.Errorf("cleanup target = (%q, %q, %q), want (%q, %q, %q)", repoID, gotRunID, path, f.repo.ID, runID, evidenceDir)
+		}
+		procreap.SweepRunWorktree(f.p.WorktreesDir(), repoID, gotRunID, path, "run_cleanup")
+	})
+
+	if !pidGoneWithin(pid, 10*time.Second) {
+		t.Fatalf("orphan %d in expired startup evidence survived reaping", pid)
+	}
+	if _, err := os.Stat(evidenceDir); !os.IsNotExist(err) {
+		t.Fatalf("expired evidence directory still exists: %v", err)
 	}
 }
 
