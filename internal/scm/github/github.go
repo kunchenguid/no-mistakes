@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -595,7 +596,7 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 // carries its check suite's app slug: that is the structural identity the CI
 // step uses to tell a third-party review bot's check (scm.ReviewBots) from the
 // repository's own Actions jobs, without matching check names.
-const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{databaseId name status conclusion completedAt startedAt detailsUrl checkSuite{app{slug databaseId}}} ... on StatusContext{id context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
+const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{databaseId name status conclusion completedAt startedAt detailsUrl checkSuite{app{slug databaseId}}} ... on StatusContext{id context state targetUrl description}} pageInfo{hasNextPage endCursor}}}}}}}`
 
 const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{id isResolved comments(first:100){` + reviewCommentsSelection + `}} pageInfo{hasNextPage endCursor}}}}}`
 
@@ -668,9 +669,10 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 											DatabaseID int64  `json:"databaseId"`
 										} `json:"app"`
 									} `json:"checkSuite"`
-									Context   string `json:"context"`
-									State     string `json:"state"`
-									TargetURL string `json:"targetUrl"`
+									Context     string `json:"context"`
+									State       string `json:"state"`
+									TargetURL   string `json:"targetUrl"`
+									Description string `json:"description"`
 								} `json:"nodes"`
 								PageInfo struct {
 									HasNextPage bool   `json:"hasNextPage"`
@@ -731,6 +733,11 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 				check.State = strings.ToUpper(strings.TrimSpace(node.State))
 				check.Bucket = normalizeCheckBucket("", node.State)
 				check.Link = strings.TrimSpace(node.TargetURL)
+				// A description naming a job-level failure class means the
+				// failure reached a job, so the build-level shape below is
+				// not this service failing about itself.
+				check.ProviderAttributedFailure = statusContextAttributedToProvider(node.State, node.TargetURL) &&
+					!providerAttributedFailureDescription(node.Description)
 			default:
 				return nil, fmt.Errorf("head commit check discovery returned unsupported context type %q", node.Type)
 			}
@@ -1145,7 +1152,57 @@ func (h *Host) actionsRerunTarget(link string) (runID, jobID string, ok bool) {
 	}
 }
 
-// PreRunFailures reports which of the given failed checks GitHub Actions failed
+// statusContextAttributedToProvider reports whether a commit status is a
+// failure the external CI service published about ITSELF rather than about a job
+// it ran.
+//
+// GitHub shows a commit status either because an Actions job concluded, or
+// because an external CI service posted one through the commit-status API (for
+// example Buildkite, which publishes one per pipeline). An external service that
+// could not obtain the repository before any of the repository's commands ran
+// reports the same `failure` state a genuine job failure does, and the two are
+// told apart only by the status's own structure:
+//
+//   - target_url is the rerun affordance. A job verdict links to a page that
+//     offers "Run again"; a build that never got far enough to run anything
+//     links to its build overview, with nothing to re-run. So any target URL
+//     means a job-level verdict, and is never classified here.
+//   - a link that names a job fragment (#<uuid>) identifies one particular job,
+//     so the failure reached job granularity.
+//   - the description of a job-level Buildkite failure names the failure class
+//     (timed_out, canceled, expired, skipped, broken, not run); a build-level
+//     death carries the CLI's own error text instead.
+//
+// This is a QUESTION, not a verdict: it only marks a check for the log evidence
+// in RepositoryAcquisitions to settle, and an unmarked check is never
+// reclassified from log text - which is what keeps a genuine test or lint
+// failure, reported by the provider as a job verdict, from ever being masked.
+func statusContextAttributedToProvider(state, targetURL string) bool {
+	if !strings.EqualFold(strings.TrimSpace(state), "failure") {
+		return false
+	}
+	if strings.TrimSpace(targetURL) != "" {
+		return false
+	}
+	return true
+}
+
+// ciServiceBuildURL matches a CI service's build-scoped page: the shape an
+// external service links when its own build failed outside any job, rather than
+// a page for one job. A job link carries a "#<uuid>" fragment.
+var ciServiceBuildURL = regexp.MustCompile(`^https?://(?:[a-z0-9-]+\.)*buildkite\.com/[^/]+/[^/]+/builds/[0-9]+(?:#[0-9a-fA-F-]+)?/?$`)
+
+// jobLevelFailureDescription matches the description Buildkite gives a failure
+// that reached a specific job - its own failure class - rather than the CLI's
+// error text for a build that died before any job could run.
+var jobLevelFailureDescription = regexp.MustCompile(`(?i)\b(timed[ _-]?out|canceled|cancelled|expired|skipped|broken|not run)\b`)
+
+// providerAttributedFailureDescription reports whether desc is a failure
+// description naming a job-level failure class rather than a build-level error.
+func providerAttributedFailureDescription(desc string) bool {
+	return jobLevelFailureDescription.MatchString(desc)
+}
+
 // during the job's setup phase - before any repository step ran. Actions
 // resolves and downloads every action a job uses inside "Set up job", so an
 // action-download outage ("Failed to resolve action download info", HTTP 503)
@@ -1406,6 +1463,138 @@ type githubRun struct {
 	DisplayTitle string `json:"displayTitle"`
 	WorkflowName string `json:"workflowName"`
 }
+
+// RepositoryAcquisitions reads each check's own log and reports whether it shows
+// the CI service failing to acquire the repository before any repository command
+// ran. It is consulted only for checks GetChecks marked
+// ProviderAttributedFailure; every other check - all of them genuine job
+// verdicts - is answered RepositoryAcquisitionNone without a log read, so log
+// text can never reclassify a real failure.
+//
+// A log that could not be retrieved, came back empty, or was cut short is
+// ambiguous rather than infrastructure: an unreadable log is not evidence that
+// the code is fine, and the caller spends a fix round on an ambiguous one.
+func (h *Host) RepositoryAcquisitions(ctx context.Context, pr *scm.PR, branch, headSHA string, checks []scm.Check) ([]scm.RepositoryAcquisition, error) {
+	result := make([]scm.RepositoryAcquisition, len(checks))
+	var targets []scm.CheckTarget
+	var surveyed []int
+	for i, check := range checks {
+		result[i] = scm.RepositoryAcquisitionNone
+		if !check.ProviderAttributedFailure {
+			continue
+		}
+		surveyed = append(surveyed, i)
+		targets = append(targets, scm.CheckTarget{Name: check.Name, ProviderID: check.ProviderID})
+	}
+	if len(targets) == 0 {
+		return result, nil
+	}
+	logs, err := h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	if err != nil {
+		return nil, err
+	}
+	if len(logs) != len(targets) {
+		return nil, fmt.Errorf("fetch failed check logs: %d results for %d checks", len(logs), len(targets))
+	}
+	for j, i := range surveyed {
+		check := checks[i]
+		output := logs[j].Output
+		switch {
+		case logs[j].Err != nil || strings.TrimSpace(output) == "":
+			// A log that could not be retrieved, or came back empty, says
+			// nothing either way: ambiguous, never "genuine".
+			result[i] = scm.RepositoryAcquisitionAmbiguous
+		case ciServiceBuildURL.MatchString(strings.TrimSpace(check.Link)):
+			result[i] = classifyCIProviderLog(output)
+		default:
+			// A status whose link is not a build page of a service this
+			// version understands: its log is evidence about a job we cannot
+			// place, so it is not treated as a build-level failure.
+			result[i] = scm.RepositoryAcquisitionNone
+		}
+	}
+	return result, nil
+}
+
+// acquisitionMarkers are the CI services' own reports that they could not obtain
+// the repository. Each is matched case-insensitively on one log line.
+//
+// They deliberately exclude anything a repository's own test output could
+// contain successfully: "error: cloning repository" in a test fixture, a
+// simulated git failure the suite asserts on, and the like are matches, but they
+// only count once the provider has already failed the check itself and no job
+// verdict exists, and the marker is the shape the service's agent emits.
+var acquisitionMarkers = []string{
+	"permission denied (publickey)",
+	"could not read from remote repository",
+	"error: cloning git repository",
+	"error: fetching commit",
+	"warning: checkout failed!",
+	"fatal: could not fetch",
+}
+
+// classifyCIProviderLog reads a build-level log for a repository-acquisition
+// failure, in two directions at once. A complete log that carries a marker is
+// infrastructure. A log whose beginning was cut off is ambiguous unless the
+// marker survived the cut - and it is ambiguous even when the tail is clean,
+// because a checkout failure is the FIRST thing a build emits and the reader
+// cannot see it.
+func classifyCIProviderLog(output string) scm.RepositoryAcquisition {
+	if strings.TrimSpace(output) == "" {
+		// An empty log says nothing either way: ambiguous, never "genuine".
+		return scm.RepositoryAcquisitionAmbiguous
+	}
+	if acquisitionFailureMarker(output) {
+		return scm.RepositoryAcquisitionInfrastructure
+	}
+	if logHeadTruncated(output) {
+		return scm.RepositoryAcquisitionAmbiguous
+	}
+	return scm.RepositoryAcquisitionNone
+}
+
+// logTruncationMarker is the marker a transport writes where it cut a log's
+// beginning to fit its own output budget.
+const logTruncationMarker = "…(log truncated)"
+
+// logHeadTruncated reports whether a log's beginning is missing: the transport
+// said so, or the output is only a tail of what the job produced.
+func logHeadTruncated(output string) bool {
+	head := strings.TrimSpace(output)
+	if i := strings.Index(head, "\n"); i >= 0 {
+		head = head[:i]
+	}
+	return strings.Contains(head, logTruncationMarker)
+}
+
+// acquisitionFailureMarker reports whether a log contains one of the CI
+// services' repository-acquisition failure messages.
+func acquisitionFailureMarker(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		lower := strings.ToLower(stripLogPrefix(line))
+		for _, marker := range acquisitionMarkers {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stripLogPrefix removes the CI service's per-line log framing - Buildkite's
+// "\x1b_bk;t=<epoch>\x1b\\" timestamp escape and the ANSI colour codes - before a
+// line is matched, so a marker is compared against the message alone.
+func stripLogPrefix(line string) string {
+	line = ansiEscape.ReplaceAllString(line, "")
+	if idx := strings.Index(line, "\x1b_bk;"); idx >= 0 {
+		if end := strings.Index(line, "\x1b\\"); end > idx {
+			line = line[:idx] + line[end+2:]
+		}
+	}
+	return line
+}
+
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
 
 type githubRunView struct {
 	Jobs []githubRunJob `json:"jobs"`

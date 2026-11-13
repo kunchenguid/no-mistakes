@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
@@ -23,6 +24,13 @@ const pluginPRURL = "https://git.example.com/team/repo/pulls/7"
 // pluginCIContext wires the reference fake provider plugin as provider
 // "plugin:ssm" for git.example.com, with one open PR #7 for the run branch.
 func pluginCIContext(t *testing.T, state fakeplugin.State) (*pipeline.StepContext, string) {
+	t.Helper()
+	return pluginCIContextWithAgent(t, &stepstest.MockAgent{AgentName: "test"}, state)
+}
+
+// pluginCIContextWithAgent is pluginCIContext with the caller's own agent, so a
+// test can count the fix rounds the step spends.
+func pluginCIContextWithAgent(t *testing.T, ag agent.Agent, state fakeplugin.State) (*pipeline.StepContext, string) {
 	t.Helper()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 	if len(state.PRs) == 0 {
@@ -40,7 +48,7 @@ func pluginCIContext(t *testing.T, state fakeplugin.State) (*pipeline.StepContex
 		t.Fatal(err)
 	}
 
-	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = stepstest.FakeCLIEnv(binDir, map[string]string{fakeplugin.EnvState: statePath})
 	sctx.Repo.UpstreamURL = "https://git.example.com/team/repo.git"
 	prURL := pluginPRURL
