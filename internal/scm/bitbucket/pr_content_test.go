@@ -76,3 +76,54 @@ func TestGetPRContentRejectsMissingIdentity(t *testing.T) {
 		t.Fatal("expected error for non-numeric PR number")
 	}
 }
+
+func TestGetPRRepositoryContentReportsResponseIdentity(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {
+			stdout: `{"id":7,"title":"T","description":"body","links":{"html":{"href":"https://bitbucket.org/Other/Repo/pull-requests/7"}}}`,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+
+	got, err := h.GetPRRepositoryContent(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetPRRepositoryContent() error = %v", err)
+	}
+	if got.Content.Title != "T" || got.Content.Body != "body" {
+		t.Fatalf("content = %+v", got.Content)
+	}
+	// Identity is the response's own, not the configured repo's.
+	if got.Repository.Host != "bitbucket.org" || got.Repository.Path != "Other/Repo" {
+		t.Fatalf("identity = %+v", got.Repository)
+	}
+}
+
+func TestGetPRRepositoryContentLeavesIdentityEmptyWithoutALink(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {
+			stdout: `{"id":7,"title":"T","description":"body"}`,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+
+	got, err := h.GetPRRepositoryContent(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetPRRepositoryContent() error = %v", err)
+	}
+	if got.Repository != (scm.RepositoryIdentity{}) {
+		t.Fatalf("identity = %+v, want empty", got.Repository)
+	}
+}
+
+func TestGetPRRepositoryContentRejectsUnprovenResponses(t *testing.T) {
+	for _, stdout := range []string{`{}`, `null`, `{"id":7,"title":"T"}`, `{"id":8,"title":"T","description":"b"}`, `{"id":7,"title":"","description":"b"}`} {
+		h := New(bbTestCmdFactory(map[string]bbTestResponse{
+			"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {stdout: stdout},
+		}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+		if _, err := h.GetPRRepositoryContent(context.Background(), "7"); err == nil {
+			t.Errorf("accepted %q", stdout)
+		}
+	}
+	h := New(bbTestCmdFactory(nil), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+	if _, err := h.GetPRRepositoryContent(context.Background(), "x"); err == nil {
+		t.Error("accepted a non-numeric number")
+	}
+}
