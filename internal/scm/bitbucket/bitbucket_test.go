@@ -275,8 +275,8 @@ func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
-func TestUpdatePRRejectsResponseWithoutPositiveID(t *testing.T) {
-	for _, stdout := range []string{`{}`, `{"id":0}`} {
+func TestUpdatePRRejectsResponseNotForTheRequestedPR(t *testing.T) {
+	for _, stdout := range []string{`{}`, `{"id":0}`, `{"id":7}`} {
 		var rec []capturedCmd
 		h := New(capturingCmdFactory(&rec, bbTestResponse{stdout: stdout}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 		pr, err := h.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Title: "T", Body: "b"})
@@ -692,9 +692,6 @@ func TestGetPRRejectsResponseForADifferentPullRequest(t *testing.T) {
 		}
 		if _, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"}); err == nil {
 			t.Fatalf("GetChecks() with response %s, want error", stdout)
-		}
-		if _, err := h.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "b"}); stdout == `{"id":7,"state":"OPEN"}` && err == nil {
-			t.Fatal("UpdatePR() accepted a response for a different pull request")
 		}
 	}
 }
