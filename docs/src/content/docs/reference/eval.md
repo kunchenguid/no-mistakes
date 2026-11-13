@@ -132,7 +132,7 @@ Replay scores each candidate finding against that gold:
 - **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
 
-Matching is a documented cascade of strengths: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is one globally optimal matching over every gold and candidate finding at once, ranked so an exact match outweighs any number of fuzzy ones, so neither gold-label order nor a tier boundary can undercount recall. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match on the text, location, or containment strengths.
+Matching is a documented cascade of strengths: the same finding ID in the same file with lines within 3, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is one globally optimal matching over every gold and candidate finding at once, ranked so an exact match outweighs any number of fuzzy ones, so neither gold-label order nor a tier boundary can undercount recall. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match on the text, location, or containment strengths; findings without a file or a known line do not match on the exact-id strength either, and fall through to the later tiers.
 
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
@@ -142,7 +142,7 @@ The replay never inherits this machine's own harness pins: capture strips `agent
 
 The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME` and restore each case into a throwaway worktree; they do not contact the shared no-mistakes daemon. The selected agent uses the operator's normal local harness settings and sign-in (the same HOME-based credential discovery a pipeline run uses) and still communicates with its configured model provider in the normal way. That is not a security sandbox: a candidate may read and write ordinary user-level agent files under HOME, including credential refresh and caches. Review replay stays session-free.
 
-The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
+The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs under the same matcher revision land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
 
 ## Report results
 
@@ -150,7 +150,7 @@ The command streams one scored progress line per replay as it completes, then re
 no-mistakes eval report
 ```
 
-The report groups local replays by candidate and cohort. A cohort pins the selected case IDs and repeat count, so frontier comparisons only compare candidates run over the same corpus and repeat plan. It shows:
+The report groups local replays by candidate and cohort. A cohort pins the selected case IDs, repeat count, and matcher revision, so frontier comparisons only compare candidates run over the same corpus and repeat plan with the same matching rules. Saved scores from earlier matcher revisions remain in separate cohorts. It shows:
 
 - finding-level true-positive, false-negative, false-positive, and pending counts
 - recall over gold issues, or unlabeled / pending when a case has no finding-level gold

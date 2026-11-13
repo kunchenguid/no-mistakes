@@ -380,9 +380,10 @@ func TestScoreCandidateMatchesSameFindingID(t *testing.T) {
 		ID:          "error-handling",
 		Kind:        GoldTruePositive,
 		File:        "old.go",
+		Line:        4,
 		Description: "drops an HTTP error",
 	}}}
-	candidate := `{"findings":[{"id":"error-handling","file":"new.go","description":"drops a database error"}]}`
+	candidate := `{"findings":[{"id":"error-handling","file":"old.go","line":5,"description":"drops a database error"}]}`
 
 	score := ScoreCandidate(labels, candidate)
 	if score.TruePositive != 1 || score.FalseNegative != 0 || score.Pending != 0 {

@@ -45,7 +45,7 @@ func TestScoreCandidatePrefersExactOverFuzzy(t *testing.T) {
 		Line:        4,
 		Description: "drops an HTTP error",
 	}}}
-	candidate := `{"findings":[{"id":"nearby","file":"old.go","line":5,"description":"drops an HTTP error on the handler"},{"id":"error-handling","file":"new.go","description":"unrelated"}]}`
+	candidate := `{"findings":[{"id":"nearby","file":"old.go","line":5,"description":"drops an HTTP error on the handler"},{"id":"error-handling","file":"old.go","line":6,"description":"unrelated"}]}`
 
 	score := ScoreCandidate(labels, candidate)
 	if score.TruePositive != 1 || score.TruePositiveExact != 1 || score.TruePositiveFuzzy != 0 || score.Pending != 1 {
@@ -65,8 +65,8 @@ func TestScoreCandidateDoesNotLetFuzzyEarlierGoldStealExactLaterMatch(t *testing
 		{
 			ID:          "missing-unlock",
 			Kind:        GoldTruePositive,
-			File:        "lock.go",
-			Line:        1,
+			File:        "main.go",
+			Line:        12,
 			Description: "mutex not released on the error path",
 		},
 	}}
@@ -81,7 +81,7 @@ func TestScoreCandidateDoesNotLetFuzzyEarlierGoldStealExactLaterMatch(t *testing
 	}
 }
 
-// Both gold items match candidate 1 exactly by id, and only the first also has
+// Both gold items match candidate 1 by id in the same file, and only the first also has
 // a fuzzy (nearby-line) match on candidate 2. The tiered matcher this replaced
 // resolved the exact tier on its own, handed candidate 1 to the first gold, and
 // then had nothing left for the second - one match where two exist. A globally
@@ -99,13 +99,13 @@ func TestScoreCandidateRecoversMatchTheTieredMatcherLost(t *testing.T) {
 		{
 			ID:          "shared-id",
 			Kind:        GoldTruePositive,
-			File:        "lock.go",
-			Line:        40,
+			File:        "main.go",
+			Line:        14,
 			Description: "mutex not released on the error path",
 		},
 	}}
 	candidate := `{"findings":[` +
-		`{"id":"shared-id","file":"main.go","line":10,"description":"nil pointer dereference in the request handler"},` +
+		`{"id":"shared-id","file":"main.go","line":12,"description":"nil pointer deref in request handler"},` +
 		`{"id":"other","file":"main.go","line":11,"description":"nil pointer dereference in the request handler during shutdown"}` +
 		`]}`
 
