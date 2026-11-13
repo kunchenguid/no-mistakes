@@ -132,8 +132,8 @@ func (h *Host) repoArgs() []string {
 // underlying Bitbucket Cloud API shape verbatim (id, state, source, destination),
 // which twg's own documented agent-field presets confirm it passes through.
 type bitbucketPullRequest struct {
-	ID    int    `json:"id"`
-	State string `json:"state"`
+	ID     int    `json:"id"`
+	State  string `json:"state"`
 	Source struct {
 		Branch struct {
 			Name string `json:"name"`
