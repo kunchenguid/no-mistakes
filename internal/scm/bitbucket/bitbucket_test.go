@@ -228,6 +228,17 @@ func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
+func TestUpdatePRRejectsResponseWithoutPositiveID(t *testing.T) {
+	for _, stdout := range []string{`{}`, `{"id":0}`} {
+		var rec []capturedCmd
+		h := New(capturingCmdFactory(&rec, bbTestResponse{stdout: stdout}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+		pr, err := h.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Title: "T", Body: "b"})
+		if err == nil {
+			t.Fatalf("UpdatePR() with response %s = %+v, want error", stdout, pr)
+		}
+	}
+}
+
 func TestGetPRStateNormalizesState(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
 		"twg bb pull-requests get 42 --workspace ws --repo repo -o json": {
