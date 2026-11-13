@@ -1638,6 +1638,8 @@ no-mistakes reaps its recorded run directories itself rather than relying on an 
 
 Reaping runs after each finished run and again at daemon startup. An upgraded daemon also drains the pre-relocation directory in the system temp directory under the same rules; nothing is migrated, because absolute paths recorded in older pull request bodies name the old location.
 
+Process termination during evidence cleanup follows the [daemon's process-cleanup rules](/no-mistakes/concepts/daemon/#what-it-does).
+
 `local_root` must be an absolute path outside `<NM_HOME>/worktrees`; a relative or managed-worktree path fails daemon startup and prevents new or recovered runs from starting. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
 
 #### Evidence links
