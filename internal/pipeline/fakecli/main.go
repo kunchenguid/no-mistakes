@@ -131,6 +131,17 @@ func fakePRAppendixIdentityHandler(args []string) {
 		}
 		os.Exit(1)
 	}
+	if name == "twg" {
+		if len(args) >= 1 && args[0] == "whoami" {
+			fmt.Println("Fake User")
+			return
+		}
+		if len(args) >= 3 && args[0] == "bb" && args[1] == "pull-requests" && args[2] == "get" {
+			fmt.Println(os.Getenv("FAKE_CLI_PR_CONTENT_JSON"))
+			return
+		}
+		os.Exit(1)
+	}
 	if len(args) > 0 && args[0] == "status" {
 		fmt.Println(os.Getenv("FAKE_CLI_STATUS_JSON"))
 		return
