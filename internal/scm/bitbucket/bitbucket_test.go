@@ -683,3 +683,18 @@ func TestFindPRNeverReturnsNumberAndURLThatDisagree(t *testing.T) {
 		t.Fatalf("FindPR() = %+v, want number 42 with the URL built from the repository and id", pr)
 	}
 }
+
+func TestGetPRRejectsResponseForADifferentPullRequest(t *testing.T) {
+	for _, stdout := range []string{`{}`, `{"id":0,"state":"OPEN"}`, `{"id":7,"state":"OPEN"}`} {
+		h := New(capturingCmdFactory(&[]capturedCmd{}, bbTestResponse{stdout: stdout}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+		if state, err := h.GetPRState(context.Background(), &scm.PR{Number: "42"}); err == nil {
+			t.Fatalf("GetPRState() with response %s = %q, want error", stdout, state)
+		}
+		if _, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"}); err == nil {
+			t.Fatalf("GetChecks() with response %s, want error", stdout)
+		}
+		if _, err := h.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "b"}); stdout == `{"id":7,"state":"OPEN"}` && err == nil {
+			t.Fatal("UpdatePR() accepted a response for a different pull request")
+		}
+	}
+}
