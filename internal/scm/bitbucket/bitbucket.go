@@ -160,7 +160,7 @@ func (pr bitbucketPullRequest) toPR(repo RepoRef) *scm.PR {
 }
 
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
-	items, err := h.queryPRs(ctx, "OPEN", branch, base)
+	items, err := h.queryPRs(ctx, branch, base)
 	if err != nil {
 		return nil, err
 	}
@@ -170,11 +170,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	return items[0].toPR(h.repo), nil
 }
 
-// queryPRs lists PRs from branch in one state. It returns an error for any
+// queryPRs lists open PRs from branch. It returns an error for any
 // lookup, decoding or validation failure so no caller can read an
 // indeterminate answer as "there is no such PR".
-func (h *Host) queryPRs(ctx context.Context, state, branch, base string) ([]bitbucketPullRequest, error) {
-	args := []string{"bb", "pull-requests", "query", "--source", branch, "--state", state}
+func (h *Host) queryPRs(ctx context.Context, branch, base string) ([]bitbucketPullRequest, error) {
+	args := []string{"bb", "pull-requests", "query", "--source", branch, "--state", "OPEN"}
 	if strings.TrimSpace(base) != "" {
 		args = append(args, "--dest", base)
 	}
@@ -335,6 +335,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	var updated bitbucketPullRequest
 	if err := json.Unmarshal(trimmed, &updated); err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests update: invalid JSON output: %s", strings.TrimSpace(string(out)))
+	}
+	if updated.ID <= 0 {
+		return nil, fmt.Errorf("twg bb pull-requests update: missing positive id: %s", strings.TrimSpace(string(out)))
 	}
 	return updated.toPR(h.repo), nil
 }
