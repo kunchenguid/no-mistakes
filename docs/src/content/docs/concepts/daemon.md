@@ -117,8 +117,11 @@ That reduces surprising machine-level side effects and macOS App Management prom
 While executing steps, the daemon also owns child-process cleanup.
 Configured commands and one-shot agent subprocesses are terminated as a process tree on completion, failure, or cancellation so leaked test workers, build watchers, or dev servers cannot accumulate across runs.
 Each process is asked to exit first and only forcibly killed if it is still running a few seconds later.
-A process can still escape that tree by detaching itself into its own session, so when a run finishes the daemon also terminates anything still standing in that run's worktree before removing the directory.
-That sweep is scoped by working directory: it never touches a worktree whose run is still active, and it can never reach a process working outside `~/.no-mistakes/worktrees/` or outside a run worktree a run record names in a configured worktree root.
+A process can still escape that tree by detaching itself into its own session, so when a run finishes the daemon also sweeps processes still standing in that run's worktree and [evidence directory](/no-mistakes/reference/global-config/#evidence_dir), even when its evidence artifacts are retained.
+Matching is scoped by working directory: the default worktree tree and explicitly identified run worktrees or evidence directories are eligible, while pending or running runs are spared.
+On Unix, these sweeps send SIGTERM first, then SIGKILL to survivors after a three-second grace period. Cleanup is best effort, and each reaped process is logged with reason `run_cleanup`.
+
+After each finished run and at startup, evidence retention cleanup also sweeps processes under the recorded evidence directories it selects for deletion, before removing those directories. Evidence retained by that pass is not swept. The [local evidence cleanup policy](/no-mistakes/reference/global-config/#local-storage-and-cleanup) owns the selection rules across current, historical, and legacy roots.
 
 On Linux, a step that exhausts memory fails only its own run.
 Configured commands, agent subprocesses, and managed agent servers raise their `oom_score_adj` so the kernel OOM killer picks them before the daemon.

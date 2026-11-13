@@ -1,5 +1,5 @@
 // Package procreap finds and terminates processes that outlived the pipeline
-// run whose worktree they were launched in.
+// run whose worktree or evidence directory they were launched in.
 //
 // Why a sweep is needed at all. Every subprocess no-mistakes spawns is already
 // isolated in its own process group by internal/shellenv, and that group is
@@ -10,13 +10,13 @@
 // invisible to kill(-pgid). Once its parent dies it reparents to init, and
 // from that moment no lineage-based mechanism (process group, parent chain,
 // exec.Cmd handle) can ever name it again. Such a process keeps burning CPU
-// and holding a deleted worktree's cwd open indefinitely.
+// and holding a deleted run directory's cwd open indefinitely.
 //
 // The one identity that survives lineage loss is where the process is
 // standing: its current working directory. Pipeline children are launched in
-// (or below) the run's worktree, so a live process whose cwd resolves under
-// <NM_HOME>/worktrees/<repoID>/<runID> belongs to that run, no matter who its
-// parent is now. That is the association this package matches on.
+// (or below) the run's worktree or evidence directory. A cwd under
+// <NM_HOME>/worktrees/<repoID>/<runID>, or under a run directory explicitly
+// supplied by the caller, identifies that run no matter who the parent is now.
 //
 // Deliberately NOT matched: the command line. A path can appear in argv for
 // entirely legitimate reasons (the daemon's own `git worktree remove`, a
@@ -27,14 +27,14 @@
 // Safety rules, in order:
 //   - pid 0 and 1 are never signalled, and neither is this process or any of
 //     its ancestors.
-//   - A worktree whose run is still pending or running is never swept
-//     (Options.RunActive).
+//   - Unscoped sweeps spare pending or running runs (Options.RunActive).
+//     Scoped callers must establish cleanup eligibility before sweeping.
 //   - Unscoped sweeps additionally require Options.MinAge, so a process that
 //     started moments ago is never mistaken for a leak.
 //   - SIGTERM first; SIGKILL only for what is still alive after Options.Grace.
 //
 // A process whose cwd is outside <NM_HOME>/worktrees and outside the run
-// worktrees the caller names explicitly (Options.Worktrees) can never match,
+// directories the caller names explicitly (Options.Worktrees) can never match,
 // which is what keeps long-lived unrelated daemons (a user's LaunchAgent
 // worker, an editor, another tool's background job) out of reach by
 // construction rather than by name-based allowlisting.
@@ -80,7 +80,8 @@ type Victim struct {
 	Killed   bool // true when SIGTERM was not enough and SIGKILL was needed
 }
 
-// Worktree is one run worktree named by the record of the run that created it.
+// Worktree identifies a run-owned worktree or evidence directory. The caller
+// must establish its association with the named run from that run's record.
 type Worktree struct {
 	Dir    string
 	RepoID string
@@ -92,11 +93,10 @@ type Options struct {
 	// WorktreesRoot is <NM_HOME>/worktrees. Required.
 	WorktreesRoot string
 
-	// Worktrees are run worktrees that do not live under WorktreesRoot,
-	// because the operator placed that repository's runs in a directory of
-	// their own (worktree_roots in the global config). Each entry must come
-	// from the record of the run that created it, and only that directory and
-	// its subdirectories are then in reach.
+	// Worktrees explicitly identifies run directories, including worktrees in
+	// operator-configured roots and evidence directories. Each entry must be
+	// associated with the record of its run, and only that directory and its
+	// subdirectories are then in reach.
 	//
 	// Reach there cannot be a path shape the way it is under WorktreesRoot,
 	// which this process owns outright: the operator keeps their own files,
@@ -111,9 +111,9 @@ type Options struct {
 	// be applied to it.
 	Worktrees []Worktree
 
-	// Scopes, when set, restricts the sweep to exactly these worktree
-	// directories and their subdirectories. The caller that sets them owns
-	// those runs and has already observed their execution return, so RunActive
+	// Scopes, when set, restricts the sweep to exactly these run directories
+	// and their subdirectories. The caller must establish that the runs have
+	// finished and the directories are eligible for process cleanup: RunActive
 	// and MinAge are not consulted for a scoped sweep.
 	//
 	// It is a set rather than a single directory because a caller that is about
@@ -143,8 +143,8 @@ var (
 	processAliveFunc  = processAlive
 )
 
-// Sweep terminates every process associated with a worktree that no run owns
-// any more. It returns the processes it signalled. An empty result with a nil
+// Sweep terminates processes associated with eligible run directories.
+// It returns the processes it signalled. An empty result with a nil
 // error is the normal outcome and also what platforms without a process-table
 // reader (Windows, where job objects already contain the whole tree) return.
 func Sweep(opts Options) ([]Victim, error) {
@@ -211,7 +211,7 @@ func Sweep(opts Options) ([]Victim, error) {
 }
 
 // SweepAndLog runs Sweep and reports the outcome on the daemon log. It is the
-// form both call sites want: a sweep is best effort, and a failure to read the
+// form cleanup callers use: a sweep is best effort, and a failure to read the
 // process table must never fail a run or block daemon startup.
 func SweepAndLog(opts Options, reason string) {
 	victims, err := Sweep(opts)
@@ -229,8 +229,9 @@ func SweepAndLog(opts Options, reason string) {
 	}
 }
 
-// SweepRunWorktree terminates whatever is still standing in one run's worktree,
-// which every caller that is about to REMOVE that directory must do first.
+// SweepRunWorktree terminates whatever is still standing in one run's worktree
+// or evidence directory, including when artifacts will be retained. Every
+// caller that is about to REMOVE that directory must sweep it first.
 //
 // It is one entry point because the removal sites are spread across packages -
 // run cleanup, startup cleanup, and eject - and a directory removed without this
@@ -241,13 +242,13 @@ func SweepAndLog(opts Options, reason string) {
 // moment anything can reach it.
 //
 // The sweep is scoped to dir, so no age floor and no run-active check apply: the
-// caller owns this run and is about to delete its worktree.
+// caller must establish that the run has finished and cleanup is eligible.
 func SweepRunWorktree(worktreesRoot, repoID, runID, dir string, reason string) {
 	SweepRunWorktrees(worktreesRoot, []Worktree{{Dir: dir, RepoID: repoID, RunID: runID}}, reason)
 }
 
-// SweepRunWorktrees is SweepRunWorktree for a caller that is about to remove
-// several of a repository's worktrees at once, such as eject.
+// SweepRunWorktrees is SweepRunWorktree for a caller cleaning several run
+// directories at once, such as eject or evidence retention cleanup.
 //
 // Reading the process table is the expensive part of a sweep and it is paid per
 // call, not per directory: one pass over `ps` plus one cwd read for every

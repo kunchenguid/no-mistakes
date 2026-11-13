@@ -12,7 +12,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // evidenceFixture builds a DB plus an evidence root and returns helpers for
@@ -94,7 +96,7 @@ func TestReapEvidenceHonorsRetentionAndSparesActiveRuns(t *testing.T) {
 	activePending := f.seed("active-pending", types.RunPending, 30*24*time.Hour, artifact)
 	activeRunning := f.seed("active-running", types.RunRunning, 30*24*time.Hour, artifact)
 
-	reapEvidence(f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
+	reapEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
 
 	if !f.exists(fresh) {
 		t.Error("evidence inside the retention window was removed")
@@ -110,6 +112,94 @@ func TestReapEvidenceHonorsRetentionAndSparesActiveRuns(t *testing.T) {
 	}
 }
 
+func TestReapLegacyEvidenceSweepsSelectedDirectoriesInOneBatchBeforeRemoval(t *testing.T) {
+	f := newEvidenceFixture(t)
+	fakeTemp := t.TempDir()
+	t.Setenv("TMPDIR", fakeTemp)
+	if os.TempDir() != fakeTemp {
+		t.Skipf("os.TempDir() does not follow TMPDIR on this platform (got %q)", os.TempDir())
+	}
+	legacy := filepath.Join(os.TempDir(), legacyEvidenceDirName)
+	current := f.root
+	previous := t.TempDir()
+	want := map[string]procreap.Worktree{}
+	var kept []string
+	for _, tc := range []struct {
+		branch string
+		root   string
+		status types.RunStatus
+		age    time.Duration
+		empty  bool
+		remove bool
+	}{
+		{"expired", current, types.RunCompleted, 48 * time.Hour, false, true},
+		{"empty", current, types.RunCompleted, 0, true, true},
+		{"over-limit", current, types.RunCompleted, 2 * time.Hour, false, true},
+		{"previous", previous, types.RunCompleted, 48 * time.Hour, false, true},
+		{"legacy", legacy, types.RunFailed, 48 * time.Hour, false, true},
+		{"retained", current, types.RunCompleted, time.Hour, false, false},
+		{"pending", current, types.RunPending, 48 * time.Hour, false, false},
+		{"running", current, types.RunRunning, 0, true, false},
+	} {
+		f.root = tc.root
+		files := map[string]string{"artifact": "evidence"}
+		if tc.empty {
+			files = nil
+		}
+		id := f.seed(tc.branch, tc.status, tc.age, files)
+		dir := worktrees.Canonical(filepath.Join(tc.root, id))
+		if err := f.db.SetRunEvidenceDir(id, dir); err != nil {
+			t.Fatal(err)
+		}
+		if tc.remove {
+			want[dir] = procreap.Worktree{Dir: dir, RepoID: f.repo.ID, RunID: id}
+		} else {
+			kept = append(kept, dir)
+		}
+	}
+
+	sweeps := 0
+	original := sweepRunWorktrees
+	t.Cleanup(func() { sweepRunWorktrees = original })
+	sweepRunWorktrees = func(root string, targets []procreap.Worktree, reason string) {
+		sweeps++
+		if root != f.p.WorktreesDir() || reason != "run_cleanup" {
+			t.Errorf("sweep root/reason = %q/%q", root, reason)
+		}
+		if len(targets) != len(want) {
+			t.Errorf("sweep targets = %d, want %d", len(targets), len(want))
+		}
+		seen := map[string]bool{}
+		for _, target := range targets {
+			if expected, ok := want[target.Dir]; !ok || target != expected || seen[target.Dir] {
+				t.Errorf("unexpected or duplicate sweep target: %+v", target)
+			}
+			seen[target.Dir] = true
+		}
+		for dir := range want {
+			if _, err := os.Stat(dir); err != nil {
+				t.Errorf("evidence removed before the batch sweep: %s: %v", dir, err)
+			}
+		}
+	}
+
+	reapLegacyEvidence(f.db, f.p, current, evidenceReapPolicy{Retention: 24 * time.Hour, MaxRuns: 1}, time.Now(), previous, current)
+
+	if sweeps != 1 {
+		t.Errorf("process sweeps = %d, want 1", sweeps)
+	}
+	for dir := range want {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("selected evidence survived removal: %s: %v", dir, err)
+		}
+	}
+	for _, dir := range kept {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("retained or active evidence removed: %s: %v", dir, err)
+		}
+	}
+}
+
 // TestReapEvidenceRemovesEmptyRunDirectoriesRegardlessOfAge targets the
 // dominant source of accumulation. The test step creates the run's directory
 // before the agent decides whether it has anything to write, so a run that
@@ -122,7 +212,7 @@ func TestReapEvidenceRemovesEmptyRunDirectoriesRegardlessOfAge(t *testing.T) {
 	emptyActive := f.seed("empty-active", types.RunRunning, time.Minute, nil)
 	withArtifact := f.seed("kept", types.RunCompleted, time.Minute, map[string]string{"log.txt": "output"})
 
-	reapEvidence(f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 100}, time.Now())
+	reapEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 100}, time.Now())
 
 	if f.exists(empty) {
 		t.Error("an empty evidence directory survived")
@@ -146,7 +236,7 @@ func TestReapEvidenceTrimsToTheRunCeilingOldestFirst(t *testing.T) {
 	middle := f.seed("middle", types.RunCompleted, 3*time.Hour, artifact)
 	newest := f.seed("newest", types.RunCompleted, time.Hour, artifact)
 
-	reapEvidence(f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 2}, time.Now())
+	reapEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 2}, time.Now())
 
 	if f.exists(oldest) {
 		t.Error("the oldest run's evidence survived the run ceiling")
@@ -166,7 +256,7 @@ func TestReapEvidenceKeepsEverythingWhenBothBoundsAreDisabled(t *testing.T) {
 	ancient := f.seed("ancient", types.RunCompleted, 365*24*time.Hour, artifact)
 	recent := f.seed("recent", types.RunCompleted, time.Hour, artifact)
 
-	reapEvidence(f.db, f.root, evidenceReapPolicy{Retention: 0, MaxRuns: 0}, time.Now())
+	reapEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: 0, MaxRuns: 0}, time.Now())
 
 	if !f.exists(ancient) || !f.exists(recent) {
 		t.Error("evidence was reaped even though both bounds are disabled")
@@ -184,7 +274,7 @@ func TestReapEvidenceLeavesUnownedDirectoriesAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reapEvidence(f.db, f.root, evidenceReapPolicy{Retention: time.Hour, MaxRuns: 1}, time.Now())
+	reapEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: time.Hour, MaxRuns: 1}, time.Now())
 
 	if _, err := os.Stat(unowned); err != nil {
 		t.Errorf("reaper removed a directory not owned by a recorded run: %v", err)
@@ -238,7 +328,7 @@ func TestReapLegacyEvidenceDrainsTheSharedTempRootUnderTheSamePolicy(t *testing.
 	fresh := seedLegacy("legacy-fresh", types.RunCompleted, time.Hour)
 	inFlight := seedLegacy("legacy-active", types.RunRunning, 30*24*time.Hour)
 
-	reapLegacyEvidence(f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
+	reapLegacyEvidence(f.db, f.p, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
 
 	if _, err := os.Stat(filepath.Join(legacy, stale)); err == nil {
 		t.Error("stale legacy evidence survived the drain")
@@ -266,7 +356,7 @@ func TestReapLegacyEvidenceLeavesTheCurrentRootAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reapLegacyEvidence(f.db, legacy, evidenceReapPolicy{Retention: time.Nanosecond}, time.Now())
+	reapLegacyEvidence(f.db, f.p, legacy, evidenceReapPolicy{Retention: time.Nanosecond}, time.Now())
 
 	if _, err := os.Stat(filepath.Join(legacy, "run-x")); err != nil {
 		t.Errorf("the drain reaped the configured current root: %v", err)
@@ -425,7 +515,7 @@ func TestEvidenceCleanupRevisitsPreviousPinnedRoots(t *testing.T) {
 				}
 			} else {
 				roots := evidenceRootsFor(f.p, global, f.db)
-				reapLegacyEvidence(f.db, roots[0], evidenceReapPolicy{Retention: 24 * time.Hour}, time.Now(), roots[1:]...)
+				reapLegacyEvidence(f.db, f.p, roots[0], evidenceReapPolicy{Retention: 24 * time.Hour}, time.Now(), roots[1:]...)
 			}
 			if _, err := os.Stat(filepath.Join(oldRoot, id)); !os.IsNotExist(err) {
 				t.Fatalf("historical evidence survived retention: %v", err)
@@ -561,7 +651,7 @@ func TestEvidenceCleanupSharesCountBudgetAcrossRoots(t *testing.T) {
 				m.cleanupRunEvidence(cfg, newest)
 			} else {
 				roots := evidenceRootsFor(f.p, global, f.db)
-				reapLegacyEvidence(f.db, roots[0], policy, time.Now(), roots[1:]...)
+				reapLegacyEvidence(f.db, f.p, roots[0], policy, time.Now(), roots[1:]...)
 			}
 			for id, root := range map[string]string{oldest: oldRoot, middle: currentRoot, legacyID: legacy} {
 				if _, err := os.Stat(filepath.Join(root, id)); !os.IsNotExist(err) {
