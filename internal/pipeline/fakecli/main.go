@@ -1633,6 +1633,25 @@ type bbFakeState struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Puts        int    `json:"puts"`
+	// Source, Dest and SourceCommit describe the primary PR for `query`
+	// filtering and output. Empty Source/Dest match any filter, so a state file
+	// that never set them behaves as before.
+	Source       string `json:"source,omitempty"`
+	Dest         string `json:"dest,omitempty"`
+	SourceCommit string `json:"source_commit,omitempty"`
+	// Others are further PRs `query` lists (a merged or declined sibling, for
+	// example). `get`, `create` and `update` only ever act on the primary PR.
+	Others []bbFakePR `json:"others,omitempty"`
+}
+
+// bbFakePR is one extra PR the fake `twg bb pull-requests query` can list.
+type bbFakePR struct {
+	ID           int    `json:"id"`
+	URL          string `json:"url"`
+	State        string `json:"state"`
+	Source       string `json:"source"`
+	Dest         string `json:"dest"`
+	SourceCommit string `json:"source_commit"`
 }
 
 func loadBBState() bbFakeState {
@@ -1680,6 +1699,14 @@ func fakeTWGHandler(args []string) {
 		fmt.Fprintln(os.Stderr, "unsupported twg argv:", strings.Join(args, " "))
 		os.Exit(1)
 	}
+	if !fakeTWGOutputSummaryNone(args) {
+		// Real twg defaults to `--output-summary auto` and wraps large
+		// results in a YAML envelope pointing at a file. Emit one whenever the
+		// caller did not opt out, so a call that forgets the flag fails.
+		fmt.Println("summary: output too large to print inline")
+		fmt.Println("file: /tmp/twg-output-summary-fake.json")
+		os.Exit(0)
+	}
 	switch args[1] {
 	case "pull-requests":
 		fakeTWGPullRequests(args[2:])
@@ -1691,15 +1718,64 @@ func fakeTWGHandler(args []string) {
 	}
 }
 
+// fakeTWGOutputSummaryNone reports whether the invocation carries
+// `--output-summary none`.
+func fakeTWGOutputSummaryNone(args []string) bool {
+	v, ok := fakeCLIFlagValue(args, "--output-summary")
+	return ok && v == "none"
+}
+
 func fakeTWGPRJSON(state bbFakeState) string {
-	prState := state.State
+	return fakeTWGPRPayloadJSON(bbFakePR{
+		ID: state.ID, URL: state.URL, State: state.State,
+		Source: state.Source, Dest: state.Dest, SourceCommit: state.SourceCommit,
+	})
+}
+
+// fakeTWGWithSourceRepo stamps source.repository.full_name onto a PR payload,
+// as the real query listing does.
+func fakeTWGWithSourceRepo(payload, fullName string) string {
+	var pr map[string]any
+	if err := json.Unmarshal([]byte(payload), &pr); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	source, _ := pr["source"].(map[string]any)
+	if source == nil {
+		source = map[string]any{}
+	}
+	source["repository"] = map[string]string{"full_name": fullName}
+	pr["source"] = source
+	encoded, err := json.Marshal(pr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return string(encoded)
+}
+
+func fakeTWGPRPayloadJSON(pr bbFakePR) string {
+	prState := pr.State
 	if prState == "" {
 		prState = "OPEN"
 	}
 	payload := map[string]any{
-		"id":    state.ID,
+		"id":    pr.ID,
 		"state": prState,
-		"links": map[string]any{"html": map[string]string{"href": state.URL}},
+		"links": map[string]any{"html": map[string]string{"href": pr.URL}},
+	}
+	source := map[string]any{}
+	if pr.Source != "" {
+		source["branch"] = map[string]string{"name": pr.Source}
+	}
+	if pr.SourceCommit != "" {
+		source["commit"] = map[string]string{"hash": pr.SourceCommit}
+	}
+	if len(source) > 0 {
+		payload["source"] = source
+	}
+	if pr.Dest != "" {
+		payload["destination"] = map[string]any{"branch": map[string]string{"name": pr.Dest}}
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -1718,11 +1794,51 @@ func fakeTWGPullRequests(args []string) {
 
 	switch sub {
 	case "query":
-		if !state.Exists {
-			fmt.Println("[]")
+		// Like the real command: --state defaults to OPEN, and --source and
+		// --dest narrow the listing. A PR with no recorded branch matches any
+		// branch filter.
+		wantState, ok := fakeCLIFlagValue(rest, "--state")
+		if !ok {
+			wantState = "OPEN"
+		}
+		if raw := os.Getenv("FAKE_CLI_BB_QUERY_MERGED_RAW"); raw != "" && strings.EqualFold(wantState, "MERGED") {
+			// An unreadable merged listing, for tests of the fail-closed lookup.
+			fmt.Println(raw)
 			os.Exit(0)
 		}
-		fmt.Println("[" + fakeTWGPRJSON(state) + "]")
+		// Real twg reports each PR's source repository; the adapter requires it
+		// to match the queried repository, so mirror the --workspace/--repo flags.
+		workspace, _ := fakeCLIFlagValue(rest, "--workspace")
+		repoSlug, _ := fakeCLIFlagValue(rest, "--repo")
+		source, _ := fakeCLIFlagValue(rest, "--source")
+		dest, _ := fakeCLIFlagValue(rest, "--dest")
+		var listed []string
+		match := func(pr bbFakePR) {
+			prState := pr.State
+			if prState == "" {
+				prState = "OPEN"
+			}
+			if !strings.EqualFold(prState, wantState) {
+				return
+			}
+			if source != "" && pr.Source != "" && pr.Source != source {
+				return
+			}
+			if dest != "" && pr.Dest != "" && pr.Dest != dest {
+				return
+			}
+			listed = append(listed, fakeTWGWithSourceRepo(fakeTWGPRPayloadJSON(pr), workspace+"/"+repoSlug))
+		}
+		if state.Exists {
+			match(bbFakePR{
+				ID: state.ID, URL: state.URL, State: state.State,
+				Source: state.Source, Dest: state.Dest, SourceCommit: state.SourceCommit,
+			})
+		}
+		for _, other := range state.Others {
+			match(other)
+		}
+		fmt.Println("[" + strings.Join(listed, ",") + "]")
 		os.Exit(0)
 	case "get":
 		if len(rest) == 0 {

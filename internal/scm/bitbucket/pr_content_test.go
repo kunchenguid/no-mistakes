@@ -9,7 +9,7 @@ import (
 
 func TestGetPRContentReadsTitleAndDescription(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 7 --workspace owner --repo repo -o json": {
+		"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {
 			stdout: `{"id":7,"title":"Human title","description":"# Human\n\n😀 café\n"}`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
@@ -25,7 +25,7 @@ func TestGetPRContentReadsTitleAndDescription(t *testing.T) {
 
 func TestGetPRContentAllowsExplicitlyEmptyBody(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 7 --workspace owner --repo repo -o json": {
+		"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {
 			stdout: `{"id":7,"title":"T","description":""}`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
@@ -58,7 +58,7 @@ func TestGetPRContentRejectsUnprovenResponses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := New(bbTestCmdFactory(map[string]bbTestResponse{
-				"twg bb pull-requests get 7 --workspace owner --repo repo -o json": {stdout: tt.stdout, stderr: tt.stderr, code: tt.code},
+				"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {stdout: tt.stdout, stderr: tt.stderr, code: tt.code},
 			}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
 			if _, err := h.GetPRContent(context.Background(), &scm.PR{Number: "7"}); err == nil {
 				t.Errorf("accepted %q", tt.stdout)
