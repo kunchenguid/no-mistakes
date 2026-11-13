@@ -40,9 +40,9 @@ func newSyncCmd() *cobra.Command {
 			"--bind-archive-ref records one exact existing refs/heads/archive/* commit as\n" +
 			"evidence for the narrow keep-local recovery that stays at a required head while\n" +
 			"a divergent later head remains archived; it never creates or moves a Git ref.\n" +
-			"--adopt-published moves a stale custody-returned gate lane only after the\n" +
-			"configured push target proves the exact divergent local head is already\n" +
-			"published there.",
+			"--adopt-published moves a stale custody-returned or user-owned gate lane only\n" +
+			"after the configured push target proves the exact divergent local head is\n" +
+			"already published there; the superseded lane head stays preserved in the gate.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -98,7 +98,8 @@ func newAxiSyncCmd() *cobra.Command {
 			"--bind-archive-ref binds one exact existing refs/heads/archive/* commit to\n" +
 			"the selected terminal run; it never creates or moves a Git ref.\n" +
 			"--adopt-published performs the guarded gate-lane recovery offered by\n" +
-			"next_action.code: adopt_published.",
+			"next_action.code: adopt_published, and the same recovery for a user_owned\n" +
+			"branch whose published rewrite a fresh run refused to reconcile.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -425,6 +426,9 @@ func humanSyncSummary(state branchsync.State) string {
 		}
 		return "custody returned; the branch is yours - start a fresh run when ready"
 	case branchsync.StateUserOwned:
+		if state.Changed && state.NextAction != nil && state.NextAction.Code == "run_pipeline" {
+			return "the published rebased head is present in this gate lane; start a fresh run when ready"
+		}
 		return "run ended before the pipeline changed anything; the branch and head are yours and immediately usable"
 	case branchsync.StatePushInProgress:
 		return "pipeline branch update is in progress; synchronization is unavailable"

@@ -221,6 +221,14 @@ retry can still resolve the branch. AXI reconciles before its ordinary submissio
 push and restores an archived ref after a failed submission if no intervening
 ref has appeared. Neither path forces the private mirror.
 
+A rewrite the operator already published to the configured push target, such
+as a rebase with a hand-resolved conflict, can leave private content that none
+of these proofs clears. Its explicit exit is
+[`sync --adopt-published`](/no-mistakes/reference/cli/#published-rebase-gate-recovery),
+which is not a reconciliation proof: it accepts the operator's own publication
+of that exact head, and preserves the superseded private head in the gate
+before it compare-and-swaps the lane.
+
 ### Daemon
 
 The daemon owns long-running work: creating worktrees, running the pipeline,

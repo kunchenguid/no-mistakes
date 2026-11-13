@@ -520,7 +520,7 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
 			}
-			return emitError(cmd, 1, err.Error())
+			return emitError(cmd, 1, err.Error(), adoptPublishedHelp(ctx, env, err)...)
 		}
 	}
 	if launchReceipt != nil {
@@ -783,6 +783,18 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 	}
 	emitDoc(cmd, fields...)
 	return &exitError{code: 1}
+}
+
+// adoptPublishedHelp names the one exit from a private-mirror refusal that no
+// reconciliation proof can clear: a rewrite the operator already published. It
+// is offered only where branch synchronization accepts that adoption, so the
+// refusal never points at a command that would refuse in turn.
+func adoptPublishedHelp(ctx context.Context, env *axiEnv, err error) []string {
+	var atRisk *gate.AtRiskError
+	if !errors.As(err, &atRisk) || !branchsync.AdoptPublishedApplies(inspectAxiBranchSync(ctx, env)) {
+		return nil
+	}
+	return []string{"If the configured push target already has this exact head, run `no-mistakes axi sync --adopt-published` to preserve the superseded private head and adopt the published one, then run `no-mistakes axi run` again"}
 }
 
 func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
