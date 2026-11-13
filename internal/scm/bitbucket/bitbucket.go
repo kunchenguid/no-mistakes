@@ -336,8 +336,8 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	if err := json.Unmarshal(trimmed, &updated); err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests update: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
-	if updated.ID <= 0 {
-		return nil, fmt.Errorf("twg bb pull-requests update: missing positive id: %s", strings.TrimSpace(string(out)))
+	if err := requirePRID("update", pr.Number, updated.ID, out); err != nil {
+		return nil, err
 	}
 	return updated.toPR(h.repo), nil
 }
@@ -357,7 +357,21 @@ func (h *Host) getPR(ctx context.Context, number string, extraArgs ...string) (b
 	if err := json.Unmarshal(trimmed, &pr); err != nil {
 		return bitbucketPullRequest{}, nil, fmt.Errorf("twg bb pull-requests get: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
+	if err := requirePRID("get", number, pr.ID, out); err != nil {
+		return bitbucketPullRequest{}, nil, err
+	}
 	return pr, trimmed, nil
+}
+
+func requirePRID(op, number string, id int, out []byte) error {
+	want, err := strconv.Atoi(strings.TrimSpace(number))
+	if err != nil || want <= 0 {
+		return fmt.Errorf("twg bb pull-requests %s: invalid pull request number %q", op, number)
+	}
+	if id != want {
+		return fmt.Errorf("twg bb pull-requests %s: response id %d does not match pull request %d: %s", op, id, want, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
