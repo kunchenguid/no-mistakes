@@ -257,31 +257,6 @@ func TestPush(t *testing.T) {
 	}
 }
 
-func TestPushFailureIncludesPrePushHookStdout(t *testing.T) {
-	ctx := context.Background()
-	src := initTestRepo(t)
-	bare := filepath.Join(t.TempDir(), "dest.git")
-	if err := InitBare(ctx, bare); err != nil {
-		t.Fatal(err)
-	}
-	run(t, src, "git", "remote", "add", "dest", bare)
-	hook := filepath.Join(src, ".git", "hooks", "pre-push")
-	script := "#!/bin/sh\necho 'hook-stdout: typecheck failed'\necho 'hook-stderr: see above' >&2\nexit 1\n"
-	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	err := Push(ctx, src, "dest", "refs/heads/main", "", false)
-	if err == nil {
-		t.Fatal("Push succeeded, want pre-push hook failure")
-	}
-	for _, want := range []string{"hook-stdout: typecheck failed", "hook-stderr: see above", "failed to push some refs"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q", err, want)
-		}
-	}
-}
-
 func TestPushWithOptionsForwardsPushOptions(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)

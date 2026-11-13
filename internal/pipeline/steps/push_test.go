@@ -1520,3 +1520,25 @@ func TestPushStep_DetachedGateWorktreePreservesDescendantAfterEmptyIndex(t *test
 		t.Fatalf("publication binding = %+v, err = %v, want reviewed head %s", persisted, err, reviewedHead)
 	}
 }
+
+func TestStepGitPushCommit_FailureIncludesPrePushHookStdout(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, _, head := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	hook := "#!/bin/sh\necho 'lefthook: lint job failed'\nexit 1\n"
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-push")
+	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, head, head, config.Commands{})
+
+	err := stepGitPushCommit(sctx, "origin", head, "refs/heads/feature", "", false)
+	if err == nil || !strings.Contains(err.Error(), "lefthook: lint job failed") {
+		t.Fatalf("push error must carry hook stdout, got %v", err)
+	}
+	err = stepGitPush(sctx, "origin", "refs/heads/feature", "", false)
+	if err == nil || !strings.Contains(err.Error(), "lefthook: lint job failed") {
+		t.Fatalf("stepGitPush error must carry hook stdout, got %v", err)
+	}
+}

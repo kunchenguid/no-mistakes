@@ -102,12 +102,6 @@ func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args
 }
 
 func runInDirWithEnvAndInputRaw(ctx context.Context, dir string, extraEnv []string, input string, args ...string) ([]byte, error) {
-	return runGitCapturing(ctx, dir, extraEnv, input, false, args...)
-}
-
-// runGitCapturing executes git; withStdoutInError appends the failed command's stdout
-// to the error, for callers whose hooks print their diagnosis there.
-func runGitCapturing(ctx context.Context, dir string, extraEnv []string, input string, withStdoutInError bool, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(nonInteractiveEnvForContext(ctx, dir), extraEnv...)
@@ -126,11 +120,7 @@ func runGitCapturing(ctx context.Context, dir string, extraEnv []string, input s
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = fmt.Errorf("%w (%v)", ctxErr, err)
 		}
-		detail := strings.TrimSpace(stderr.String())
-		if stdoutText := strings.TrimSpace(string(out)); withStdoutInError && stdoutText != "" {
-			detail = stdoutText + "\n" + detail
-		}
-		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(detail)))
+		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
 	}
 	return out, nil
 }
@@ -673,10 +663,7 @@ func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expect
 		}
 	}
 	args = append(args, source+":"+ref)
-	if isBareGitDir(dir) {
-		args = append([]string{"--git-dir=" + dir}, args...)
-	}
-	_, err := runGitCapturing(ctx, dir, nil, "", true, args...)
+	_, err := Run(ctx, dir, args...)
 	return err
 }
 
