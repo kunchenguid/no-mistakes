@@ -748,6 +748,10 @@ func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, wtDir, "run_cleanup")
 }
 
+func (m *RunManager) sweepRunEvidenceProcesses(repoID, runID, evidenceDir string) {
+	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, evidenceDir, "run_cleanup")
+}
+
 // cleanupRunEvidence tidies up after one finished run, then bounds the whole
 // evidence directory, the run's own step-log directory (see reapRunLogs), and
 // any leftover run worktree that immediate removal did not clear (see
@@ -789,6 +793,11 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	removePath := filepath.Join(root, runID)
 	if pinned := m.recordedRunEvidenceDir(cfg, runID); pinned != "" {
 		removePath = pinned
+	}
+	if m.db != nil {
+		if run, err := m.db.GetRun(runID); err == nil && run != nil {
+			m.sweepRunEvidenceProcesses(run.RepoID, runID, removePath)
+		}
 	}
 	if err := os.Remove(removePath); err != nil && !os.IsNotExist(err) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
