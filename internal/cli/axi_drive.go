@@ -785,10 +785,9 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 	return &exitError{code: 1}
 }
 
-// adoptPublishedHelp names the one exit from a private-mirror refusal that no
-// reconciliation proof can clear: a rewrite the operator already published. It
-// is offered only where branch synchronization accepts that adoption, so the
-// refusal never points at a command that would refuse in turn.
+// adoptPublishedHelp offers adoption after an at-risk private-mirror refusal
+// only for a qualifying ownership state and divergent history. The command
+// itself must still verify publication, cleanliness, and preservation evidence.
 func adoptPublishedHelp(ctx context.Context, env *axiEnv, err error) []string {
 	var atRisk *gate.AtRiskError
 	if !errors.As(err, &atRisk) || !branchsync.AdoptPublishedApplies(inspectAxiBranchSync(ctx, env)) {

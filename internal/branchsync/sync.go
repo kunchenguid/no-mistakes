@@ -1766,9 +1766,9 @@ func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runID
 // published there. Two lanes qualify once the local head has diverged from
 // them: a custody-returned lane still at its recovered pipeline head, and a
 // user-owned lane still at the submitted head its released run never moved
-// (issue #1293). A rewrite resolved by hand defeats every reconciliation proof
-// of the old private head's content, so the operator's own publication of the
-// new head is what this command accepts instead. It never pushes to that
+// (issue #1293). A rewrite resolved by hand can leave old private content that
+// reconciliation cannot prove survives, so the operator's own publication of
+// the new head is what this command accepts instead. It never pushes to that
 // target or changes the worktree. The superseded lane head is preserved first,
 // and the gate update is a compare-and-swap, so a concurrent lane update wins
 // rather than being overwritten.
