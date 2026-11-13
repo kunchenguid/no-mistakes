@@ -695,3 +695,34 @@ func TestGetPRRejectsResponseForADifferentPullRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestRunJSONIgnoresStderrOnSuccess(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {
+			stdout: `{"id":7,"title":"T","description":"body"}`,
+			stderr: "warning: twg update available",
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+
+	got, err := h.GetPRContent(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("a stderr warning beside valid stdout JSON must not fail the call: %v", err)
+	}
+	if got.Title != "T" || got.Body != "body" {
+		t.Fatalf("content = %+v", got)
+	}
+}
+
+func TestRunJSONFailureSurfacesStderr(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests get 7 --workspace owner --repo repo -o json --output-summary none": {
+			stderr: "AUTH_INVALID: token missing",
+			code:   1,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+
+	_, err := h.GetPRContent(context.Background(), &scm.PR{Number: "7"})
+	if err == nil || !strings.Contains(err.Error(), "AUTH_INVALID: token missing") {
+		t.Fatalf("error = %v, want twg's stderr text", err)
+	}
+}
