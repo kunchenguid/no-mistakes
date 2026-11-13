@@ -231,3 +231,66 @@ func TestShutdown_KeepsLiveParkedRunForResume(t *testing.T) {
 
 	approveResumedRun(t, p, d, runID)
 }
+
+// A clean stop while the CI step is monitoring an open PR must leave the run
+// as a crash would: the next start records ci_monitor_interrupted (the PR stays
+// open), never a failed run.
+func TestShutdown_CIMonitorWithOpenPRIsInterruptedNotFailed(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "shutdown-ci-monitor")
+	started := make(chan struct{})
+	steps := func() []pipeline.Step {
+		return []pipeline.Step{&mockSlowStep{name: types.StepCI, started: started}}
+	}
+	start := func() chan error {
+		errCh := make(chan error, 1)
+		go func() { errCh <- RunWithOptions(p, d, steps) }()
+		waitForDaemonReady(t, p)
+		return errCh
+	}
+
+	errCh := start()
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pushed ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &pushed)
+	_ = client.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(60 * time.Second):
+		t.Fatal("ci step never started")
+	}
+	if err := d.UpdateRunPRURL(pushed.RunID, "https://github.com/example/repo/pull/1"); err != nil {
+		t.Fatal(err)
+	}
+
+	stopParkedRunDaemon(t, p, errCh)
+
+	stopped, err := d.GetRun(pushed.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Status != types.RunRunning {
+		t.Fatalf("run after clean stop = status %s error %q, want running so the next start can recover it", stopped.Status, errText(stopped.Error))
+	}
+
+	stopParkedRunDaemon(t, p, start())
+
+	recovered, err := d.GetRun(pushed.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != types.RunCIMonitorInterrupted {
+		t.Fatalf("run after restart = status %s error %q, want %s", recovered.Status, errText(recovered.Error), types.RunCIMonitorInterrupted)
+	}
+}

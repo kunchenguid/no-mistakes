@@ -1658,6 +1658,12 @@ rounds:
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", &durationMS)
 				return false, "", ErrHandoff
 			}
+			// A clean stop leaves the CI monitor recorded as running, as a crash
+			// does, so the next start's stale-run recovery applies the same
+			// ci_monitor_interrupted outcome instead of a failed run.
+			if stepName == types.StepCI && errors.Is(contextCause, ErrDaemonShutdown) {
+				return false, "", ErrParkedAtShutdown
+			}
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
