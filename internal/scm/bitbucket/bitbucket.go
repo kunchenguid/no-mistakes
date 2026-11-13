@@ -19,6 +19,7 @@
 package bitbucket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -241,11 +242,22 @@ func jsonArgs(args []string) []string {
 	return append(args, "-o", "json", outputSummaryFlag, "none")
 }
 
-// runJSON runs a twg subcommand and returns its combined output. Every
+// runJSON runs a twg subcommand and returns its stdout, the only stream that
+// carries the JSON payload. stderr is kept apart so a warning twg or a PATH
+// wrapper prints beside an otherwise successful reply cannot corrupt the
+// JSON; on failure the returned bytes are stderr then stdout, so callers
+// that quote them in an error still show the command's own error text. Every
 // JSON-parsed twg call goes through it so a new call cannot forget the
 // output flags; callers must not pass their own `-o` or `--output-summary`.
 func (h *Host) runJSON(ctx context.Context, args []string) ([]byte, error) {
-	return h.cmd(ctx, "twg", jsonArgs(args)...).CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd := h.cmd(ctx, "twg", jsonArgs(args)...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return append(stderr.Bytes(), stdout.Bytes()...), err
+	}
+	return stdout.Bytes(), nil
 }
 
 // runWithDescription runs a twg bb pull-requests command whose description is
