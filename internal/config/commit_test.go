@@ -227,6 +227,37 @@ func TestCommitRenderFixMessage_MultipleSummaryPlaceholdersShareTheCap(t *testin
 	}
 }
 
+func TestCommitRenderFixMessageForBranch_MinimalSummaryBudget(t *testing.T) {
+	t.Parallel()
+
+	for _, summaries := range []int{1, 2} {
+		for _, tt := range []struct {
+			budget int
+			want   string
+		}{
+			{budget: 3, want: "…"},
+			{budget: 2, want: ""},
+			{budget: 1, want: ""},
+			{budget: 0, want: ""},
+		} {
+			t.Run(fmt.Sprintf("%d summaries/%d bytes", summaries, tt.budget), func(t *testing.T) {
+				t.Parallel()
+				branches := 16 - summaries
+				literal := strings.Repeat("x", 4096-250*branches-tt.budget*summaries)
+				commit := Commit{FixMessage: literal + strings.Repeat("{{.Branch}}", branches) + strings.Repeat("{{.Summary}}", summaries)}
+				got, err := commit.RenderFixMessageForBranch(types.StepReview, "abcd", strings.Repeat("b", 250))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := literal + strings.Repeat("b", 250*branches) + strings.Repeat(tt.want, summaries)
+				if got != want {
+					t.Fatalf("rendered message = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
 func TestCommitRenderFixMessage_RejectsSubjectOverflowWithoutASummary(t *testing.T) {
 	t.Parallel()
 

@@ -566,11 +566,11 @@ func fitFixMessageSummary(tmpl *template.Template, data fixMessageData) (string,
 
 // truncateFixMessageSummary cuts summary to at most budget bytes without
 // splitting a UTF-8 rune, and marks the cut with fixMessageEllipsis, which
-// counts toward the budget. A budget smaller than the marker drops the summary
-// instead of leaving an unmarked fragment.
+// counts toward the budget. Only a budget below three bytes drops the summary
+// entirely without a marker.
 func truncateFixMessageSummary(summary string, budget int) string {
 	limit := budget - len(fixMessageEllipsis)
-	if limit <= 0 {
+	if limit < 0 {
 		return ""
 	}
 	cut := summary[:limit]
