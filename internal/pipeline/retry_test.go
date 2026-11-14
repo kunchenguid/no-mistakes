@@ -375,6 +375,18 @@ func TestPlanRetryCheckpointContinuesOnlyThePushedRunsDelivery(t *testing.T) {
 			}
 			return run
 		}},
+		{name: "ci fix attempt errored after its selection was saved", failed: types.StepCI, want: "already ran fix round 1", mutate: func(t *testing.T, database *db.DB, run *db.Run) *db.Run {
+			rows, _ := database.GetStepsByRun(run.ID)
+			round, err := database.InsertStepRound(rows[4].ID, 1, "initial", nil, nil, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := `["ci-1"]`
+			if err := database.SetStepRoundSelection(round.ID, &ids, db.RoundSelectionSourceAutoFix); err != nil {
+				t.Fatal(err)
+			}
+			return run
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database, _, _, repo := setupTest(t)
@@ -434,5 +446,51 @@ func TestExecutor_DeliveryRetryCarriesPushAndRestartsPR(t *testing.T) {
 	}
 	if rounds, err := database.GetRoundsByStep(rows[3].ID); err != nil || len(rounds) != 1 || rounds[0].Trigger != "retry" {
 		t.Fatalf("pr rounds = %+v (err %v), want one retry round", rounds, err)
+	}
+}
+
+func TestExecutor_DeliveryRetryNeverStartsACIFixRound(t *testing.T) {
+	database, p, _, repo := setupTest(t)
+	source := publishedSourceRun(t, database, repo, types.StepCI)
+	continuation, err := database.InsertRun(repo.ID, "feature", source.HeadSHA, "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciCalls := 0
+	pipelineSteps := make([]Step, len(deliverySteps))
+	for i, name := range deliverySteps {
+		pipelineSteps[i] = newPassStep(name)
+		if name == types.StepCI {
+			pipelineSteps[i] = &adaptiveCallStep{name: name, fn: func(sctx *StepContext) (*StepOutcome, error) {
+				ciCalls++
+				if sctx.Fixing || !sctx.DeliveryRetry {
+					t.Errorf("ci round %d: Fixing = %v, DeliveryRetry = %v; want a plain delivery round", ciCalls, sctx.Fixing, sctx.DeliveryRetry)
+				}
+				return &StepOutcome{NeedsApproval: true, AutoFixable: true, Findings: `{"findings":[{"severity":"error","file":"main.go","description":"red check","action":"auto-fix"}],"summary":"1 issue"}`}, nil
+			}}
+		}
+	}
+	cfg := &config.Config{AutoFix: config.AutoFix{CI: 3}}
+	exec := NewExecutor(database, p, cfg, nil, pipelineSteps, nil)
+	exec.SetRetrySource(source.ID)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), continuation, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for exec.Respond(types.StepCI, types.ActionApprove, nil) != nil {
+		select {
+		case err := <-done:
+			t.Fatalf("executor ended before the ci gate parked: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ci gate never parked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if ciCalls != 1 {
+		t.Fatalf("ci executed %d times, want 1: a delivery retry must not start an auto_fix.ci round", ciCalls)
 	}
 }

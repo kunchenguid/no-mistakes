@@ -69,6 +69,8 @@ type RetryCheckpoint struct {
 	Steps []*db.StepResult
 	// Round is the failed step's round that was in flight when it failed.
 	Round int
+	// Delivery marks the continuation of a run that already pushed.
+	Delivery bool
 }
 
 // Failed is the failed step's record.
@@ -179,9 +181,10 @@ func planDeliveryCheckpoint(database *db.DB, run *db.Run, rows []*db.StepResult,
 		return nil, fmt.Errorf("read step %s rounds: %w", row.StepName, err)
 	}
 	for _, round := range rounds {
-		if round.IsFixRound() {
+		spentSelection := round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceAutoFix
+		if round.IsFixRound() || spentSelection {
 			return nil, refuseCheckpoint(RetryProofEvidence, "step %s already ran fix round %d, and a continuation would restart its fix budget", row.StepName, round.Round)
 		}
 	}
-	return &RetryCheckpoint{Index: failed, Steps: rows, Round: len(rounds) + 1}, nil
+	return &RetryCheckpoint{Index: failed, Steps: rows, Round: len(rounds) + 1, Delivery: true}, nil
 }
