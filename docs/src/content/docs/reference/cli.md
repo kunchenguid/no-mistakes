@@ -483,7 +483,7 @@ For example, a merge automation can compare its live PR head with `run.last_push
 
 ## no-mistakes axi sync
 
-Freshly check or apply the guarded synchronization offered by a `branch_sync.next_action`.
+Freshly check or apply guarded branch synchronization, or explicitly recover custody or adopt a published rewrite.
 
 ```sh
 no-mistakes axi sync --check
@@ -513,7 +513,7 @@ A terminal run whose recorded head was never verified (for example a Review fix 
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
-Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+Run `axi sync` without flags only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
 
 ### Rewritten push target recovery
 
@@ -523,9 +523,14 @@ That recovery re-reads the live target, anchors the superseded pipeline head und
 
 ### Published-rebase gate recovery
 
-A custody-returned branch can later be rebased and force-with-lease pushed to its configured target. Its local head then diverges from the preserved gate lane, so an ordinary gate push correctly rejects it as non-fast-forward. Status reports `state: custody_returned`, `relation: diverged`, and `next_action.code: adopt_published` instead of directing another rejected `axi run`.
+`axi sync --adopt-published` recovers a stale gate lane after an externally rebased branch has been published to its configured push target. It accepts two branch states:
 
-`axi sync --adopt-published` is the explicit recovery. It requires a clean exact checked-out branch, the same recovered lane at its recorded preserved head, and a live configured push target whose branch exactly equals local `HEAD`. It fetches that verified object into the local gate, preserves the old gate head under the run's recovery ref, then compare-and-swaps only the current lane. It never pushes to the configured target or changes the worktree. A missing, changed, or different target head, a changed gate lane, or changed local assumptions refuses without replacing the lane.
+- `custody_returned`: the gate lane still holds the recovered pipeline head. A diverged local head with a stale lane gets `next_action.code: adopt_published` from status. Adoption preserves the old head under the run's recovery ref.
+- `user_owned`: the gate lane still holds the submitted head that the released run never moved. Status offers no `next_action` for this state. A later rebase, including one with a hand-resolved conflict, can leave private content that [private-mirror reconciliation](/no-mistakes/concepts/gate-model/#private-mirror-reconciliation) cannot prove survives. In that case a fresh `axi run` refuses with `refusing to reconcile private mirror ref`, and its `help` names the adoption command. Adoption preserves the superseded head using the archive described in that reconciliation contract.
+
+Both paths require a clean exact checked-out branch whose local head has diverged from the recorded head, the gate lane still at that recorded head, and a live configured push target whose branch exactly equals local `HEAD`. The command fetches that verified object into the local gate, preserves the superseded head, then compare-and-swaps only the current lane. It never pushes to the configured target or changes the worktree. A missing, changed, or different target head, a changed gate lane or local assumptions, or conflicting preservation evidence refuses without replacing the lane. A target that does not have the exact local head reports `safety: blocked_published_head_mismatch`.
+
+Successful adoption reports `next_action.code: run_pipeline`, so validation can start again on the same branch name. Later status still offers no action for a `user_owned` branch. Repeating adoption when the lane already holds local `HEAD` refuses with `blocked_adopt_published_not_applicable` and changes nothing.
 
 ### Custody recovery
 
