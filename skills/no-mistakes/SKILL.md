@@ -333,7 +333,10 @@ whenever continuing is not provably safe - a failure about the change itself,
 a moved or dirty branch, another run, or changed configuration (repository
 settings, the agent, or its model since the carried Review ran); then use
 `rerun` or address the failure. Like `respond`, it blocks until the next
-`gate:` or outcome.
+`gate:` or outcome. A run that pushed and then failed in PR or CI, for
+example on a transient forge API error, can be retried the same way: the new
+run carries every step through Push, never pushes, and runs only PR and CI. It
+refuses unless the remote branch still has exactly the run's pushed head.
 
 Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.

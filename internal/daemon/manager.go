@@ -1979,6 +1979,14 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("record_worktree_placement")
 		return "", fmt.Errorf("record worktree placement: %w", err)
 	}
+	if shared := retry.sharedEvidenceDir(); shared != "" {
+		if err := m.db.SetRunEvidenceDir(run.ID, shared); err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
+			trackStartFailure("record_evidence_dir")
+			return "", fmt.Errorf("record evidence dir: %w", err)
+		}
+		run.EvidenceDir = &shared
+	}
 	if err := m.pinRunEvidenceDir(run, globalCfg); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
 		trackStartFailure("record_evidence_dir")
@@ -2115,12 +2123,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}
 	if retry != nil {
 		if err := retry.proveAtLaunch(ctx, m, globalCfg, cfg, effectiveRepoCfg, run.ID); err != nil {
-			m.discardRefusedRetryRun(run.ID, cfg)
+			m.discardRefusedRetryRun(run.ID, cfg, retry)
 			trackStartFailure("retry_proof")
 			return "", err
 		}
 		if err := retry.record(m.db, run); err != nil {
-			m.discardRefusedRetryRun(run.ID, cfg)
+			m.discardRefusedRetryRun(run.ID, cfg, retry)
 			trackStartFailure("record_retry")
 			return "", err
 		}

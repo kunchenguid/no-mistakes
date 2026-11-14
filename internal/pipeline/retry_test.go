@@ -312,3 +312,127 @@ func TestExecutor_RetryFailsClosedWhenTheSourceNoLongerMatchesThePipeline(t *tes
 		t.Fatalf("refused continuation recorded %d steps", len(rows))
 	}
 }
+
+var deliverySteps = []types.StepName{types.StepReview, types.StepTest, types.StepPush, types.StepPR, types.StepCI}
+
+// publishedSourceRun records a run that pushed its head and then failed at
+// failedStep with an ordinary error, recording no agent invocation cause.
+func publishedSourceRun(t *testing.T, database *db.DB, repo *db.Repo, failedStep types.StepName) *db.Run {
+	t.Helper()
+	run := failedSourceRun(t, database, repo, deliverySteps, failedStep)
+	rows, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.StepName == failedStep {
+			if err := database.FailStep(row.ID, "gh: GraphQL: Bad Gateway", 10); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := database.UpdateRunPublication(run.ID, db.PushBinding{HeadSHA: run.HeadSHA, TargetKind: "upstream", TargetFingerprint: "fp", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	published, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return published
+}
+
+func TestPlanRetryCheckpointContinuesOnlyThePushedRunsDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failed types.StepName
+		mutate func(t *testing.T, database *db.DB, run *db.Run) *db.Run
+		want   string
+	}{
+		{name: "pr failed", failed: types.StepPR},
+		{name: "ci failed", failed: types.StepCI},
+		{name: "a validation step failed", failed: types.StepTest, want: "only a failed pr or ci step can continue, but step test failed"},
+		{name: "push was skipped", failed: types.StepPR, want: "step push did not complete", mutate: func(t *testing.T, database *db.DB, run *db.Run) *db.Run {
+			rows, _ := database.GetStepsByRun(run.ID)
+			if err := database.CompleteStepWithStatus(rows[2].ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			return run
+		}},
+		{name: "head moved past the pushed head", failed: types.StepCI, want: "is not the head it last pushed", mutate: func(t *testing.T, database *db.DB, run *db.Run) *db.Run {
+			run.HeadSHA = "unpushed"
+			return run
+		}},
+		{name: "a push is in flight", failed: types.StepCI, want: "is not the head it last pushed", mutate: func(t *testing.T, database *db.DB, run *db.Run) *db.Run {
+			run.PushActive = true
+			return run
+		}},
+		{name: "ci already ran a fix round", failed: types.StepCI, want: "already ran fix round 2", mutate: func(t *testing.T, database *db.DB, run *db.Run) *db.Run {
+			rows, _ := database.GetStepsByRun(run.ID)
+			for round, trigger := range []string{"initial", "auto_fix"} {
+				if _, err := database.InsertStepRound(rows[4].ID, round+1, trigger, nil, nil, 10); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return run
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, _, _, repo := setupTest(t)
+			run := publishedSourceRun(t, database, repo, tc.failed)
+			if tc.mutate != nil {
+				run = tc.mutate(t, database, run)
+			}
+			checkpoint, err := PlanRetryCheckpoint(database, run, stepsNamed(deliverySteps...))
+			if tc.want == "" {
+				if err != nil || checkpoint.Failed().StepName != tc.failed {
+					t.Fatalf("checkpoint = %+v, err = %v; want a continuation of %s", checkpoint, err, tc.failed)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecutor_DeliveryRetryCarriesPushAndRestartsPR(t *testing.T) {
+	database, p, _, repo := setupTest(t)
+	source := publishedSourceRun(t, database, repo, types.StepPR)
+	sourceSteps, err := database.GetStepsByRun(source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := database.InsertRun(repo.ID, "feature", source.HeadSHA, "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := make([]*mockStep, len(deliverySteps))
+	pipelineSteps := make([]Step, len(deliverySteps))
+	for i, name := range deliverySteps {
+		steps[i] = newPassStep(name)
+		pipelineSteps[i] = steps[i]
+	}
+	exec := NewExecutor(database, p, &config.Config{}, nil, pipelineSteps, nil)
+	exec.SetRetrySource(source.ID)
+	if err := exec.Execute(context.Background(), continuation, repo, t.TempDir()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for i, want := range []int{0, 0, 0, 1, 1} {
+		if got := steps[i].callCount(); got != want {
+			t.Errorf("%s executed %d times, want %d", deliverySteps[i], got, want)
+		}
+	}
+	rows, err := database.GetStepsByRun(continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range rows[:3] {
+		if row.Status != types.StepStatusCompleted || row.CarriedFrom == nil || *row.CarriedFrom != sourceSteps[i].ID {
+			t.Errorf("%s = %+v, want completed and carried from %s", row.StepName, row, sourceSteps[i].ID)
+		}
+	}
+	if rounds, err := database.GetRoundsByStep(rows[3].ID); err != nil || len(rounds) != 1 || rounds[0].Trigger != "retry" {
+		t.Fatalf("pr rounds = %+v (err %v), want one retry round", rounds, err)
+	}
+}

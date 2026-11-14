@@ -205,6 +205,23 @@ func pipelineEvidenceRoot(p *paths.Paths, cfg *config.Config, run *db.Run) strin
 	return p.EvidenceRoot(configured)
 }
 
+// activeRunEvidenceDirs names the evidence directories pending and running
+// runs read. A delivery retry reads the failed run's directory, so that
+// directory's own run being terminal does not make it safe to remove.
+func activeRunEvidenceDirs(d *db.DB) (map[string]bool, error) {
+	runs, err := d.GetActiveRuns()
+	if err != nil {
+		return nil, fmt.Errorf("list active runs: %w", err)
+	}
+	pins := make(map[string]bool, len(runs))
+	for _, run := range runs {
+		if pinned := run.EvidencePath(); pinned != "" {
+			pins[worktrees.Canonical(pinned)] = true
+		}
+	}
+	return pins, nil
+}
+
 // reapEvidence bounds the on-disk evidence directory. It is what makes
 // no-mistakes responsible for its own scratch: before the relocation, evidence
 // sat in the shared system temp directory and the only thing that ever removed
@@ -231,6 +248,11 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 		runID   string
 	}
 	var candidates []candidate
+	activePins, err := activeRunEvidenceDirs(d)
+	if err != nil {
+		slog.Debug("skipping evidence cleanup", "reason", err)
+		return
+	}
 	seen := map[string]bool{}
 	for _, root := range append([]string{root}, additionalRoots...) {
 		root = worktrees.Canonical(root)
@@ -261,6 +283,10 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 			}
 			path := filepath.Join(root, runID)
 			if pinned := run.EvidencePath(); pinned != "" && worktrees.Canonical(pinned) != worktrees.Canonical(path) {
+				continue
+			}
+			if activePins[worktrees.Canonical(path)] {
+				slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", "an active run reads this evidence")
 				continue
 			}
 			if wt := run.WorktreePath(); wt != "" && evidencePlacementConflict(path, []string{wt}) != "" {

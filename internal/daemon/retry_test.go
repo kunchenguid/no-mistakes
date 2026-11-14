@@ -448,7 +448,7 @@ func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {
 			}
 			return f.source.ID
 		}},
-		{name: "a run that pushed", proof: "unpublished run", breakProof: func(t *testing.T, f *retryFixture) string {
+		{name: "a run that pushed and failed in validation", proof: "eligible failure", reason: "only a failed pr or ci step can continue", breakProof: func(t *testing.T, f *retryFixture) string {
 			if err := f.d.UpdateRunPushBinding(f.source.ID, db.PushBinding{HeadSHA: f.submitted, TargetKind: "origin", TargetFingerprint: "fp", Ref: "refs/heads/main"}); err != nil {
 				t.Fatal(err)
 			}

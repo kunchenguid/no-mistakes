@@ -13,7 +13,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
 
-// newAxiRetryCmd continues a run that failed on an agent invocation error.
+// newAxiRetryCmd continues a run that failed on an agent invocation error, or
+// a run that pushed and then failed in its PR or CI step.
 //
 // --run does not select a run. The retried run is always the current branch's
 // latest run, as for every mutating axi command; --run is the operator's
@@ -24,7 +25,7 @@ func newAxiRetryCmd() *cobra.Command {
 	var wait time.Duration
 	cmd := &cobra.Command{
 		Use:   "retry",
-		Short: "Continue a run that failed on an agent invocation error",
+		Short: "Continue a run that failed on an agent invocation error or in its delivery",
 		Long: "Continues the current branch's latest run when it failed because an agent\n" +
 			"invocation itself failed - a provider error, a usage limit, a transport\n" +
 			"failure, or the agent process exiting - instead of starting the whole\n" +
@@ -36,16 +37,21 @@ func newAxiRetryCmd() *cobra.Command {
 			"reviews the resulting head again in full before Test runs. Every later\n" +
 			"step runs normally.\n\n" +
 			"The retry refuses, and changes nothing, unless every proof holds: --run\n" +
-			"names the branch's latest run; that run failed, nothing is active on the\n" +
-			"branch, and it never pushed; its record shows exactly one failed step,\n" +
-			"failed on an agent invocation error, at or before Test; its preserved head\n" +
+			"names the branch's latest run; that run failed and nothing is active on\n" +
+			"the branch; for a run that never pushed, its record shows exactly one\n" +
+			"failed step, failed on an agent invocation error, at or before Test; its preserved head\n" +
 			"is still anchored in the local gate; the working tree is clean at exactly\n" +
 			"that head (adopt it first with `no-mistakes axi sync --recover`); and the\n" +
 			"run's model profile and the repository's gates are unchanged, and a carried\n" +
 			"Review's repository configuration, recorded global configuration, agent,\n" +
 			"and model are still the ones a new run would use. A failure\n" +
 			"about the change itself - a review finding, a failing test, a refused\n" +
-			"policy, a human decision - is never retried.\n\n" +
+			"policy, a human decision - is never retried before Push.\n\n" +
+			"A run that already pushed continues only its delivery: its failed step\n" +
+			"must be PR or CI, and a CI step must not have run a fix round. The new\n" +
+			"run carries every step through Push and never pushes. The remote branch\n" +
+			"is read fresh from the run's push target, and the retry refuses unless it\n" +
+			"is exactly the run's last pushed head; the read is repeated at launch.\n\n" +
 			"The new run records which run, step, and round it continues. Like `axi\n" +
 			"run`, retry then blocks until the next gate, CI-ready decision point, or\n" +
 			"final outcome, bounded by --wait (default 8m).",

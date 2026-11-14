@@ -677,7 +677,7 @@ That cancels the pipeline's in-flight work and forces a full re-validation; use 
 
 ## no-mistakes axi retry
 
-Continue a run that failed because an agent invocation itself failed, instead of starting the whole pipeline again.
+Continue a run that failed because an agent invocation itself failed, or a run that pushed and then failed in its PR or CI step, instead of starting the whole pipeline again.
 
 ```sh
 no-mistakes axi retry --run <id>
@@ -685,7 +685,7 @@ no-mistakes axi retry --run <id>
 
 An agent invocation failure is an error the agent call returned while its context was still live: a provider processing error, a usage or quota limit, a transport failure, or the agent process exiting.
 The executor records that cause on the failed step when the step fails with that error.
-A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never retried; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
+A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never retried before Push; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
 
 The retry starts a new run at the failed run's preserved head, so every correction the pipeline already committed is kept:
 
@@ -693,7 +693,15 @@ The retry starts a new run at the failed run's preserved head, so every correcti
 - The failed step restarts from the beginning, with round trigger `retry`. A failed agent turn is never replayed, so a Review that failed during a fix round reviews the resulting head again in full before Test runs. Fixer commits the failed run never re-reviewed are flagged to that review together with the failed run's rounds, exactly as for a rerun.
 - Every later step runs normally. Per-run skips of steps that never ran are kept.
 
-The failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
+For a run that never pushed, the failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
+
+A run that already pushed continues only its delivery.
+Its failed step must be PR or CI, and any failure there qualifies, such as a transient forge API error or a forge CLI call that timed out.
+A PR or CI step that was skipped, for example because the forge CLI was not authenticated when the step started, leaves the run `completed` rather than `failed`, so it is not continued.
+The new run carries every step through Push, so Review, Test, and the other validation steps never run again, and Push never runs: the continuation never pushes.
+Instead, the remote branch is read fresh from the push target the run used, and it must still be exactly the run's `last_pushed_sha`. The new run records that verified head as its own push binding, and the PR and CI steps then run as usual.
+A failed PR step runs again, which finds and updates the branch's existing PR rather than opening a second one; a failed CI step runs again against the inherited PR.
+The new run reads the failed run's evidence directory, so the PR body keeps the carried Test artifacts.
 The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, Pi profile, and [reviewer pin](/no-mistakes/reference/global-config/#per-run-reviewer-profiles); retry takes none of the flags that would change them.
 
 `--run` names the failed run, as `axi status` shows it.
@@ -706,15 +714,15 @@ The retry refuses, changing nothing, unless every proof holds:
 | `latest run` | no newer run exists on the branch |
 | `no active run` | no run is active on the branch |
 | `failed run` | the run's status is `failed`, not `cancelled` or `completed` |
-| `unpublished run` | the run never pushed |
 | `durable checkpoint` | the run's record holds one row per step of its pinned pipeline: completed or skipped steps, exactly one failed step, then steps that never ran |
-| `eligible failure` | the failed step's recorded cause is an agent invocation failure |
-| `reusable evidence` | the failed step is Test or an earlier step |
-| `preserved head` | the run verified its final head when it failed, and the gate still keeps exactly that commit: its recovery ref when the pipeline moved the head, the submitted commit otherwise |
+| `eligible failure` | for a run that never pushed, the failed step's recorded cause is an agent invocation failure; for a run that pushed, the failed step is PR or CI |
+| `reusable evidence` | for a run that never pushed, the failed step is Test or an earlier step; for a run that pushed, a failed CI step ran no fix round, because the new run would restart its [`auto_fix.ci`](/no-mistakes/reference/repo-config/#auto_fix) budget |
+| `preserved head` | a run that never pushed verified its final head when it failed, and the gate still keeps exactly that commit: its recovery ref when the pipeline moved the head, the submitted commit otherwise |
+| `published head` | a run that pushed completed Push, its head is its `last_pushed_sha`, its recorded push target is the repository's current push target, and a fresh `git ls-remote` of that branch returns exactly `last_pushed_sha`. A remote that cannot be read, a deleted branch, and any other head refuse. The read is repeated when the new run launches, so a remote change between the two refuses the retry |
 | `clean branch` | the working tree has no uncommitted changes |
-| `matching head` | the local `HEAD` is exactly the preserved head; adopt it first with `no-mistakes axi sync --recover` |
+| `matching head` | the local `HEAD` is exactly the run's head: its preserved head, or for a run that pushed, its pushed head; adopt a preserved head first with `no-mistakes axi sync --recover` |
 | `compatible configuration` | the run has no verification plan, its Pi profile still resolves to the same model and effort, and the repository's gates, read from the freshly fetched trusted default branch, are the gates the run pinned. A carried Review also needs the same effective repository configuration as the trusted commit its rounds recorded, the same global configuration when its rounds recorded one, and the same agent and model that served each carried step (an `auto` agent is resolved first). The configuration is checked twice: once before the launch, and again against the configuration the new run actually loads, so a change between the two refuses the retry. The refusal names the changed setting |
-| `review conversation` | a carried Review that recorded a question still has its question records on disk. They are copied into the new run, so open and withdrawn questions reach the PR body; if they are gone, the retry is refused |
+| `review conversation` | a carried Review that recorded a question still has its question records on disk. They are copied into the new run, or read in place by a delivery continuation, so open and withdrawn questions reach the PR body; if they are gone, the retry is refused |
 
 For the agent and model proof, configured reviewer fallbacks are eligible under
 the base or later-round role that served the invocation, including coverage turns.

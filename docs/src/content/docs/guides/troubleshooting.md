@@ -179,6 +179,17 @@ The retry keeps every committed correction, carries the steps before the failed 
 It refuses, naming the proof that failed, when the failure is about the change itself, the branch or head moved, or the configuration changed; use `no-mistakes rerun` then.
 See [`no-mistakes axi retry`](/no-mistakes/reference/cli/#no-mistakes-axi-retry) for every proof.
 
+### A run pushed, then failed in PR or CI
+
+When Push succeeded and the PR or CI step then failed, for example on a transient forge API error, continue only the delivery:
+
+```sh
+no-mistakes axi retry --run <id>
+```
+
+The new run carries every validation step and Push, runs only PR and CI, and never pushes.
+It refuses when the remote branch cannot be read or no longer has the run's pushed head; use `no-mistakes rerun` then.
+
 ### Push fails with `refusing to force-push`
 
 This means the live remote branch changed after the pipeline's last observed head and contains commit(s) the validated worktree did not incorporate.
