@@ -56,6 +56,7 @@ func TestStartInstallsLaunchAgentAndBootstrapsManagedDaemon(t *testing.T) {
 		"<key>EnvironmentVariables</key>",
 		"<key>HOME</key>",
 		"<string>" + home + "</string>",
+		"<key>ProcessType</key>\n  <string>Interactive</string>",
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
 	} {
