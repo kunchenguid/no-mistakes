@@ -196,3 +196,43 @@ func TestLastRepairConflictBaseCompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestPendingObservationsExclusionsResetIdleCredit(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"approval", "manual", "rerun", "duplicate-id", "duplicate-fallback"} {
+		t.Run(name, func(t *testing.T) {
+			check := scm.Check{Name: "build", ProviderID: "build-1", State: "PENDING", Bucket: scm.CheckBucketPending}
+			if name == "duplicate-fallback" {
+				check.ProviderID = ""
+			}
+			start := time.Unix(1700000000, 0)
+			tracker := pendingObservations{window: 20 * time.Minute}
+			if got := tracker.observe("head", []scm.Check{check}, checkRerunBudget{}, start); len(got) != 0 {
+				t.Fatalf("first observation stalled: %+v", got)
+			}
+			excluded := check
+			reruns := checkRerunBudget{}
+			switch name {
+			case "approval":
+				excluded.AwaitingApproval = true
+			case "manual":
+				excluded.AwaitingManualJob = true
+			case "rerun":
+				reruns.rollup = map[string]rerunRollupState{"build": {}}
+			}
+			checks := []scm.Check{excluded}
+			if name == "duplicate-id" || name == "duplicate-fallback" {
+				checks = append(checks, excluded)
+			}
+			if got := tracker.observe("head", checks, reruns, start.Add(time.Hour)); len(got) != 0 {
+				t.Fatalf("excluded checks stalled: %+v", got)
+			}
+			if got := tracker.observe("head", []scm.Check{check}, checkRerunBudget{}, start.Add(2*time.Hour)); len(got) != 0 {
+				t.Fatalf("excluded observation retained idle credit: %+v", got)
+			}
+			if got := tracker.observe("head", []scm.Check{check}, checkRerunBudget{}, start.Add(2*time.Hour+20*time.Minute)); len(got) != 1 {
+				t.Fatalf("continuous pending check did not stall: %+v", got)
+			}
+		})
+	}
+}

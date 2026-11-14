@@ -1360,14 +1360,15 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundCannotWithdrawTheOperatorsOwnF
 		t.Fatal(err)
 	}
 	// The gate is already fix_review, so the status cannot say the answer round
-	// landed; its own finding is what does.
+	// landed; its own finding is what does. Findings are persisted before the
+	// response handler is registered, so also wait for the round to re-park.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		steps, err = database.GetStepsByRun(run.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(steps) > 0 && steps[0].FindingsJSON != nil && strings.Contains(*steps[0].FindingsJSON, "finalize turn ran") {
+		if len(steps) > 0 && steps[0].Status == types.StepStatusFixReview && steps[0].FindingsJSON != nil && strings.Contains(*steps[0].FindingsJSON, "finalize turn ran") {
 			break
 		}
 		if time.Now().After(deadline) {
