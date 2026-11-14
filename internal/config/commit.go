@@ -535,8 +535,9 @@ func validateFixMessageTemplate(tmpl *template.Template) error {
 
 // fitFixMessageSummary bounds the agent-provided summary so the rendered
 // subject fits maxFixMessageSubjectBytes. A summary that cannot fit is cut on a
-// UTF-8 rune boundary and marked with an ellipsis: a cosmetic length overrun
-// must not fail the fix round and lose the fix commit it already made (#1777).
+// UTF-8 rune boundary and marked with an ellipsis when the marker fits: a
+// cosmetic length overrun must not fail the fix round and lose the fix commit
+// it already made (#1777).
 // Every other template value stays authoritative, so a template whose literal
 // text, step, and branch alone overflow the cap still fails.
 func fitFixMessageSummary(tmpl *template.Template, data fixMessageData) (string, error) {
