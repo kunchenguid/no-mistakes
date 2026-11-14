@@ -18,7 +18,8 @@ import (
 
 // This integration driver uses the production renderer, SQLite, git publication,
 // and an installed gh. The wrapper records argv and execs gh without substituting
-// its response. No agent, uploader, forge, or credential is mocked.
+// its response. A synthetic installation token forces local credential-class
+// refusal without reading the operator's keychain or contacting GitHub.
 func TestPRMediaOptOutWithRealGH(t *testing.T) {
 	realGH, err := exec.LookPath("gh")
 	if err != nil {
@@ -34,9 +35,10 @@ func TestPRMediaOptOutWithRealGH(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
-	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+	for _, key := range []string{"GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
 		t.Setenv(key, "")
 	}
+	t.Setenv("GH_TOKEN", "ghs_no_mistakes_test_refused")
 	t.Setenv("GH_HOST", "github.com")
 	t.Setenv("GH_PROMPT_DISABLED", "1")
 	t.Setenv("NM_MEDIA_GH_CALLS", calls)
@@ -98,6 +100,9 @@ func TestPRMediaOptOutWithRealGH(t *testing.T) {
 			if got := strings.Count(string(recorded), "auth token"); got != wantCalls {
 				t.Errorf("gh auth token calls = %d, want %d: %s", got, wantCalls, recorded)
 			}
+			if got := len(strings.FieldsFunc(string(recorded), func(r rune) bool { return r == '\n' })); got != wantCalls {
+				t.Errorf("unexpected gh calls beyond local token resolution: %s", recorded)
+			}
 			if strings.Contains(markdown, "user-attachments") {
 				t.Error("opt-out or credential refusal must not emit an attachment URL")
 			}
@@ -124,7 +129,7 @@ func TestPRMediaOptOutWithRealGH(t *testing.T) {
 			if got := gitCmd(t, sctx.WorkDir, "status", "--porcelain"); got != "" {
 				t.Errorf("publication dirtied code branch: %s", got)
 			}
-			transcript := fmt.Sprintf("Scenario: %s\nGlobal config:\n%s\nRepo config:\n%s\ngh invocations (real binary, isolated empty credentials):\n%s\nProduct log:\n%s\nPublished evidence tree:\n%s\n\nGenerated PR testing markdown:\n%s\n", tc.name, globalYAML, repoYAML, recorded, strings.Join(logs, "\n"), remoteState, markdown)
+			transcript := fmt.Sprintf("Scenario: %s\nGlobal config:\n%s\nRepo config:\n%s\ngh invocations (real binary, synthetic rejected installation token):\n%s\nProduct log:\n%s\nPublished evidence tree:\n%s\n\nGenerated PR testing markdown:\n%s\n", tc.name, globalYAML, repoYAML, recorded, strings.Join(logs, "\n"), remoteState, markdown)
 			t.Log(transcript)
 			if evidence != "" {
 				if err := os.WriteFile(filepath.Join(evidence, tc.name+".txt"), []byte(transcript), 0o644); err != nil {

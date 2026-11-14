@@ -192,7 +192,7 @@ func TestRecoverReturnsCustodyAtTheRecordedHeadThatExtendsTheGateBranch(t *testi
 	runsBefore := len(mustRuns(t, f.db, f.repo.ID))
 	remoteBefore := mustRun(t, f.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
 
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Safety != "custody_returned" {
 		t.Fatalf("recovery at the recorded head = %#v", state)
 	}
@@ -221,7 +221,7 @@ func TestRecoverReturnsCustodyAtTheRecordedHeadThatExtendsTheGateBranch(t *testi
 	if err != nil || run.HeadSHA != f.preserved || run.TerminalHeadVerifiedAt == nil || run.CustodyReturnedAt == nil || ptr(run.ReviewApprovedHeadSHA) != reviewed || run.Status != types.RunFailed {
 		t.Fatalf("recovered run = %#v, err %v", run, err)
 	}
-	if second := f.service.Recover(f.ctx, false); !second.Recovered || second.Changed {
+	if second := f.service.Recover(f.ctx, false, nil); !second.Recovered || second.Changed {
 		t.Fatalf("repeated recovery = %#v", second)
 	}
 	if got := len(mustRuns(t, f.db, f.repo.ID)); got != runsBefore {
@@ -354,7 +354,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		state := f.service.Recover(f.ctx, false)
+		state := f.service.Recover(f.ctx, false, nil)
 		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
 			t.Fatalf("stale-proof recovery = %#v", state)
 		}

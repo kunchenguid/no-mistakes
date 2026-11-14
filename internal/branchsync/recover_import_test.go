@@ -102,7 +102,7 @@ func checkRecoverHeadCarryingPreservedWork(t *testing.T, localHasBoth, gateHasBo
 		t.Fatal("inspection wrote or imported objects")
 	}
 
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if !recovered.Recovered || recovered.Changed {
 		t.Fatalf("recover = %#v", recovered)
 	}
@@ -135,7 +135,7 @@ func TestRecoverLocalOnlyHeadDivergingFromPreservedStaysRefusedAndPreservesBoth(
 	state := f.service.InspectCached(f.ctx)
 	assertPinnedKeepLocalOffer(t, state, f.anchorRef())
 
-	refused := f.service.Recover(f.ctx, false)
+	refused := f.service.Recover(f.ctx, false, nil)
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {
 		t.Fatalf("recover = %#v", refused)
 	}
@@ -193,7 +193,7 @@ func TestRecoverPreservedHeadContainingLocalOnlyWorkIsAdoptedWithoutLocalHeadInG
 	if state.Safety != "blocked_pipeline_owned_recoverable" || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover" {
 		t.Fatalf("inspection = %#v", state)
 	}
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if !recovered.Recovered || !recovered.Changed {
 		t.Fatalf("recover = %#v", recovered)
 	}
@@ -224,7 +224,7 @@ func TestRecoverImportProofRefusesUnrelatedHistoriesDirtyWorktreesAndConflicting
 		mustRun(t, f.local, "commit", "-m", "unrelated root")
 		mustRun(t, f.local, "branch", "-M", "feature/recover")
 		assertPinnedKeepLocalOffer(t, f.service.InspectCached(f.ctx), f.anchorRef())
-		if refused := f.service.Recover(f.ctx, false); refused.Recovered || f.custodyReturned() {
+		if refused := f.service.Recover(f.ctx, false, nil); refused.Recovered || f.custodyReturned() {
 			t.Fatalf("unrelated histories recovered: %#v", refused)
 		}
 	})
@@ -236,7 +236,7 @@ func TestRecoverImportProofRefusesUnrelatedHistoriesDirtyWorktreesAndConflicting
 		f.commitRepair("extra.txt", "repair only\n")
 		mustWrite(t, filepath.Join(f.local, "extra.txt"), "dirty edit\n")
 		assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
-		if refused := f.service.Recover(f.ctx, false); refused.Recovered || f.custodyReturned() {
+		if refused := f.service.Recover(f.ctx, false, nil); refused.Recovered || f.custodyReturned() {
 			t.Fatalf("dirty worktree recovered: %#v", refused)
 		}
 	})
@@ -248,7 +248,7 @@ func TestRecoverImportProofRefusesUnrelatedHistoriesDirtyWorktreesAndConflicting
 		f.commitRepair("extra.txt", "repair only\n")
 		mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
 		assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
-		if refused := f.service.Recover(f.ctx, false); refused.Recovered || f.custodyReturned() {
+		if refused := f.service.Recover(f.ctx, false, nil); refused.Recovered || f.custodyReturned() {
 			t.Fatalf("conflicting anchor recovered: %#v", refused)
 		}
 	})

@@ -275,9 +275,13 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible Git change is moving the local gate branch to the exact required")
 				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree is never touched and the pipeline commits stay at the")
 				fmt.Fprintln(cmd.OutOrStdout(), "  recovery ref.")
-			} else if state.Recovery != nil && state.Recovery.KeepLocal {
+			} else if state.Recovery != nil && state.Recovery.Source == "bound_archive" && state.Recovery.KeepLocal {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible Git change is moving the local gate branch to the exact required")
 				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree and verified divergent archive are never touched.")
+			} else if state.Recovery != nil && state.Recovery.Source == "available_heads" {
+				fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring all available stranded heads and moving the")
+				fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head. No commits are discarded or merged;")
+				fmt.Fprintln(cmd.OutOrStdout(), "  the worktree is never touched. Changed preservation evidence makes recovery refuse.")
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring available preserved pipeline commits, discarding")
 				fmt.Fprintln(cmd.OutOrStdout(), "  genuinely missing ones, and moving the local gate branch to your current head;")
@@ -309,7 +313,7 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		}
 	}
 
-	recovered := service.Recover(cmd.Context(), keepLocal)
+	recovered := service.Recover(cmd.Context(), keepLocal, state.Recovery)
 	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
@@ -404,6 +408,9 @@ func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
+			if state.Recovery != nil && state.Recovery.Source == "available_heads" {
+				return "divergent local and pipeline work is available; recover custody with `no-mistakes sync --recover --keep-local` to keep the local head and anchor the pipeline work without discarding or merging commits"
+			}
 			if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "pinned_head" {
 				return "pipeline commits stay at the recovery ref and are not on the branch; recover custody at the current local head with `no-mistakes sync --recover --keep-local`"
 			}
@@ -485,7 +492,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 	case check:
 		state = service.Refresh(cmd.Context())
 	case recover:
-		state = service.Recover(cmd.Context(), keepLocal)
+		confirmed := service.InspectCached(cmd.Context())
+		state = service.Recover(cmd.Context(), keepLocal, confirmed.Recovery)
 	case adoptPublished:
 		state = service.AdoptPublished(cmd.Context())
 	default:
