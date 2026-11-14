@@ -800,8 +800,8 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	now := time.Now()
 	roots := append(evidenceRootsFor(m.paths, nil, m.db), filepath.Dir(removePath))
 	m.evidencePinMu.Lock()
-	defer m.evidencePinMu.Unlock()
 	reapLegacyEvidence(m.db, roots[0], policy, now, roots[1:]...)
+	m.evidencePinMu.Unlock()
 	reapWorktrees(m.db, m.paths, wtPolicy, now)
 	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
