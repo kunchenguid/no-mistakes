@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -19,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -32,6 +34,19 @@ type retryLaunch struct {
 	gates       []config.Gate
 	checkpoint  *pipeline.RetryCheckpoint
 	intentCheck config.IntentCheck
+	// delivery marks the continuation of a run that already pushed: it carries
+	// every step through Push and restarts only the failed PR or CI step.
+	delivery bool
+}
+
+// sharedEvidenceDir is the source run's evidence directory a delivery
+// continuation reads instead of its own, because the carried Test and Review
+// results name their artifacts and conversation by paths inside it.
+func (r *retryLaunch) sharedEvidenceDir() string {
+	if r == nil || !r.delivery {
+		return ""
+	}
+	return r.source.EvidencePath()
 }
 
 // record writes the audit link and the failed run's exact intent onto the
@@ -79,17 +94,17 @@ func refuseRetry(runID, proof, format string, args ...any) error {
 	return &retryRefusal{runID: runID, proof: proof, detail: fmt.Sprintf(format, args...)}
 }
 
-// HandleRetry continues runID, the branch's latest run, in a new run that
-// starts at the failed run's preserved head: the steps before its failed step
-// are carried, the failed step restarts from the beginning, and every later
-// step runs normally. It refuses, changing nothing, unless every proof holds:
-// the run is this branch's latest and failed while nothing is active; its
-// record names exactly one failed step, failed on an agent invocation error,
-// with nothing from Test on carried and nothing published; its preserved head
-// is anchored; the caller is clean at exactly that head; the model profile and
-// the repository's gates are unchanged; and the repository configuration, the
-// recorded global configuration, and the agent and model that served each
-// carried step are the ones a new run would use.
+// HandleRetry continues runID, the branch's latest run, in a new run. A run
+// that failed before it pushed restarts its failed step at the preserved head;
+// a run that pushed and then failed in PR or CI, for any cause, carries Test and
+// Push and reruns only the delivery steps. It refuses, changing nothing, unless
+// every proof holds: the run is this branch's latest and failed while nothing
+// is active; its record names exactly one failed step; its preserved head is
+// anchored; the caller is clean at exactly that head; for a pushed run, the
+// remote branch still holds the recorded pushed head, read fresh; the model
+// profile and the repository's gates are unchanged; and the repository
+// configuration, the recorded global configuration, and the agent and model
+// that served each carried step are the ones a new run would use.
 func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, callerHeadSHA string) (*db.RunRetry, error) {
 	if m.restartPending() {
 		return nil, errRestartPending
@@ -169,9 +184,6 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 	if source.Status != types.RunFailed {
 		return nil, refuseRetry(runID, "failed run", "the run is %s, and only a failed run can continue", source.Status)
 	}
-	if source.LastPushedSHA != nil || source.PushGeneration != nil {
-		return nil, refuseRetry(runID, "unpublished run", "the run already pushed, so its head is no longer only in the local gate")
-	}
 	if source.VerificationPlan != nil {
 		return nil, refuseRetry(runID, "compatible configuration", "the run carries a verification plan, which belongs to that run alone")
 	}
@@ -187,7 +199,12 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 		}
 		return nil, err
 	}
-	if err := m.provePreservedHead(ctx, repo, source); err != nil {
+	delivery := source.LastPushedSHA != nil || source.PushGeneration != nil
+	if delivery {
+		if err := m.provePublishedHead(ctx, repo, source); err != nil {
+			return nil, refuseRetry(runID, pipeline.RetryProofPublishedHead, "%v", err)
+		}
+	} else if err := m.provePreservedHead(ctx, repo, source); err != nil {
 		return nil, refuseRetry(runID, "preserved head", "%v", err)
 	}
 	switch callerHeadSHA {
@@ -206,7 +223,7 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 	if failed.Error != nil {
 		sourceError = *failed.Error
 	}
-	return &retryLaunch{source: source, gates: gates, checkpoint: checkpoint, intentCheck: intentCheck, link: db.RunRetry{
+	return &retryLaunch{source: source, gates: gates, checkpoint: checkpoint, intentCheck: intentCheck, delivery: delivery, link: db.RunRetry{
 		SourceRunID:       source.ID,
 		StepName:          failed.StepName,
 		SourceRound:       checkpoint.Round,
@@ -243,6 +260,51 @@ func (m *RunManager) provePreservedHead(ctx context.Context, repo *db.Repo, sour
 	}
 	if preserved != source.HeadSHA {
 		return fmt.Errorf("recovery anchor %s points at %s, not the run's head %s", ref, preserved, source.HeadSHA)
+	}
+	return nil
+}
+
+// provePublishedHead requires the remote branch the failed run pushed to to
+// still be exactly the head it last pushed, read fresh from that push target,
+// and refuses when the read fails: a delivery continuation never pushes, so
+// the remote must already hold the head its PR and CI steps will report on.
+func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, source *db.Run) error {
+	if source.LastPushedSHA == nil || source.PushTargetKind == nil || source.PushTargetFingerprint == nil || source.PushRef == nil {
+		return fmt.Errorf("the run's push binding is incomplete")
+	}
+	kind := "upstream"
+	if strings.TrimSpace(repo.ForkURL) != "" {
+		kind = "fork"
+	}
+	pushURL := repo.PushURL()
+	registered := branchsync.TargetFingerprint(pushURL)
+	if *source.PushTargetKind != kind || *source.PushTargetFingerprint != registered || *source.PushRef != "refs/heads/"+strings.TrimPrefix(source.Branch, "refs/heads/") {
+		return fmt.Errorf("the repository's push target changed since the run pushed")
+	}
+	timeout := config.DefaultBranchSyncRemoteTimeout
+	if globalCfg, err := config.LoadGlobal(m.paths.ConfigFile()); err == nil && globalCfg.BranchSyncRemoteTimeout > 0 {
+		timeout = globalCfg.BranchSyncRemoteTimeout
+	}
+	readCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if remotes, err := git.Run(readCtx, repo.WorkingPath, "remote"); err == nil {
+		for _, name := range strings.Fields(remotes) {
+			credentialled, err := git.GetConfiguredRemoteURL(readCtx, repo.WorkingPath, name)
+			if err == nil && strings.TrimSpace(credentialled) != "" && branchsync.TargetFingerprint(credentialled) == registered {
+				pushURL = credentialled
+				break
+			}
+		}
+	}
+	remote, err := git.LsRemote(readCtx, repo.WorkingPath, pushURL, *source.PushRef)
+	if err != nil {
+		return fmt.Errorf("the remote branch %s could not be read: %s", *source.PushRef, safeurl.RedactText(err.Error()))
+	}
+	if remote != *source.LastPushedSHA {
+		if remote == "" {
+			remote = "absent"
+		}
+		return fmt.Errorf("the remote branch %s is %s, not the run's pushed head %s", *source.PushRef, remote, *source.LastPushedSHA)
 	}
 	return nil
 }
@@ -481,6 +543,23 @@ func (r *retryLaunch) proveAtLaunch(ctx context.Context, m *RunManager, globalCf
 	if err := m.proveConfigurationMatches(ctx, r.source, globalCfg, &launched, repoCfg, r.gates, r.checkpoint); err != nil {
 		return refuseRetry(r.source.ID, "compatible configuration", "%v", err)
 	}
+	if r.delivery {
+		repo, err := m.db.GetRepo(r.source.RepoID)
+		if err != nil || repo == nil {
+			return refuseRetry(r.source.ID, pipeline.RetryProofPublishedHead, "read the repository: %v", err)
+		}
+		if err := m.provePublishedHead(ctx, repo, r.source); err != nil {
+			return refuseRetry(r.source.ID, pipeline.RetryProofPublishedHead, "%v", err)
+		}
+		if err := m.db.UpdateRunPushBinding(runID, db.PushBinding{
+			HeadSHA:           *r.source.LastPushedSHA,
+			TargetKind:        *r.source.PushTargetKind,
+			TargetFingerprint: *r.source.PushTargetFingerprint,
+			Ref:               *r.source.PushRef,
+		}); err != nil {
+			return refuseRetry(r.source.ID, pipeline.RetryProofPublishedHead, "record the verified push binding: %v", err)
+		}
+	}
 	if err := m.carryReviewConversation(r, cfg, runID); err != nil {
 		return refuseRetry(r.source.ID, RetryProofConversation, "%v", err)
 	}
@@ -490,10 +569,13 @@ func (r *retryLaunch) proveAtLaunch(ctx context.Context, m *RunManager, globalCf
 // discardRefusedRetryRun deletes the continuation run row and the evidence
 // directory a refused retry created, so the failed run stays the branch's
 // latest run and can be retried again once the cause is fixed.
-func (m *RunManager) discardRefusedRetryRun(runID string, cfg *config.Config) {
+func (m *RunManager) discardRefusedRetryRun(runID string, cfg *config.Config, retry *retryLaunch) {
 	evidenceDir := m.recordedRunEvidenceDir(cfg, runID)
 	if err := m.db.DeleteRun(runID); err != nil {
 		m.db.UpdateRunError(runID, fmt.Sprintf("discard refused retry: %s", err))
+	}
+	if shared := retry.sharedEvidenceDir(); shared != "" && samePath(shared, evidenceDir) {
+		return
 	}
 	os.RemoveAll(evidenceDir)
 }
@@ -533,6 +615,9 @@ func (m *RunManager) carryReviewConversation(r *retryLaunch, cfg *config.Config,
 		if asked {
 			return fmt.Errorf("the carried review asked a question, but its conversation in %s cannot be read (%v), so rerun the pipeline instead", src, err)
 		}
+		return nil
+	}
+	if samePath(src, dst) {
 		return nil
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {

@@ -77,6 +77,9 @@ type StepContext struct {
 	CarriedFindings  string
 	PreviousFindings string // JSON findings selected for the current fix round
 	DeferredFindings string // JSON findings left unselected when the current fix round began
+	// DeliveryRetry is true when this run continues a run that already pushed,
+	// so no step may publish new commits.
+	DeliveryRetry bool
 	// AutoFixRound is true when the automatic fix loop, not a human response,
 	// started the current fix round. Only then do DeferredFindings hold
 	// findings nobody has decided on: a human fix response accounts for every

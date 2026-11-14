@@ -110,6 +110,38 @@ func TestReapEvidenceHonorsRetentionAndSparesActiveRuns(t *testing.T) {
 	}
 }
 
+func TestReapEvidenceSparesADirectoryAnActiveRunReads(t *testing.T) {
+	f := newEvidenceFixture(t)
+	source := f.seed("delivery", types.RunFailed, 30*24*time.Hour, map[string]string{"screenshot.png": "evidence"})
+	sourceDir := filepath.Join(f.root, source)
+	if err := f.db.SetRunEvidenceDir(source, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := f.db.InsertRun(f.repo.ID, "delivery", "head-delivery", "base-delivery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.SetRunEvidenceDir(continuation.ID, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(continuation.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	policy := evidenceReapPolicy{Retention: 14 * 24 * time.Hour}
+
+	reapEvidence(f.db, f.root, policy, time.Now())
+	if !f.exists(source) {
+		t.Fatal("expired evidence was removed while a running run reads it")
+	}
+	if err := f.db.UpdateRunStatus(continuation.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	reapEvidence(f.db, f.root, policy, time.Now())
+	if f.exists(source) {
+		t.Fatal("expired evidence survived once no active run reads it")
+	}
+}
+
 // TestReapEvidenceRemovesEmptyRunDirectoriesRegardlessOfAge targets the
 // dominant source of accumulation. The test step creates the run's directory
 // before the agent decides whether it has anything to write, so a run that
@@ -442,7 +474,7 @@ func TestDiscardRefusedRetryRemovesPinnedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &RunManager{db: f.db, paths: f.p}
-	m.discardRefusedRetryRun(id, nil)
+	m.discardRefusedRetryRun(id, nil, nil)
 	run, err := f.db.GetRun(id)
 	if err != nil || run != nil {
 		t.Fatalf("refused retry still recorded: %v %v", run, err)
@@ -574,5 +606,40 @@ func TestEvidenceCleanupSharesCountBudgetAcrossRoots(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCleanupRunEvidenceWaitsForADeliveryRetryPin(t *testing.T) {
+	f := newEvidenceFixture(t)
+	source := f.seed("delivery", types.RunFailed, 30*24*time.Hour, map[string]string{"screenshot.png": "evidence"})
+	sourceDir := filepath.Join(f.root, source)
+	if err := f.db.SetRunEvidenceDir(source, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := f.db.InsertRun(f.repo.ID, "delivery", "head-delivery", "base-delivery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := f.db.InsertRun(f.repo.ID, "other", "head-other", "base-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &RunManager{db: f.db, paths: f.p}
+
+	m.evidencePinMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.cleanupRunEvidence(nil, other.ID)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if err := f.db.SetRunEvidenceDir(continuation.ID, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	m.evidencePinMu.Unlock()
+	<-done
+
+	if !f.exists(source) {
+		t.Fatal("cleanup removed evidence that a delivery retry pinned while the sweep was starting")
 	}
 }

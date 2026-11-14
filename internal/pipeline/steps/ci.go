@@ -316,6 +316,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	// this re-entry is the retry of a retained repair a protected-path refusal
 	// interrupted: that repair is finished first and nothing new is requested.
 	repairRequested := sctx.Fixing && !retryRefusal
+	if sctx.Fixing && sctx.DeliveryRetry {
+		return nil, errors.New("a delivery retry never publishes a CI repair; start a new run to fix the failing checks")
+	}
 	defer func() {
 		if outcome != nil {
 			if s.fixAgentCrashes > 0 {

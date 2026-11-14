@@ -56,7 +56,11 @@ var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu              sync.Mutex
+	mu sync.Mutex
+	// evidencePinMu orders evidence deletion against a delivery retry adding
+	// its shared-evidence pin: a sweep reads the active pins and deletes under
+	// it, and the retry records its pin under it.
+	evidencePinMu   sync.Mutex
 	executors       map[string]*pipeline.Executor      // runID → executor
 	cancels         map[string]context.CancelCauseFunc // runID → cancel function with cause
 	dones           map[string]chan struct{}           // runID → closed when goroutine exits
@@ -795,7 +799,9 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	}
 	now := time.Now()
 	roots := append(evidenceRootsFor(m.paths, nil, m.db), filepath.Dir(removePath))
+	m.evidencePinMu.Lock()
 	reapLegacyEvidence(m.db, roots[0], policy, now, roots[1:]...)
+	m.evidencePinMu.Unlock()
 	reapWorktrees(m.db, m.paths, wtPolicy, now)
 	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
@@ -1979,6 +1985,17 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("record_worktree_placement")
 		return "", fmt.Errorf("record worktree placement: %w", err)
 	}
+	if shared := retry.sharedEvidenceDir(); shared != "" {
+		m.evidencePinMu.Lock()
+		err := m.db.SetRunEvidenceDir(run.ID, shared)
+		m.evidencePinMu.Unlock()
+		if err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
+			trackStartFailure("record_evidence_dir")
+			return "", fmt.Errorf("record evidence dir: %w", err)
+		}
+		run.EvidenceDir = &shared
+	}
 	if err := m.pinRunEvidenceDir(run, globalCfg); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
 		trackStartFailure("record_evidence_dir")
@@ -2115,12 +2132,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}
 	if retry != nil {
 		if err := retry.proveAtLaunch(ctx, m, globalCfg, cfg, effectiveRepoCfg, run.ID); err != nil {
-			m.discardRefusedRetryRun(run.ID, cfg)
+			m.discardRefusedRetryRun(run.ID, cfg, retry)
 			trackStartFailure("retry_proof")
 			return "", err
 		}
 		if err := retry.record(m.db, run); err != nil {
-			m.discardRefusedRetryRun(run.ID, cfg)
+			m.discardRefusedRetryRun(run.ID, cfg, retry)
 			trackStartFailure("record_retry")
 			return "", err
 		}

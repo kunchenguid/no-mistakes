@@ -69,6 +69,8 @@ type RetryCheckpoint struct {
 	Steps []*db.StepResult
 	// Round is the failed step's round that was in flight when it failed.
 	Round int
+	// Delivery marks the continuation of a run that already pushed.
+	Delivery bool
 }
 
 // Failed is the failed step's record.
@@ -76,9 +78,10 @@ func (c *RetryCheckpoint) Failed() *db.StepResult { return c.Steps[c.Index] }
 
 // Retry proofs PlanRetryCheckpoint can fail.
 const (
-	RetryProofCheckpoint = "durable checkpoint"
-	RetryProofCause      = "eligible failure"
-	RetryProofEvidence   = "reusable evidence"
+	RetryProofCheckpoint    = "durable checkpoint"
+	RetryProofCause         = "eligible failure"
+	RetryProofEvidence      = "reusable evidence"
+	RetryProofPublishedHead = "published head"
 )
 
 // RetryRefusal is a failed retry proof: which one, and why.
@@ -96,10 +99,12 @@ func refuseCheckpoint(proof, format string, args ...any) error {
 // PlanRetryCheckpoint proves that run's record names exactly one safe
 // boundary to continue from, against the step sequence steps, and refuses
 // with a *RetryRefusal naming the first proof that fails. The record must hold one row per step in
-// that order: completed or skipped rows, then exactly one failed row whose
-// recorded cause is an agent invocation failure, then rows that never ran.
-// No carried row may be Test or a later step, because Test's evidence and
-// every later step's work are not kept after a run ends.
+// that order: completed or skipped rows, then exactly one failed row, then
+// rows that never ran. A run that never pushed continues only from a step
+// that failed on an agent invocation error, and no carried row may be Test or
+// a later step, because Test's evidence and every later step's work are not
+// kept after a run ends. A run that pushed continues only its delivery (see
+// planDeliveryCheckpoint).
 func PlanRetryCheckpoint(database *db.DB, run *db.Run, steps []Step) (*RetryCheckpoint, error) {
 	rows, err := database.GetStepsByRun(run.ID)
 	if err != nil {
@@ -129,6 +134,9 @@ func PlanRetryCheckpoint(database *db.DB, run *db.Run, steps []Step) (*RetryChec
 		return nil, refuseCheckpoint(RetryProofCheckpoint, "no step failed")
 	}
 	row := rows[failed]
+	if run.LastPushedSHA != nil || run.PushGeneration != nil {
+		return planDeliveryCheckpoint(database, run, rows, failed)
+	}
 	if row.FailureCause == nil || *row.FailureCause != db.StepFailureCauseAgentInvocation {
 		return nil, refuseCheckpoint(RetryProofCause, "step %s did not fail on an agent invocation error (provider, transport, or agent process), so the failure may be about the change itself", row.StepName)
 	}
@@ -142,4 +150,41 @@ func PlanRetryCheckpoint(database *db.DB, run *db.Run, steps []Step) (*RetryChec
 		return nil, fmt.Errorf("read step %s rounds: %w", row.StepName, err)
 	}
 	return &RetryCheckpoint{Index: failed, Steps: rows, Round: len(rounds) + 1}, nil
+}
+
+// planDeliveryCheckpoint proves that a run which already pushed failed only
+// in its delivery: the failed step is PR or CI, Push completed before it, and
+// the run's head is still the head it pushed, so the continuation carries
+// every validation step and never pushes. Whether the remote branch still has
+// that head is the caller's proof, because only a fresh read can answer it.
+// A CI step that already ran a fix round is refused, because the
+// continuation would restart the auto_fix.ci budget that round spent.
+func planDeliveryCheckpoint(database *db.DB, run *db.Run, rows []*db.StepResult, failed int) (*RetryCheckpoint, error) {
+	row := rows[failed]
+	if row.StepName != types.StepPR && row.StepName != types.StepCI {
+		return nil, refuseCheckpoint(RetryProofCause, "the run already pushed, so only a failed %s or %s step can continue, but step %s failed", types.StepPR, types.StepCI, row.StepName)
+	}
+	pushed := false
+	for _, carried := range rows[:failed] {
+		if carried.StepName == types.StepPush {
+			pushed = carried.Status == types.StepStatusCompleted
+		}
+	}
+	if !pushed {
+		return nil, refuseCheckpoint(RetryProofCheckpoint, "step %s did not complete before step %s failed", types.StepPush, row.StepName)
+	}
+	if run.LastPushedSHA == nil || run.PushActive || run.HeadSHA != *run.LastPushedSHA {
+		return nil, refuseCheckpoint(RetryProofPublishedHead, "the run's head %s is not the head it last pushed", run.HeadSHA)
+	}
+	rounds, err := database.GetRoundsByStep(row.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read step %s rounds: %w", row.StepName, err)
+	}
+	for _, round := range rounds {
+		spentSelection := round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceAutoFix
+		if round.IsFixRound() || spentSelection {
+			return nil, refuseCheckpoint(RetryProofEvidence, "step %s already ran fix round %d, and a continuation would restart its fix budget", row.StepName, round.Round)
+		}
+	}
+	return &RetryCheckpoint{Index: failed, Steps: rows, Round: len(rounds) + 1, Delivery: true}, nil
 }
