@@ -363,13 +363,13 @@ func TestClosingIssueRefsReattachAfterComposeIsRefused(t *testing.T) {
 	}
 	assertLinesOnce(t, "reattach base", livePRBody(t, statePath, branch), "Closes #95")
 
-	same, sameErr := h.RunInDir(wt, "axi", "run", "--intent", "reattach", "--closes", "95", "--wait", "5s")
+	same, sameErr := h.RunInDir(wt, "axi", "run", "--closes", "95", "--wait", "5s")
 	saveEvidence(t, "08-reattach-same-ref.txt", "$ no-mistakes axi run --closes 95  # reattach, already recorded\n"+same)
 	if strings.Contains(same, "already composed") {
 		t.Errorf("re-sending an already-recorded ref was refused: %v\n%s", sameErr, same)
 	}
 
-	added, addErr := h.RunInDir(wt, "axi", "run", "--intent", "reattach", "--closes", "77", "--wait", "5s")
+	added, addErr := h.RunInDir(wt, "axi", "run", "--closes", "77", "--wait", "5s")
 	saveEvidence(t, "09-reattach-new-ref.txt", "$ no-mistakes axi run --closes 77  # reattach after PR body composed\n"+added)
 	if addErr == nil || !strings.Contains(added, "already composed") || !strings.Contains(added, "NOT added") {
 		t.Errorf("new ref after compose should be refused explicitly, err=%v\n%s", addErr, added)
