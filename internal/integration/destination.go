@@ -92,15 +92,7 @@ func remoteURL(ctx context.Context, workDir, name string) (string, error) {
 	if err != nil || strings.TrimSpace(remote) == "" {
 		return "", fmt.Errorf("base remote %q has no readable URL", name)
 	}
-	// A local relative URL is relative to the invoking clone, not the gate.
-	if !filepath.IsAbs(remote) && !strings.Contains(remote, ":") {
-		remote = filepath.Join(workDir, remote)
-		remote, err = filepath.Abs(remote)
-		if err != nil {
-			return "", fmt.Errorf("resolve base remote path: %w", err)
-		}
-	}
-	return remote, nil
+	return resolveLocalURL(workDir, remote)
 }
 
 func configuredURL(ctx context.Context, workDir, name string) (string, error) {
@@ -108,9 +100,18 @@ func configuredURL(ctx context.Context, workDir, name string) (string, error) {
 	if err != nil || len(urls) != 1 || strings.TrimSpace(urls[0]) == "" {
 		return "", fmt.Errorf("base remote %q must have exactly one URL", name)
 	}
-	remote := urls[0]
+	return resolveLocalURL(workDir, urls[0])
+}
+
+func resolveLocalURL(workDir, remote string) (string, error) {
 	if !filepath.IsAbs(remote) && !strings.Contains(remote, ":") {
-		return filepath.Abs(filepath.Join(workDir, remote))
+		// Git resolves local relative remotes from the checkout root, even
+		// when the caller launched from a subdirectory.
+		root, err := git.FindGitRoot(workDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve base remote path: %w", err)
+		}
+		return filepath.Abs(filepath.Join(root, remote))
 	}
 	return remote, nil
 }
