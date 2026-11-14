@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +31,7 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build non-race fake CLI: %v: %s", err, out)
 	}
-	for _, name := range []string{"gh", "glab", "origin", "az", "tea", "forgejo-axi", "appendix-provider"} {
+	for _, name := range []string{"gh", "glab", "origin", "az", "tea", "forgejo-axi", "appendix-provider", "twg"} {
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
@@ -52,19 +49,6 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tea, "hosts.yml"), []byte("hosts:\n  https://gitea.example:\n    token: synthetic\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "synthetic@example.test")
-	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "synthetic")
-	var raw string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("write request: %s", r.Method)
-			w.WriteHeader(405)
-			return
-		}
-		_, _ = fmt.Fprint(w, raw)
-	}))
-	defer server.Close()
-	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", server.URL)
 	for _, tc := range []struct {
 		provider, name, repo, webBase, path string
 	}{
@@ -161,7 +145,7 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 					}
 					payload = map[string]any{"pullRequestId": 7, "title": "PR", "description": "author", "repository": identity}
 				case "bitbucket":
-					payload = map[string]any{"id": 7, "title": "PR", "summary": map[string]string{"raw": "author"}, "links": map[string]any{"html": map[string]string{"href": link("/pull-requests/7")}}}
+					payload = map[string]any{"id": 7, "title": "PR", "description": "author", "links": map[string]any{"html": map[string]string{"href": link("/pull-requests/7")}}}
 				case "plugin":
 					cfg.ProviderPlugins = config.ProviderPlugins{"identity": {Command: "appendix-provider", Hosts: []string{"plugin.example"}}}
 					t.Setenv("FAKE_CLI_STATUS_JSON", `{"protocol_version":1,"max_pr_body_chars":0,"capabilities":{}}`)
@@ -171,8 +155,7 @@ func TestPRAppendixVerifyRepositoryIdentity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				raw = string(data)
-				t.Setenv("FAKE_CLI_PR_CONTENT_JSON", raw)
+				t.Setenv("FAKE_CLI_PR_CONTENT_JSON", string(data))
 				cmd := newAxiPRVerifyCmdWithReader(func(ctx context.Context, repo string) (steps.PRAppendixReader, error) {
 					return steps.NewPRAppendixReader(ctx, cfg, repo)
 				})
