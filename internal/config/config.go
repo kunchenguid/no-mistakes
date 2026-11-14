@@ -99,7 +99,9 @@ const (
 	// provably safe to": a repair is published only when its head is the run's
 	// review-approved commit or a descendant of it, and any repair that cannot
 	// show that - every merge-conflict repair, since a rebase rewrites the
-	// head - revalidates from Review instead. See CI.RevalidateRepairs.
+	// head - revalidates from Review instead. A conclusion that reports
+	// verification_passed false is not published under either value. See
+	// CI.RevalidateRepairs.
 	DefaultCIRevalidateRepairs = false
 	// CIReviewBotCommentsOnFailure reads a registered review bot's unresolved
 	// comments only when that bot's check failed.

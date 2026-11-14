@@ -580,6 +580,38 @@ func (t ciFixTargets) description() string {
 	return desc
 }
 
+func ciVerificationFailedOutcome(selected Findings, deferredRaw string, repair ciRepairResult) *pipeline.StepOutcome {
+	detail := "The CI fixer reported that its own verification failed."
+	if ran := strings.TrimSpace(repair.VerificationRan); ran != "" {
+		detail += " It ran: " + ran + "."
+	}
+	detail += " The repair stays in the run and was not published."
+	outcome := ciRepairParkOutcome(selected, deferredRaw, repair.Summary)
+	parsed, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		return outcome
+	}
+	kept := parsed.Items[:0]
+	for _, item := range parsed.Items {
+		if item.ID != types.FindingIDCIVerificationFailed {
+			kept = append(kept, item)
+		}
+	}
+	parsed.Items = append(kept, Finding{
+		ID:          types.FindingIDCIVerificationFailed,
+		Severity:    types.FindingSeverityError,
+		Action:      types.ActionAskUser,
+		Category:    types.FindingCategoryCIVerification,
+		Description: detail,
+	})
+	encoded, err := types.MarshalFindingsJSON(parsed)
+	if err != nil {
+		return outcome
+	}
+	outcome.Findings = encoded
+	return outcome
+}
+
 // ciRepairParkOutcome parks the step over the findings a repair round could
 // not clear, re-labelled ask-user: the fix agent has already concluded that
 // no code change is warranted, or the repair could not be settled, so
