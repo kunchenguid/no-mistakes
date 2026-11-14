@@ -1171,7 +1171,6 @@ Override the auto-fix commit subject template for this repository.
 | Default | Inherits from global config, whose default is `no-mistakes({{.Step}}): {{.Summary}}` |
 
 The value follows the [global `commit.fix_message` template syntax and validation rules](/no-mistakes/reference/global-config/#commitfix_message).
-That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte summary and rendered-subject limits, and rejection of bidi and invisible Unicode format characters.
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. When set to anything other than the default, it also renders the Push step's catch-all commit (`{{.Step}}` is `push`, `{{.Summary}}` is `apply agent fixes`). It does not apply to commits created by the Rebase step or to evidence-branch commits.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit-subject convention without enabling `allow_repo_commands`.
