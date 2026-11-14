@@ -483,4 +483,5 @@ COMMIT;`,
 	// repair restart or recovery re-running the PR step treats it as inherited
 	// and never reverts later edits on the live PR.
 	`ALTER TABLE runs ADD COLUMN pr_text_applied_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN integration_destination TEXT`,
 }

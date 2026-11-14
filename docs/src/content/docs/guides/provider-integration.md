@@ -96,8 +96,7 @@ git remote set-url origin git@github.com:parent-owner/repo.git
 no-mistakes init --fork-url git@github.com:your-user/repo.git
 ```
 
-With this setup, pipeline pushes update the fork, including CI repairs whether they are published immediately or first revalidated under [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), while the PR and CI steps stay scoped to the parent repository.
-The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
+The [Push](/no-mistakes/reference/pipeline-steps/#push) and [PR](/no-mistakes/reference/pipeline-steps/#pr) references own fork routing, including CI repairs under [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs). For a different integration project, see [`--base-remote`](/no-mistakes/reference/cli/#other-run-options).
 Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
 
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
@@ -137,7 +136,7 @@ When no-mistakes updates an existing merge request, it reads the live title and 
 
 Install [`forgejo-axi`](https://github.com/escidmore/forgejo-axi) and make it available on `PATH`. It currently installs from source with Node.js 20 or newer; set [`forgejo_axi_path`](/no-mistakes/reference/global-config/#forgejo_axi_path) when the executable lives elsewhere.
 
-Give the daemon a Forgejo token through either the generic `FORGEJO_TOKEN` variable or forgejo-axi's host-scoped token variable. Configure `FORGEJO_BASE_URL` for SSH origins and unrecognized self-hosted HTTPS hostnames. When the instance serves SSH from another hostname - its own `SSH_DOMAIN` setting, for example `ssh.forgejo.example` beside a web host of `forgejo.example` - also set [`FORGEJO_SSH_DOMAIN`](/no-mistakes/reference/environment/#forgejo_ssh_domain) to that hostname, or the SSH origin cannot be matched to the configured instance. The [environment reference](/no-mistakes/reference/environment/#forgejo_base_url) owns the exact base-URL and host-key rules.
+Give the daemon a Forgejo token through either the generic `FORGEJO_TOKEN` variable or forgejo-axi's host-scoped token variable. Configure the integration remote's instance URL with [`FORGEJO_BASE_URL`](/no-mistakes/reference/environment/#forgejo_base_url) and any separate SSH hostname with [`FORGEJO_SSH_DOMAIN`](/no-mistakes/reference/environment/#forgejo_ssh_domain), following the detection rules in those references.
 
 Verify without mutating a deployed Forgejo instance:
 

@@ -17,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
@@ -123,6 +124,7 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 			return "", err
 		}
 		source := launch.source
+		ctx = integration.WithPinned(ctx, source.Integration)
 		if source.Intent != nil && launch.intentCheck.Mode == config.IntentCheckReject {
 			if matches := launch.intentCheck.Match(*source.Intent); len(matches) > 0 {
 				return "", fmt.Errorf("retry intent rejected by configured rules: %s", strings.Join(matches, ", "))
@@ -277,6 +279,10 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 		kind = "fork"
 	}
 	pushURL := repo.PushURL()
+	pinnedIntegration := kind == "upstream" && source.Integration != nil
+	if pinnedIntegration {
+		pushURL = source.Integration.TransportURL
+	}
 	registered := branchsync.TargetFingerprint(pushURL)
 	if *source.PushTargetKind != kind || *source.PushTargetFingerprint != registered || *source.PushRef != "refs/heads/"+strings.TrimPrefix(source.Branch, "refs/heads/") {
 		return fmt.Errorf("the repository's push target changed since the run pushed")
@@ -287,7 +293,13 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 	}
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if remotes, err := git.Run(readCtx, repo.WorkingPath, "remote"); err == nil {
+	if pinnedIntegration {
+		var err error
+		pushURL, err = source.Integration.RuntimeURL(readCtx, repo.WorkingPath)
+		if err != nil {
+			return fmt.Errorf("resolve the run's integration push target: %w", err)
+		}
+	} else if remotes, err := git.Run(readCtx, repo.WorkingPath, "remote"); err == nil {
 		for _, name := range strings.Fields(remotes) {
 			credentialled, err := git.GetConfiguredRemoteURL(readCtx, repo.WorkingPath, name)
 			if err == nil && strings.TrimSpace(credentialled) != "" && branchsync.TargetFingerprint(credentialled) == registered {
@@ -316,6 +328,11 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 // run would use: the repository configuration the carried Review rounds
 // recorded, and the agent that served the carried steps.
 func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo, source *db.Run, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) (config.IntentCheck, error) {
+	var resolveErr error
+	repo, resolveErr = integrationRepo(ctx, repo, source.Integration)
+	if resolveErr != nil {
+		return config.IntentCheck{}, resolveErr
+	}
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		return config.IntentCheck{}, fmt.Errorf("load global config: %w", err)
