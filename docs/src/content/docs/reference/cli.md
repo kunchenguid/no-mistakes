@@ -226,7 +226,11 @@ remote implicitly. For example:
 no-mistakes axi run --intent "Fix the customer release" --base-remote custom --base-branch release/customer
 ```
 
-An explicit selection pins the remote name, URL and default branch on the run.
+For a plain gate push, pass `-o no-mistakes.base-remote=custom`.
+
+The selected remote must have exactly one configured URL and a resolvable
+remote default branch. An explicit selection pins the remote name, URL and
+default branch on the run.
 Base lookup, fresh fetches, change scoping and forge routing use that destination,
 including after daemon recovery. Fetches use private refs and leave `origin`'s
 configuration and tracking refs unchanged. See the [repository configuration
@@ -238,8 +242,8 @@ Missing, invalid, unreachable or moved selections refuse rather than falling
 back to `origin`. Reattaching cannot change the remote. Omit `--base-remote` to
 keep the selection when reattaching to an active run. A later run on a branch
 with a PR on another integration remote is refused unless that PR is recorded
-as merged or closed. `rerun` and `retry` preserve the destination. An older
-daemon that cannot honor the selector is refused before submission.
+as merged or closed. `rerun` and `retry` preserve the destination. Before
+submission, `axi run` refuses a daemon that cannot honor the selector.
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
