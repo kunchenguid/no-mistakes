@@ -94,17 +94,17 @@ func refuseRetry(runID, proof, format string, args ...any) error {
 	return &retryRefusal{runID: runID, proof: proof, detail: fmt.Sprintf(format, args...)}
 }
 
-// HandleRetry continues runID, the branch's latest run, in a new run that
-// starts at the failed run's preserved head: the steps before its failed step
-// are carried, the failed step restarts from the beginning, and every later
-// step runs normally. It refuses, changing nothing, unless every proof holds:
-// the run is this branch's latest and failed while nothing is active; its
-// record names exactly one failed step, failed on an agent invocation error,
-// with nothing from Test on carried and nothing published; its preserved head
-// is anchored; the caller is clean at exactly that head; the model profile and
-// the repository's gates are unchanged; and the repository configuration, the
-// recorded global configuration, and the agent and model that served each
-// carried step are the ones a new run would use.
+// HandleRetry continues runID, the branch's latest run, in a new run. A run
+// that failed before it pushed restarts its failed step at the preserved head;
+// a run that pushed and then failed in PR or CI, for any cause, carries Test and
+// Push and reruns only the delivery steps. It refuses, changing nothing, unless
+// every proof holds: the run is this branch's latest and failed while nothing
+// is active; its record names exactly one failed step; its preserved head is
+// anchored; the caller is clean at exactly that head; for a pushed run, the
+// remote branch still holds the recorded pushed head, read fresh; the model
+// profile and the repository's gates are unchanged; and the repository
+// configuration, the recorded global configuration, and the agent and model
+// that served each carried step are the ones a new run would use.
 func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, callerHeadSHA string) (*db.RunRetry, error) {
 	if m.restartPending() {
 		return nil, errRestartPending
@@ -277,7 +277,8 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 		kind = "fork"
 	}
 	pushURL := repo.PushURL()
-	if *source.PushTargetKind != kind || *source.PushTargetFingerprint != branchsync.TargetFingerprint(pushURL) || *source.PushRef != "refs/heads/"+strings.TrimPrefix(source.Branch, "refs/heads/") {
+	registered := branchsync.TargetFingerprint(pushURL)
+	if *source.PushTargetKind != kind || *source.PushTargetFingerprint != registered || *source.PushRef != "refs/heads/"+strings.TrimPrefix(source.Branch, "refs/heads/") {
 		return fmt.Errorf("the repository's push target changed since the run pushed")
 	}
 	timeout := config.DefaultBranchSyncRemoteTimeout
@@ -286,6 +287,15 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 	}
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if remotes, err := git.Run(readCtx, repo.WorkingPath, "remote"); err == nil {
+		for _, name := range strings.Fields(remotes) {
+			credentialled, err := git.GetConfiguredRemoteURL(readCtx, repo.WorkingPath, name)
+			if err == nil && strings.TrimSpace(credentialled) != "" && branchsync.TargetFingerprint(credentialled) == registered {
+				pushURL = credentialled
+				break
+			}
+		}
+	}
 	remote, err := git.LsRemote(readCtx, repo.WorkingPath, pushURL, *source.PushRef)
 	if err != nil {
 		return fmt.Errorf("the remote branch %s could not be read: %s", *source.PushRef, safeurl.RedactText(err.Error()))
@@ -600,14 +610,14 @@ func (m *RunManager) carryReviewConversation(r *retryLaunch, cfg *config.Config,
 	}
 	src := reviewqa.Dir(m.recordedRunEvidenceDir(cfg, r.source.ID))
 	dst := reviewqa.Dir(m.recordedRunEvidenceDir(cfg, runID))
-	if samePath(src, dst) {
-		return nil
-	}
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		if asked {
 			return fmt.Errorf("the carried review asked a question, but its conversation in %s cannot be read (%v), so rerun the pipeline instead", src, err)
 		}
+		return nil
+	}
+	if samePath(src, dst) {
 		return nil
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
