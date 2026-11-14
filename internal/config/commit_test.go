@@ -264,9 +264,22 @@ func TestCommitRenderFixMessage_RejectsSubjectOverflowWithoutASummary(t *testing
 	// Only the agent-provided summary is truncated. Literal template text and
 	// the branch stay authoritative, so a template that overflows without any
 	// summary still fails instead of silently dropping its own text.
-	commit := Commit{FixMessage: strings.Repeat("x", maxFixMessageTemplateBytes) + "{{.Branch}}"}
-	if _, err := commit.RenderFixMessageForBranch(types.StepReview, "apply fixes", strings.Repeat("b", maxFixMessageSubjectBytes)); err == nil {
-		t.Fatal("RenderFixMessageForBranch() accepted a subject its template text overflows")
+	for name, source := range map[string]string{
+		"without summary": strings.Repeat("{{.Branch}}", 16),
+		"with summary":    strings.Repeat("{{.Branch}}", 15) + "{{.Summary}}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := validateCommitRaw(CommitRaw{FixMessage: &source}); err != nil {
+				t.Fatalf("template failed load-time validation: %v", err)
+			}
+			commit := Commit{FixMessage: source}
+			_, err := commit.RenderFixMessageForBranch(types.StepReview, "apply fixes", strings.Repeat("b", 300))
+			const want = "commit.fix_message must not render to more than 4096 bytes"
+			if err == nil || err.Error() != want {
+				t.Fatalf("RenderFixMessageForBranch() error = %v, want %q", err, want)
+			}
+		})
 	}
 }
 
