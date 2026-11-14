@@ -279,6 +279,10 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 		kind = "fork"
 	}
 	pushURL := repo.PushURL()
+	pinnedIntegration := kind == "upstream" && source.Integration != nil
+	if pinnedIntegration {
+		pushURL = source.Integration.TransportURL
+	}
 	registered := branchsync.TargetFingerprint(pushURL)
 	if *source.PushTargetKind != kind || *source.PushTargetFingerprint != registered || *source.PushRef != "refs/heads/"+strings.TrimPrefix(source.Branch, "refs/heads/") {
 		return fmt.Errorf("the repository's push target changed since the run pushed")
@@ -289,7 +293,13 @@ func (m *RunManager) provePublishedHead(ctx context.Context, repo *db.Repo, sour
 	}
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if remotes, err := git.Run(readCtx, repo.WorkingPath, "remote"); err == nil {
+	if pinnedIntegration {
+		var err error
+		pushURL, err = source.Integration.RuntimeURL(readCtx, repo.WorkingPath)
+		if err != nil {
+			return fmt.Errorf("resolve the run's integration push target: %w", err)
+		}
+	} else if remotes, err := git.Run(readCtx, repo.WorkingPath, "remote"); err == nil {
 		for _, name := range strings.Fields(remotes) {
 			credentialled, err := git.GetConfiguredRemoteURL(readCtx, repo.WorkingPath, name)
 			if err == nil && strings.TrimSpace(credentialled) != "" && branchsync.TargetFingerprint(credentialled) == registered {

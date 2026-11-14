@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -192,6 +193,126 @@ func TestRetryContinuesOnlyTheDeliveryOfAPushedRun(t *testing.T) {
 				if want := row.StepName.Order() < failing.Order(); carried != want {
 					t.Errorf("%s carried = %v, want %v", row.StepName, carried, want)
 				}
+			}
+		})
+	}
+}
+
+func TestRetryDeliveryPreservesTheIntegrationPushTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failing types.StepName
+		fork    bool
+		change  string
+		reason  string
+	}{
+		{name: "pr", failing: types.StepPR},
+		{name: "ci", failing: types.StepCI},
+		{name: "fork", failing: types.StepPR, fork: true},
+		{name: "removed remote with matching alias", failing: types.StepPR, change: "remove", reason: "not configured"},
+		{name: "changed remote", failing: types.StepPR, change: "change", reason: "changed since this run was admitted"},
+		{name: "moved remote head", failing: types.StepPR, change: "move", reason: "not the run's pushed head"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forgeEnv, _ := integrationFakeForge(t)
+			validation := &mockPassStep{name: types.StepTest}
+			delivery := &flakyDeliveryStep{name: tc.failing}
+			var pr, ci pipeline.Step = &mockPassStep{name: types.StepPR}, &mockPassStep{name: types.StepCI}
+			if tc.failing == types.StepPR {
+				pr = delivery
+			} else {
+				ci = delivery
+			}
+			p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+				return []pipeline.Step{
+					&integrationReviewStep{}, validation,
+					&integrationEnvStep{step: &steps.PushStep{}, env: forgeEnv}, pr, ci,
+				}
+			})
+			repo, _ := setupTestGitRepo(t, p, database, "pinned-delivery")
+			gateDir := p.RepoDir(repo.ID)
+			origin := filepath.Join(t.TempDir(), "origin.git")
+			selected := filepath.Join(t.TempDir(), "selected.git")
+			for _, remote := range []string{origin, selected} {
+				gitCmd(t, "", "clone", "--bare", gateDir, remote)
+				gitCmd(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+			}
+			gitCmd(t, repo.WorkingPath, "remote", "add", "origin", origin)
+			gitCmd(t, gateDir, "remote", "set-url", "origin", origin)
+			const selectedURL = "https://github.com/customer/project.git"
+			gitCmd(t, repo.WorkingPath, "remote", "add", "custom", selectedURL)
+			gitCmd(t, repo.WorkingPath, "config", "url."+selected+".insteadOf", selectedURL)
+			fork := ""
+			pushTarget := selected
+			if tc.fork {
+				fork = filepath.Join(t.TempDir(), "fork.git")
+				gitCmd(t, "", "clone", "--bare", gateDir, fork)
+				pushTarget = fork
+			}
+			if _, err := database.ReplaceRepoURLs(repo.ID, origin, fork); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, repo.WorkingPath, "checkout", "-b", "topic")
+			head := commitIntegrationTopic(t, repo.WorkingPath)
+			gitCmd(t, repo.WorkingPath, "push", "gate", "topic")
+			originRefs := gitOutput(t, origin, "for-each-ref", "--format=%(refname) %(objectname)")
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			var first ipc.StartFreshRunResult
+			if err := client.Call(ipc.MethodStartFreshRun, map[string]any{
+				"repo_id": repo.ID, "branch": "topic", "head_sha": head,
+				"intent": "retry delivery to the selected destination", "launch_nonce": "delivery",
+				"validation_generation": "one", "base_remote": "custom", "omit_intent": true,
+			}, &first); err != nil {
+				t.Fatal(err)
+			}
+			source := waitForRunTerminalState(t, database, first.Receipt.RunID)
+			if source.Status != types.RunFailed || source.Integration == nil || source.LastPushedSHA == nil || *source.LastPushedSHA != head || delivery.execCnt.Load() != 1 {
+				t.Fatalf("source = %+v, want a pinned run that published %s then failed delivery", source, head)
+			}
+			if got := gitOutput(t, pushTarget, "rev-parse", "refs/heads/topic"); got != head {
+				t.Fatalf("push target topic = %s, want %s", got, head)
+			}
+			switch tc.change {
+			case "remove":
+				gitCmd(t, repo.WorkingPath, "remote", "add", "alias", selectedURL)
+				gitCmd(t, repo.WorkingPath, "remote", "remove", "custom")
+			case "change":
+				gitCmd(t, repo.WorkingPath, "remote", "set-url", "custom", origin)
+			case "move":
+				gitCmd(t, selected, "update-ref", "refs/heads/topic", gitOutput(t, selected, "rev-parse", "refs/heads/main"))
+			}
+			var retry ipc.RetryRunResult
+			err = client.Call(ipc.MethodRetryRun, &ipc.RetryRunParams{
+				RepoID: repo.ID, Branch: "topic", RunID: source.ID, CallerHeadSHA: head,
+			}, &retry)
+			if tc.reason != "" {
+				if err == nil || !strings.Contains(err.Error(), "published head proof failed") || !strings.Contains(err.Error(), tc.reason) {
+					t.Fatalf("retry = %+v, %v, want published head refusal containing %q", retry, err, tc.reason)
+				}
+				if runs, err := database.GetRunsByRepo(repo.ID); err != nil || len(runs) != 1 {
+					t.Fatalf("refusal left %d runs, %v, want only the source", len(runs), err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("retry: %v", err)
+				}
+				continued := waitForRunTerminalState(t, database, retry.RunID)
+				if continued.Status != types.RunCompleted || continued.Integration == nil || continued.Integration.Remote != "custom" || continued.Integration.TransportURL != selected {
+					t.Fatalf("continuation lost the selected destination: %+v", continued)
+				}
+				if retry.Step != tc.failing || validation.execCnt.Load() != 1 || delivery.execCnt.Load() != 2 {
+					t.Fatalf("retry = %+v, validation/delivery executions = %d/%d", retry, validation.execCnt.Load(), delivery.execCnt.Load())
+				}
+				if got := gitOutput(t, pushTarget, "rev-parse", "refs/heads/topic"); got != head {
+					t.Fatalf("continued target topic = %s, want %s", got, head)
+				}
+			}
+			if got := gitOutput(t, origin, "for-each-ref", "--format=%(refname) %(objectname)"); got != originRefs {
+				t.Fatalf("origin refs changed: %s -> %s", originRefs, got)
 			}
 		})
 	}
