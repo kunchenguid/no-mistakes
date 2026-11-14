@@ -1,13 +1,19 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// testFixMessageEllipsis is the documented cut marker; it is spelled out here
+// so these tests fail for a behavior change, not a rename.
+const testFixMessageEllipsis = "…"
 
 func TestCommitRenderFixMessage_Default(t *testing.T) {
 	t.Parallel()
@@ -121,13 +127,115 @@ func TestCommitRenderFixMessage_RejectsOversizedSummary(t *testing.T) {
 	}
 }
 
-func TestCommitRenderFixMessage_RejectsOversizedRenderedMessage(t *testing.T) {
+func TestCommitRenderFixMessage_TruncatesSummaryToSubjectCap(t *testing.T) {
+	t.Parallel()
+
+	// The default template adds 20 bytes around the summary, so any summary
+	// past 4,076 bytes overflows the 4,096-byte subject cap. The fix round must
+	// still commit a bounded subject instead of failing the run and losing the
+	// fix commit. 4,090 bytes is the maintainer's repro; 4,096 is the input cap.
+	const prefix = "no-mistakes(review): "
+	for _, size := range []int{MaxFixMessageSummaryBytes - 6, MaxFixMessageSummaryBytes} {
+		summary := strings.Repeat("x", size)
+		for name, render := range map[string]func(Commit, string) (string, error){
+			"RenderFixMessage": func(c Commit, s string) (string, error) {
+				return c.RenderFixMessage(types.StepReview, s)
+			},
+			"RenderFixMessageForBranch": func(c Commit, s string) (string, error) {
+				return c.RenderFixMessageForBranch(types.StepReview, s, "feature/1777")
+			},
+		} {
+			t.Run(fmt.Sprintf("%s/%d-byte summary", name, size), func(t *testing.T) {
+				t.Parallel()
+				got, err := render(Commit{}, summary)
+				if err != nil {
+					t.Fatalf("render failed instead of truncating: %v", err)
+				}
+				if len(got) > maxFixMessageSubjectBytes {
+					t.Fatalf("rendered %d bytes, want <= %d", len(got), maxFixMessageSubjectBytes)
+				}
+				// The cut is marked, and every byte the template does not own is
+				// spent on the summary rather than wasted.
+				want := prefix + strings.Repeat("x", maxFixMessageSubjectBytes-len(prefix)-len(testFixMessageEllipsis)) + testFixMessageEllipsis
+				if got != want {
+					t.Fatalf("rendered message = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestCommitRenderFixMessage_TruncationKeepsRunesWhole(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"two-byte runes":  strings.Repeat("é", MaxFixMessageSummaryBytes/2-8),
+		"four-byte runes": strings.Repeat("😀", MaxFixMessageSummaryBytes/4-4),
+	}
+	for name, summary := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := (Commit{}).RenderFixMessage(types.StepReview, summary)
+			if err != nil {
+				t.Fatalf("render failed instead of truncating: %v", err)
+			}
+			if len(got) > maxFixMessageSubjectBytes {
+				t.Fatalf("rendered %d bytes, want <= %d", len(got), maxFixMessageSubjectBytes)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncation split a rune: %q", got)
+			}
+			if !strings.HasSuffix(got, testFixMessageEllipsis) {
+				t.Fatalf("truncated message %q lacks the ellipsis marker", got)
+			}
+			wantSummaryBytes := maxFixMessageSubjectBytes - len("no-mistakes(review): ") - len(testFixMessageEllipsis)
+			if gotSummary := len(got) - len("no-mistakes(review): ") - len(testFixMessageEllipsis); gotSummary > wantSummaryBytes || gotSummary < wantSummaryBytes-utf8.UTFMax+1 {
+				t.Fatalf("kept %d summary bytes, want the largest whole-rune prefix of %d", gotSummary, wantSummaryBytes)
+			}
+		})
+	}
+}
+
+func TestCommitRenderFixMessage_ExactFitSummaryIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	const prefix = "no-mistakes(review): "
+	summary := strings.Repeat("x", maxFixMessageSubjectBytes-len(prefix))
+	got, err := (Commit{}).RenderFixMessage(types.StepReview, summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := prefix + summary; got != want {
+		t.Fatalf("rendered message = %q, want the summary unchanged at the cap", got)
+	}
+}
+
+func TestCommitRenderFixMessage_MultipleSummaryPlaceholdersShareTheCap(t *testing.T) {
 	t.Parallel()
 
 	summary := strings.Repeat("x", maxFixMessageSubjectBytes/2+1)
 	commit := Commit{FixMessage: "{{.Summary}}{{.Summary}}"}
-	if _, err := commit.RenderFixMessage(types.StepReview, summary); err == nil {
-		t.Fatal("RenderFixMessage() accepted an oversized rendered message")
+	got, err := commit.RenderFixMessage(types.StepReview, summary)
+	if err != nil {
+		t.Fatalf("render failed instead of truncating: %v", err)
+	}
+	if len(got) > maxFixMessageSubjectBytes {
+		t.Fatalf("rendered %d bytes, want <= %d", len(got), maxFixMessageSubjectBytes)
+	}
+	if cuts := strings.Count(got, testFixMessageEllipsis); cuts != 2 {
+		t.Fatalf("rendered message marks %d cuts, want one per {{.Summary}}", cuts)
+	}
+}
+
+func TestCommitRenderFixMessage_RejectsSubjectOverflowWithoutASummary(t *testing.T) {
+	t.Parallel()
+
+	// Only the agent-provided summary is truncated. Literal template text and
+	// the branch stay authoritative, so a template that overflows without any
+	// summary still fails instead of silently dropping its own text.
+	commit := Commit{FixMessage: strings.Repeat("x", maxFixMessageTemplateBytes) + "{{.Branch}}"}
+	if _, err := commit.RenderFixMessageForBranch(types.StepReview, "apply fixes", strings.Repeat("b", maxFixMessageSubjectBytes)); err == nil {
+		t.Fatal("RenderFixMessageForBranch() accepted a subject its template text overflows")
 	}
 }
 

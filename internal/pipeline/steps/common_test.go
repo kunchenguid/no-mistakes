@@ -1257,7 +1257,7 @@ func TestCommitAgentFixes_MissingBranchIdentifierDoesNotStageChanges(t *testing.
 	}
 }
 
-func TestCommitAgentFixes_OversizedRenderedMessageDoesNotStageChanges(t *testing.T) {
+func TestCommitAgentFixes_TruncatesOversizedRenderedMessage(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -1270,11 +1270,18 @@ func TestCommitAgentFixes_OversizedRenderedMessageDoesNotStageChanges(t *testing
 		t.Fatal(err)
 	}
 	summary := strings.Repeat("x", 2049)
-	if err := commitAgentFixes(sctx, types.StepReview, summary, "fallback"); err == nil {
-		t.Fatal("commitAgentFixes() accepted an oversized rendered message")
+	if err := commitAgentFixes(sctx, types.StepReview, summary, "fallback"); err != nil {
+		t.Fatalf("commitAgentFixes() failed instead of bounding the subject: %v", err)
 	}
 	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
-		t.Fatalf("staged files after rendered message error = %q, want none", got)
+		t.Fatalf("staged files after commit = %q, want none", got)
+	}
+	subject := gitCmd(t, dir, "log", "-1", "--format=%s")
+	if len(subject) > 4096 {
+		t.Fatalf("committed subject is %d bytes, want <= 4096", len(subject))
+	}
+	if cuts := strings.Count(subject, "…"); cuts != 2 {
+		t.Fatalf("committed subject marks %d cuts, want one per {{.Summary}}: %q", cuts, subject)
 	}
 }
 

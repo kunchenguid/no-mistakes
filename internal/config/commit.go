@@ -37,6 +37,10 @@ const unknownTrailerValue = "unknown"
 // MaxFixMessageSummaryBytes bounds agent-provided fix summaries before rendering.
 const MaxFixMessageSummaryBytes = 4096
 
+// fixMessageEllipsis marks a summary cut to fit maxFixMessageSubjectBytes. It
+// counts toward the cap, so a truncated subject never exceeds it.
+const fixMessageEllipsis = "…"
+
 // CommitRaw is the YAML representation of auto-fix commit settings.
 type CommitRaw struct {
 	FixMessage    *string   `yaml:"fix_message"`
@@ -215,6 +219,10 @@ func (c Commit) renderFixMessage(step types.StepName, summary, branch string, re
 		}
 	}
 	data := fixMessageData{Step: step, Summary: summary, Branch: branch}
+	data.Summary, err = fitFixMessageSummary(tmpl, data)
+	if err != nil {
+		return "", err
+	}
 	predictedBytes, err := predictFixMessageBytes(tmpl, data)
 	if err != nil {
 		return "", err
@@ -523,6 +531,53 @@ func validateFixMessageTemplate(tmpl *template.Template) error {
 		}
 	}
 	return nil
+}
+
+// fitFixMessageSummary bounds the agent-provided summary so the rendered
+// subject fits maxFixMessageSubjectBytes. A summary that cannot fit is cut on a
+// UTF-8 rune boundary and marked with an ellipsis: a cosmetic length overrun
+// must not fail the fix round and lose the fix commit it already made (#1777).
+// Every other template value stays authoritative, so a template whose literal
+// text, step, and branch alone overflow the cap still fails.
+func fitFixMessageSummary(tmpl *template.Template, data fixMessageData) (string, error) {
+	occurrences := 0
+	for _, node := range tmpl.Tree.Root.Nodes {
+		if action, ok := node.(*parse.ActionNode); ok {
+			if name, ok := fixMessagePlaceholderName(action.Pipe); ok && name == "Summary" {
+				occurrences++
+			}
+		}
+	}
+	if occurrences == 0 {
+		return data.Summary, nil
+	}
+	// Prediction without the summary reports the bytes the template owns, and
+	// still rejects a template that overflows before any summary is expanded.
+	fixed, err := predictFixMessageBytes(tmpl, fixMessageData{Step: data.Step, Branch: data.Branch})
+	if err != nil {
+		return "", err
+	}
+	budget := (maxFixMessageSubjectBytes - fixed) / occurrences
+	if len(data.Summary) <= budget {
+		return data.Summary, nil
+	}
+	return truncateFixMessageSummary(data.Summary, budget), nil
+}
+
+// truncateFixMessageSummary cuts summary to at most budget bytes without
+// splitting a UTF-8 rune, and marks the cut with fixMessageEllipsis, which
+// counts toward the budget. A budget smaller than the marker drops the summary
+// instead of leaving an unmarked fragment.
+func truncateFixMessageSummary(summary string, budget int) string {
+	limit := budget - len(fixMessageEllipsis)
+	if limit <= 0 {
+		return ""
+	}
+	cut := summary[:limit]
+	for len(cut) > 0 && summary[len(cut)]&0xC0 == 0x80 {
+		cut = cut[:len(cut)-1]
+	}
+	return strings.TrimRight(cut, " ") + fixMessageEllipsis
 }
 
 func predictFixMessageBytes(tmpl *template.Template, data fixMessageData) (int, error) {
