@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.112.0](https://github.com/kunchenguid/no-mistakes/compare/v1.111.0...v1.112.0) (2026-11-14)
+
+
+### Features
+
+* **cli:** add read-only JSON export of stored run facts ([#1729](https://github.com/kunchenguid/no-mistakes/issues/1729)) ([375ee59](https://github.com/kunchenguid/no-mistakes/commit/375ee5924d228c093e8847d7a6d2ee1b5b08b635))
+* **cli:** add read-only PR appendix verification ([#1748](https://github.com/kunchenguid/no-mistakes/issues/1748)) ([e4ab9d4](https://github.com/kunchenguid/no-mistakes/commit/e4ab9d447fe642baae20a2adbe3756bd2134484a))
+* **config:** add path-scoped and file-backed Test guidance ([#1765](https://github.com/kunchenguid/no-mistakes/issues/1765)) ([3d2d4bf](https://github.com/kunchenguid/no-mistakes/commit/3d2d4bfc9f08a41498ff9997a6e560ac4f4c90fa))
+* pin reviewer selection independently for each run ([#1635](https://github.com/kunchenguid/no-mistakes/issues/1635)) ([65042c3](https://github.com/kunchenguid/no-mistakes/commit/65042c39f7f0be0283db0d3e956b81db8a517a44))
+* **pipeline:** reserve publication for declared external gates ([#1730](https://github.com/kunchenguid/no-mistakes/issues/1730)) ([d49875b](https://github.com/kunchenguid/no-mistakes/commit/d49875b02099f1f28292c3a7271cdcd84b319d46))
+* **pr:** apply fresh supplied text to existing pull requests ([#1763](https://github.com/kunchenguid/no-mistakes/issues/1763)) ([d52bba2](https://github.com/kunchenguid/no-mistakes/commit/d52bba2c0a3b666e87a77ae9c53f9b5bec83a24c))
+
+
+### Bug Fixes
+
+* **agent:** allow authentic backing Git metadata reads ([#1720](https://github.com/kunchenguid/no-mistakes/issues/1720)) ([c86ee79](https://github.com/kunchenguid/no-mistakes/commit/c86ee79a2be38400cab93de69d6ec343aafab891))
+* **cli:** keep status readable during SQLite writes ([#1726](https://github.com/kunchenguid/no-mistakes/issues/1726)) ([d950c61](https://github.com/kunchenguid/no-mistakes/commit/d950c619e3b90833f423b62848797116ac4ee604))
+* **cli:** preserve custom waits in AXI reattach hints ([#1724](https://github.com/kunchenguid/no-mistakes/issues/1724)) ([8f46803](https://github.com/kunchenguid/no-mistakes/commit/8f468031bccde2960449b4e24341f1a68f46ad4c))
+* **config:** truncate fix summaries to fit the commit subject cap ([#1782](https://github.com/kunchenguid/no-mistakes/issues/1782)) ([ab82c7a](https://github.com/kunchenguid/no-mistakes/commit/ab82c7a7db5d9f7eeec5d59e352ede2b939b5ca5))
+* **daemon:** continue a pushed run's failed PR or CI step with axi retry ([#1783](https://github.com/kunchenguid/no-mistakes/issues/1783)) ([35850db](https://github.com/kunchenguid/no-mistakes/commit/35850dbd9bca4f0a2741c3e7b1395462c208f581))
+* **daemon:** disable Windows task battery and execution-time limits ([#1715](https://github.com/kunchenguid/no-mistakes/issues/1715)) ([474a2d3](https://github.com/kunchenguid/no-mistakes/commit/474a2d3d7a68ecfec2e781c13f34cf2169bc504c))
+* discover intent in the caller's configured account home ([#1721](https://github.com/kunchenguid/no-mistakes/issues/1721)) ([eb3d604](https://github.com/kunchenguid/no-mistakes/commit/eb3d604922aad052f0e201775b56208861c02f08))
+* **gate:** reconcile private mirrors after upstream file deletions ([#1725](https://github.com/kunchenguid/no-mistakes/issues/1725)) ([af6b517](https://github.com/kunchenguid/no-mistakes/commit/af6b5179234122aa0d68ebb8797055e4f38fdf0d))
+* **github:** keep stderr warnings out of CI JSON responses ([#1754](https://github.com/kunchenguid/no-mistakes/issues/1754)) ([7f7f572](https://github.com/kunchenguid/no-mistakes/commit/7f7f5720d520526577ae94093b8706974fd25403))
+* **git:** verify gate identity before configuration writes ([#1719](https://github.com/kunchenguid/no-mistakes/issues/1719)) ([91ee9b6](https://github.com/kunchenguid/no-mistakes/commit/91ee9b69c67b8b58bf39dd5f634fd4b8764f1bac))
+* **pipeline:** bind GitHub PRs to the successfully pushed commit ([#1722](https://github.com/kunchenguid/no-mistakes/issues/1722)) ([35cf603](https://github.com/kunchenguid/no-mistakes/commit/35cf6039b8b95b26e6823875a4226783f1a9fc92))
+* **pipeline:** include pre-push hook stdout in push failure errors ([#1775](https://github.com/kunchenguid/no-mistakes/issues/1775)) ([67c4cfa](https://github.com/kunchenguid/no-mistakes/commit/67c4cfa2c21c5fc212dd9d2ded57b4e9beca7e61))
+* **pipeline:** preserve submitter identity in pipeline commits ([#1728](https://github.com/kunchenguid/no-mistakes/issues/1728)) ([823a4ee](https://github.com/kunchenguid/no-mistakes/commit/823a4ee6a95d1c2e0879f5f94d18bdb039c32e34))
+* **pipeline:** wait for owned PR updates to settle ([#1718](https://github.com/kunchenguid/no-mistakes/issues/1718)) ([36c1de7](https://github.com/kunchenguid/no-mistakes/commit/36c1de76d493f33d92dc646d08513660c0d106be))
+* recover branch custody after interrupted CI (port of [#1570](https://github.com/kunchenguid/no-mistakes/issues/1570)) ([#1742](https://github.com/kunchenguid/no-mistakes/issues/1742)) ([1cde687](https://github.com/kunchenguid/no-mistakes/commit/1cde687d426657351396898e4cb277c1e6a22050))
+* **shellenv:** scope macOS native completion inspection to its process group ([#1753](https://github.com/kunchenguid/no-mistakes/issues/1753)) ([63c0182](https://github.com/kunchenguid/no-mistakes/commit/63c01829173f45ba3c755beaa64930244aec924e))
+* **skill:** prefer blocking waits over status polling ([#1716](https://github.com/kunchenguid/no-mistakes/issues/1716)) ([32438b9](https://github.com/kunchenguid/no-mistakes/commit/32438b96c4252b15e3b2cd1a16131f70b75ae1f3))
+
 ## [1.111.0](https://github.com/kunchenguid/no-mistakes/compare/v1.110.0...v1.111.0) (2026-11-05)
 
 
