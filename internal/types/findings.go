@@ -97,11 +97,12 @@ const (
 // review-bot finding carries one unresolved comment from a third-party
 // review bot's check.
 const (
-	FindingCategoryCICheck         = "ci-check"
-	FindingCategoryCIMergeConflict = "ci-merge-conflict"
-	FindingCategoryCIBehindBase    = "ci-behind-base"
-	FindingCategoryCITransient     = "ci-transient"
-	FindingCategoryCIReviewBot     = "ci-review-bot"
+	FindingCategoryCICheck          = "ci-check"
+	FindingCategoryCIMergeConflict  = "ci-merge-conflict"
+	FindingCategoryCIBehindBase     = "ci-behind-base"
+	FindingCategoryCITransient      = "ci-transient"
+	FindingCategoryCIInfrastructure = "ci-infrastructure"
+	FindingCategoryCIReviewBot      = "ci-review-bot"
 )
 
 // FindingCategoryReviewQuestion marks the synthetic finding the review step
