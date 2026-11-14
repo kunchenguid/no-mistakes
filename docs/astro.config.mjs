@@ -46,6 +46,7 @@ export default defineConfig({
             { label: "Squash-Merge Commits", slug: "guides/squash-merge-commits" },
             { label: "Setup Wizard", slug: "guides/setup-wizard" },
             { label: "Using the TUI", slug: "guides/tui" },
+            { label: "Fix missing tools in Test", slug: "guides/test-command-setup" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
           ],
         },
