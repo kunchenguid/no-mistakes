@@ -540,6 +540,18 @@ type PreRunFailureDetector interface {
 	PreRunFailures(ctx context.Context, checks []Check) ([]bool, error)
 }
 
+// RequiredChecksReader reports the checks the forge itself requires before a
+// PR into baseBranch can merge (branch protection, rulesets). The CI monitor
+// reads it only when a PR has no checks at all, to tell a repository that has
+// nothing able to report a check from one whose checks have not registered
+// yet: any required check means checks are expected. An empty result must be
+// a successful read; an unreadable configuration is an error, never an empty
+// list. Optional: a backend that does not implement it keeps waiting on an
+// empty check list as before.
+type RequiredChecksReader interface {
+	RequiredChecks(ctx context.Context, baseBranch string) ([]string, error)
+}
+
 // CheckRerunner re-runs the provider-side work behind a failed check without
 // changing the commit under test. It is deliberately a separate interface
 // rather than a Host method: a backend whose provider exposes no rerun
