@@ -1060,6 +1060,38 @@ func TestClaudeAgent_BackgroundWorkAfterResult(t *testing.T) {
 	})
 }
 
+// Issue #1740: raising the foreground command limit through RunOpts.Env must
+// reach the claude process and must not weaken the #1449 refusal: a result with
+// background work still running stays unverified.
+func TestClaudeAgent_ForegroundLimitEnvReachesProcessAndBackgroundWorkStillFails(t *testing.T) {
+	envOut := filepath.Join(t.TempDir(), "env")
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "result-background-result")
+	t.Setenv("NM_CLAUDE_STDIN_ENV_OUT", envOut)
+	old := claudeResultGrace
+	claudeResultGrace = 200 * time.Millisecond
+	t.Cleanup(func() { claudeResultGrace = old })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := newClaudeStdinHelperAgent(t).runOnce(ctx, RunOpts{
+		Prompt:                   "test",
+		CWD:                      t.TempDir(),
+		JSONSchema:               json.RawMessage(`{"type":"object","required":["ok"]}`),
+		RequireCompletedChildren: true,
+		Env:                      []string{"BASH_DEFAULT_TIMEOUT_MS=420000", "BASH_MAX_TIMEOUT_MS=420000"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "claude completion is unverified: background work outlived the result") {
+		t.Fatalf("err = %v, want the unverified-completion refusal", err)
+	}
+	got, readErr := os.ReadFile(envOut)
+	if readErr != nil {
+		t.Fatalf("read env record: %v", readErr)
+	}
+	if string(got) != "420000 420000" {
+		t.Fatalf("claude saw %q, want the raised foreground limits", got)
+	}
+}
+
 func TestClaudeAgent_NonzeroExitWithoutUsableResultStillFails(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1168,6 +1200,9 @@ func TestClaudeStdinHelper(t *testing.T) {
 	case "result-background-result":
 		// Replays issue #1659's captured stream: a result, background work that
 		// holds the session open, a second result once that work ends, then EOF.
+		if out := os.Getenv("NM_CLAUDE_STDIN_ENV_OUT"); out != "" {
+			_ = os.WriteFile(out, []byte(os.Getenv("BASH_DEFAULT_TIMEOUT_MS")+" "+os.Getenv("BASH_MAX_TIMEOUT_MS")), 0o644)
+		}
 		emitClaudeHelperResult()
 		time.Sleep(30 * time.Second)
 		_, _ = io.WriteString(os.Stdout, `{"type":"system","subtype":"task_notification","session_id":"helper-session"}`+"\n")
