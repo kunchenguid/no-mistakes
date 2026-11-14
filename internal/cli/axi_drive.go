@@ -139,6 +139,7 @@ func outcomeFor(status string) string {
 // outcomeForRun qualifies successful terminal runs whose external checks were overridden
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
+// They are listed instead in the run's validation block (see validationField).
 func outcomeForRun(rv runView) string {
 	return qualifyOutcome(outcomeFor(rv.Status), rv)
 }
@@ -1579,6 +1580,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		if rv.TestOverrideReason != "" {
 			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
+		help = append(help, validationReportHelp(rv)...)
 		if hasBranchSync {
 			help = append(help, branchSyncAgentGuidance)
 		}
@@ -1604,6 +1606,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		if rv.TestOverrideReason != "" {
 			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
+		help = append(help, validationReportHelp(rv)...)
 		if hasBranchSync {
 			help = append(help, branchSyncAgentGuidance)
 		}
@@ -1637,6 +1640,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		if rv.TestOverrideReason != "" {
 			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
+		help = append(help, validationReportHelp(rv)...)
 		if len(rv.automaticSkips()) > 0 {
 			help = append(help, "Publication or CI verification did not run (see `run.automatic_skips` and `run.head_sha`). Report the missing evidence and its cause; this outcome does not establish CI readiness or a code failure.")
 		}
