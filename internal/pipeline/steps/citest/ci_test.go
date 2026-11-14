@@ -250,6 +250,43 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 	}
 }
 
+func TestCIStep_DeliveryRetryRefusesAnyFixingReentry(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	env := stepstest.FakeCIGH(t, "OPEN", `[{"name":"build","state":"FAILURE","bucket":"fail"}]`)
+	agentCalls := 0
+	ag := &stepstest.MockAgent{
+		AgentName: "test",
+		RunFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			agentCalls++
+			return &agent.Result{}, nil
+		},
+	}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.Fixing = true
+	sctx.DeliveryRetry = true
+	sctx.PreviousFindings = stepstest.CIGateFindingsJSON("build")
+	sctx.Config.CITimeout = 30 * time.Second
+
+	outcome, err := (&steps.CIStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "delivery retry never publishes") {
+		t.Fatalf("Execute error = %v, want delivery retry refusal", err)
+	}
+	if outcome != nil {
+		t.Fatalf("outcome = %+v, want nil", outcome)
+	}
+	if agentCalls != 0 {
+		t.Fatalf("agent ran %d times, want 0", agentCalls)
+	}
+	if got := stepstest.GitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+	}
+}
+
 func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
