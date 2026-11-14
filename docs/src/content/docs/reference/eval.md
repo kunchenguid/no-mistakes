@@ -142,7 +142,7 @@ The replay never inherits this machine's own harness pins: capture strips `agent
 
 The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME` and restore each case into a throwaway worktree; they do not contact the shared no-mistakes daemon. The selected agent uses the operator's normal local harness settings and sign-in (the same HOME-based credential discovery a pipeline run uses) and still communicates with its configured model provider in the normal way. That is not a security sandbox: a candidate may read and write ordinary user-level agent files under HOME, including credential refresh and caches. Review replay stays session-free.
 
-The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
+The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs from the same no-mistakes build land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
 
 ## Report results
 
@@ -150,8 +150,14 @@ The command streams one scored progress line per replay as it completes, then re
 no-mistakes eval report
 ```
 
-The report groups local replays by candidate and cohort. A cohort pins the selected case IDs and repeat count, so frontier comparisons only compare candidates run over the same corpus and repeat plan. It shows:
+The report groups local replays by candidate, cohort, and review prompt variant. A cohort pins the selected case IDs, the repeat count, and the build that ran the replay: its version, commit (with `-dirty` when Go build metadata marks the tree modified), and SHA-256 of the executable. Different executable contents therefore remain separate even when version and commit are identical. Frontier comparisons only compare candidates run over the same corpus and repeat plan by the same build.
 
+Each prompted replay also records a fingerprint of the first review prompt delivered to the agent, including the steering preamble, and the effective configuration. Temporary replay-root paths are normalized so fresh worktrees do not split otherwise identical inputs; later schema-correction turns do not affect the fingerprint. Within one cohort and candidate, a session joins a prompt variant's row only when its recorded fingerprints identify exactly one compatible variant, agreeing for every case both replayed. Sessions with no recorded fingerprints or with multiple compatible variants stay in a separate unknown-variant row, displayed with the fingerprint as `not recorded`. A variant that ends with no sessions after that assignment is not reported, so the report never shows a row for a prompt combination no session ran. A session stopped before its first result therefore does not make a completed variant appear incomplete. Replays recorded before these fields existed are reported with the build and fingerprint as not recorded, under their original cohort.
+
+It shows:
+
+- the build and review prompt+config fingerprint beside the cohort
+- completeness: planned cases and replays from the recorded session plans versus the ones that completed, counting missing and failed replays. Saved plans count even when the session stopped before recording its first result. A slice with any missing or failed replay, or a recorded replay whose session plan cannot be read, is marked `INCOMPLETE` on its heading line and its scores cover only the recorded replays; a case counts as completed only when every planned repeat of it completed
 - finding-level true-positive, false-negative, false-positive, and pending counts
 - recall over gold issues, or unlabeled / pending when a case has no finding-level gold
 - precision bounds, and F1 only when false-positive gold exists
@@ -166,7 +172,7 @@ Eval records cache-read and cache-write counts in each evaluation payload and in
 
 Opening an older registry automatically backfills available cache counts from saved evaluation payloads and corrects its legacy input and fresh-input counters for the provider's accounting. Missing, unreadable, or malformed historical payloads are skipped with a warning on stderr naming each evaluation and its path; the registry still opens, and skipped rows retain unset cache counts (unknown, not zero). Reports use those corrected registry counters; captured labels, manifests, and historical payloads stay unchanged. Cache writes that were never recorded cannot be recovered.
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations produce identical text output.
+The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes incomplete slices (including candidates with failed replays) from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations produce identical text output.
 
 ## Current boundary
 
