@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -13,7 +15,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -124,8 +129,13 @@ func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
 }
 
 func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
+	dir := tuiIdentityCheckout(t)
+	t.Chdir(dir)
 	sock := testSocketPath(t)
 	srv := startTestIPCServer(t, sock)
+	srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
+		return map[string]bool{"ok": true}, nil
+	})
 
 	newRun := testRun()
 	newRun.ID = "run-002"
@@ -146,6 +156,9 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		}
 		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
+		}
+		if params.CommitIdentity == nil || params.CommitIdentity.AuthorName != "TUI Submitter" || params.CommitIdentity.CommitterEmail != "tui@example.test" {
+			return nil, fmt.Errorf("rerun lost submitting identity: %+v", params.CommitIdentity)
 		}
 		if params.TranscriptHomes == nil || params.TranscriptHomes.ClaudeConfigDir != claudeHome || params.TranscriptHomes.CodexHome != codexHome {
 			return nil, fmt.Errorf("rerun lost the selected transcript homes: %#v", params.TranscriptHomes)
@@ -573,5 +586,149 @@ func TestModel_Update_IgnoresStaleRerunStartedMessage(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected current rerun message to subscribe")
+	}
+}
+
+func tuiIdentityCheckout(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	global := filepath.Join(root, "global")
+	if err := os.WriteFile(global, []byte("[user]\nname = TUI Submitter\nemail = tui@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("git", "init", root)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	appRoot := t.TempDir()
+	t.Setenv("NM_HOME", appRoot)
+	database, err := db.Open(paths.WithRoot(appRoot).DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	checkout, err := git.FindGitRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertRepoWithID("repo-001", checkout, "https://example.test/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestModel_RerunBindsLinkedCheckoutIdentity(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunFailed, types.RunCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			main := tuiIdentityCheckout(t)
+			gitCmd := func(dir string, args ...string) {
+				t.Helper()
+				cmd := exec.Command("git", args...)
+				cmd.Dir = dir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v: %s", args, err, out)
+				}
+			}
+			gitCmd(main, "commit", "--allow-empty", "-m", "base")
+			linked := filepath.Join(t.TempDir(), "linked")
+			gitCmd(main, "worktree", "add", "-b", "linked", linked)
+			gitCmd(main, "config", "extensions.worktreeConfig", "true")
+			gitCmd(linked, "config", "--worktree", "user.name", "Linked Submitter")
+			gitCmd(linked, "config", "--worktree", "user.email", "linked@example.test")
+			t.Chdir(linked)
+			sock := testSocketPath(t)
+			srv := startTestIPCServer(t, sock)
+			for _, method := range []string{ipc.MethodProbeTranscriptHomes, ipc.MethodProbeCommitIdentity} {
+				srv.Handle(method, func(context.Context, json.RawMessage) (interface{}, error) {
+					return map[string]bool{"ok": true}, nil
+				})
+			}
+			requests := make(chan ipc.RerunParams, 1)
+			srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+				var params ipc.RerunParams
+				if err := json.Unmarshal(raw, &params); err != nil {
+					return nil, err
+				}
+				requests <- params
+				return &ipc.RerunResult{RunID: "rerun"}, nil
+			})
+			srv.Handle(ipc.MethodGetRun, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.GetRunResult{Run: testRun()}, nil
+			})
+			client, err := ipc.Dial(sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			run := testRun()
+			run.Status = status
+			model := NewModel(sock, client, run)
+			msg := model.rerunCmd(1)()
+			if _, ok := msg.(rerunStartedMsg); !ok {
+				t.Fatalf("rerun failed: %#v", msg)
+			}
+			got := <-requests
+			if got.CommitIdentity == nil || got.CommitIdentity.AuthorName != "Linked Submitter" || got.CommitIdentity.CommitterEmail != "linked@example.test" {
+				t.Fatalf("linked identity lost: %+v", got.CommitIdentity)
+			}
+		})
+	}
+}
+
+func TestModel_RerunRefusesMissingIdentityOrOlderDaemon(t *testing.T) {
+	for _, reason := range []string{"older daemon", "missing identity", "unrelated checkout"} {
+		t.Run(reason, func(t *testing.T) {
+			dir := tuiIdentityCheckout(t)
+			t.Chdir(dir)
+			if reason == "missing identity" {
+				if err := os.WriteFile(filepath.Join(dir, "global"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sock := testSocketPath(t)
+			srv := startTestIPCServer(t, sock)
+			srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
+				return map[string]bool{"ok": true}, nil
+			})
+			if reason != "older daemon" {
+				srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
+					return map[string]bool{"ok": true}, nil
+				})
+			}
+			requests := make(chan struct{}, 1)
+			srv.Handle(ipc.MethodRerun, func(context.Context, json.RawMessage) (interface{}, error) {
+				requests <- struct{}{}
+				return &ipc.RerunResult{}, nil
+			})
+			client, err := ipc.Dial(sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			run := testRun()
+			run.Status = types.RunFailed
+			if reason == "unrelated checkout" {
+				run.RepoID = "another-repository"
+			}
+			model := NewModel(sock, client, run)
+			msg := model.rerunCmd(9)()
+			if _, ok := msg.(rerunErrMsg); !ok {
+				t.Fatalf("invalid identity reached rerun: %#v", msg)
+			}
+			select {
+			case <-requests:
+				t.Fatal("refused identity was submitted")
+			default:
+			}
+		})
 	}
 }

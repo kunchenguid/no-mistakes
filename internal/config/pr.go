@@ -13,21 +13,31 @@ import (
 
 // ValidatePRTemplatePath accepts a literal repository-relative Git path, not a
 // filesystem path, glob, ref expression or URL. Empty leaves template mode off.
-// Keep this platform-independent: a Windows spelling is unsafe on POSIX too.
 func ValidatePRTemplatePath(name string) error {
+	return ValidateTrustedFilePath("pr.template", name)
+}
+
+// ValidateTrustedFilePath accepts a literal repository-relative Git path that
+// the daemon reads as a tree entry of the pinned trusted default-branch commit
+// (pr.template, test.instructions_file, test.path_instructions[].
+// instructions_file). It is not a filesystem path, glob, ref expression or URL.
+// Empty is valid and means the setting is off. setting names the key in the
+// error. Keep this platform-independent: a Windows spelling is unsafe on POSIX
+// too.
+func ValidateTrustedFilePath(setting, name string) error {
 	if name == "" {
 		return nil
 	}
 	if len(name) > 1024 || strings.TrimSpace(name) != name || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "-") || strings.ContainsAny(name, "\\:") || path.Clean(name) != name {
-		return fmt.Errorf("pr.template must be a literal repository-relative path")
+		return fmt.Errorf("%s must be a literal repository-relative path", setting)
 	}
 	for _, part := range strings.Split(name, "/") {
 		if part == "." || part == ".." || part == ".git" || part == "" {
-			return fmt.Errorf("pr.template must not traverse directories or name .git")
+			return fmt.Errorf("%s must not traverse directories or name .git", setting)
 		}
 	}
 	if strings.IndexFunc(name, unicode.IsControl) >= 0 {
-		return fmt.Errorf("pr.template must not contain control characters")
+		return fmt.Errorf("%s must not contain control characters", setting)
 	}
 	return nil
 }

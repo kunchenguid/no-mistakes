@@ -1257,24 +1257,53 @@ func TestCommitAgentFixes_MissingBranchIdentifierDoesNotStageChanges(t *testing.
 	}
 }
 
-func TestCommitAgentFixes_OversizedRenderedMessageDoesNotStageChanges(t *testing.T) {
+func TestCommitAgentFixes_TruncatesOversizedRenderedMessage(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	for _, tt := range []struct {
+		name     string
+		template string
+		summary  string
+		cuts     int
+	}{
+		{name: "default template repro", summary: strings.Repeat("x", 4090), cuts: 1},
+		{name: "repeated summary", template: "{{.Summary}}{{.Summary}}", summary: strings.Repeat("x", 2049), cuts: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.Commit = config.Commit{FixMessage: "{{.Summary}}{{.Summary}}"}
+			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.Commit = config.Commit{FixMessage: tt.template}
 
-	if err := os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	summary := strings.Repeat("x", 2049)
-	if err := commitAgentFixes(sctx, types.StepReview, summary, "fallback"); err == nil {
-		t.Fatal("commitAgentFixes() accepted an oversized rendered message")
-	}
-	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
-		t.Fatalf("staged files after rendered message error = %q, want none", got)
+			if err := os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := commitAgentFixes(sctx, types.StepReview, tt.summary, "fallback"); err != nil {
+				t.Fatalf("commitAgentFixes() failed instead of bounding the subject: %v", err)
+			}
+			if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+				t.Fatalf("staged files after commit = %q, want none", got)
+			}
+			if got := gitCmd(t, dir, "rev-parse", "HEAD"); got == headSHA {
+				t.Fatal("fix commit did not advance HEAD")
+			}
+			if got := gitCmd(t, dir, "show", "HEAD:agent-change.txt"); got != "change" {
+				t.Fatalf("committed fix content = %q, want change", got)
+			}
+			subject := gitCmd(t, dir, "log", "-1", "--format=%s")
+			if len(subject) > 4096 {
+				t.Fatalf("committed subject is %d bytes, want <= 4096", len(subject))
+			}
+			if cuts := strings.Count(subject, "…"); cuts != tt.cuts {
+				t.Fatalf("committed subject marks %d cuts, want %d: %q", cuts, tt.cuts, subject)
+			}
+			if tt.template == "" && !strings.HasPrefix(subject, "no-mistakes(review): ") {
+				t.Fatalf("default subject prefix changed: %q", subject)
+			}
+			t.Logf("persisted review fix: subject_bytes=%d cut_markers=%d HEAD advanced; HEAD:agent-change.txt=change", len(subject), tt.cuts)
+		})
 	}
 }
 

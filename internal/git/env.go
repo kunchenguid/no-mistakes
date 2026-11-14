@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
@@ -27,7 +28,7 @@ func nonInteractiveEnvForContext(ctx context.Context, dir string) []string {
 			base = overlay.Apply(base)
 		}
 	}
-	return NonInteractiveEnvFrom(base, dir)
+	return NonInteractiveEnvFrom(ApplyCommitIdentity(ctx, base), dir)
 }
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke
@@ -79,6 +80,30 @@ func NonInteractiveEnvFrom(base []string, dir string) []string {
 		if abs, err := filepath.Abs(dir); err == nil {
 			env = append(env, "PWD="+abs)
 		}
+	}
+	return env
+}
+
+func SubprocessEnvironment(base []string) []string {
+	if base == nil {
+		base = os.Environ()
+	}
+	env := make([]string, 0, len(base))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
+		switch key {
+		case "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+			"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+			"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS":
+			continue
+		}
+		if strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		env = append(env, entry)
 	}
 	return env
 }

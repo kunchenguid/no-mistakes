@@ -217,13 +217,14 @@ func newAxiRunCmd() *cobra.Command {
 			"close nothing. Reattaching may add references until the PR body has been\n" +
 			"composed. It cannot be combined with --skip pr.\n\n" +
 			"--pr-title TEXT and --pr-body-file PATH (- reads stdin) supply the PR\n" +
-			"title and description, used verbatim when this run creates the PR: the\n" +
+			"title and description when this run creates or updates the PR: the\n" +
 			"usual appendix (Intent, evidence in the pr.appendix mode, Issues) and the\n" +
 			"attestation follow the description. Either works alone; the other is\n" +
 			"drafted. pr.title_format applies to a supplied title. Under pr.template\n" +
 			"the description must keep the template's top-level # headings. A supplied\n" +
 			"description is owned author text that later runs keep byte for byte. On\n" +
-			"an existing PR neither is applied. Empty, oversized, multi-line titles,\n" +
+			"an existing PR freshly passed flags replace only their named fields;\n" +
+			"inherited rerun values do not request an update. Empty or oversized titles,\n" +
 			"control or bidi characters, and no-mistakes markers are refused before any\n" +
 			"push. They are inherited by rerun and retry, and cannot be combined with\n" +
 			"--skip pr.\n\n" +
@@ -860,6 +861,10 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		return "", err
 	}
 	homes := runenv.CaptureTranscriptHomes()
+	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
+	if err != nil {
+		return "", err
+	}
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
@@ -869,6 +874,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	if remote := integration.RequestedRemote(ctx); remote != "" {
 		pushOptions = append(pushOptions, baseRemotePushOptionPrefix+remote)
 	}
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -959,6 +965,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
 	params.TranscriptHomes = homes
 	params.BaseRemote = integration.RequestedRemote(ctx)
+	params.CommitIdentity = identity
 	params.OmitIntent = omitIntent
 	params.FreshLaunch = true
 	params.PiProfile = profile
@@ -1068,6 +1075,10 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
+	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
+	if err != nil {
+		return nil, err
+	}
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
@@ -1076,6 +1087,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if remote := integration.RequestedRemote(ctx); remote != "" {
 		pushOptions = append(pushOptions, baseRemotePushOptionPrefix+remote)
 	}
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),
@@ -1104,6 +1116,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		CommitIdentity:  identity,
 		TranscriptHomes: homes,
 		BaseRemote:      integration.RequestedRemote(ctx),
 		RepoID:          env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,

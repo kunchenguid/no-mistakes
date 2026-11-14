@@ -200,6 +200,14 @@ func reviewPathInstructionsSection(heading string, matches pathInstructionMatche
 	if len(matches.Blocks) == 0 {
 		return ""
 	}
+	return "\n\n" + heading + "\n" + pathInstructionBlocksText(matches)
+}
+
+// pathInstructionBlocksText renders matched blocks with the labels from
+// internal/config, separated by blank lines. Review and Test both use it, so
+// one byte accounting (config.ReviewPathInstructionsBytes and
+// config.TestPathInstructionsBytes) measures either section.
+func pathInstructionBlocksText(matches pathInstructionMatches) string {
 	rendered := make([]string, 0, len(matches.Blocks))
 	for _, block := range matches.Blocks {
 		rendered = append(rendered,
@@ -208,13 +216,19 @@ func reviewPathInstructionsSection(heading string, matches pathInstructionMatche
 				config.ReviewPathInstructionsRulesLabel+"\n"+
 				block.Instructions)
 	}
-	return "\n\n" + heading + "\n" + strings.Join(rendered, "\n\n")
+	return strings.Join(rendered, "\n\n")
 }
 
 // logPathInstructions reports which rules of one source steered this review
 // and which did not, so a rule that never fires is visible in the step log
 // instead of looking identical to a rule that has no effect.
 func logPathInstructions(log func(string), source string, matches pathInstructionMatches) {
+	logStepPathInstructions(log, "review", source, matches)
+}
+
+// logStepPathInstructions is logPathInstructions for any step that renders
+// path-scoped guidance; step names the guidance kind in the log line.
+func logStepPathInstructions(log func(string), step, source string, matches pathInstructionMatches) {
 	if log == nil {
 		return
 	}
@@ -223,15 +237,15 @@ func logPathInstructions(log func(string), source string, matches pathInstructio
 		for _, block := range matches.Blocks {
 			scopes = append(scopes, fmt.Sprintf("%s (%d file(s))", block.Path, len(block.Files)))
 		}
-		log(fmt.Sprintf("applied %d %s review instruction block(s) for changed paths: %s", len(matches.Blocks), source, strings.Join(scopes, "; ")))
+		log(fmt.Sprintf("applied %d %s %s instruction block(s) for changed paths: %s", len(matches.Blocks), source, step, strings.Join(scopes, "; ")))
 	}
 	if len(matches.UnmatchedIDs) > 0 {
-		log(fmt.Sprintf("%d %s review instruction rule(s) matched no changed path: %s", len(matches.UnmatchedIDs), source, strings.Join(matches.UnmatchedIDs, ", ")))
+		log(fmt.Sprintf("%d %s %s instruction rule(s) matched no changed path: %s", len(matches.UnmatchedIDs), source, step, strings.Join(matches.UnmatchedIDs, ", ")))
 	}
 	if len(matches.DuplicateIDs) > 0 {
-		log(fmt.Sprintf("skipped %d duplicate %s review instruction rule(s): %s", len(matches.DuplicateIDs), source, strings.Join(matches.DuplicateIDs, ", ")))
+		log(fmt.Sprintf("skipped %d duplicate %s %s instruction rule(s): %s", len(matches.DuplicateIDs), source, step, strings.Join(matches.DuplicateIDs, ", ")))
 	}
 	if len(matches.UnusableIDs) > 0 {
-		log(fmt.Sprintf("skipped %d %s review instruction rule(s) with no usable path or instructions: %s", len(matches.UnusableIDs), source, strings.Join(matches.UnusableIDs, ", ")))
+		log(fmt.Sprintf("skipped %d %s %s instruction rule(s) with no usable path or instructions: %s", len(matches.UnusableIDs), source, step, strings.Join(matches.UnusableIDs, ", ")))
 	}
 }

@@ -83,16 +83,20 @@ type approvalResponse struct {
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
-	db     *db.DB
-	paths  *paths.Paths
-	config *config.Config
-	forge  *forgecontext.Context
-	agent  agent.Agent
-	steps  []Step
-	skips  map[types.StepName]bool
+	db             *db.DB
+	paths          *paths.Paths
+	config         *config.Config
+	forge          *forgecontext.Context
+	commitIdentity *git.CommitIdentity
+	agent          agent.Agent
+	steps          []Step
+	skips          map[types.StepName]bool
 	// retrySource is the failed run Execute continues instead of starting the
 	// pipeline from the beginning (SetRetrySource).
 	retrySource string
+	// deliveryRetry is set once planRetry proves the retry source already
+	// pushed: the continuation then never publishes a repair.
+	deliveryRetry bool
 
 	onEvent EventFunc
 
@@ -554,6 +558,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			return e.failRun(run, repo, err, ctx)
 		}
 		start, carried = checkpoint.Index, checkpoint.Steps
+		e.deliveryRetry = checkpoint.Delivery
 	}
 
 	// Record every requested skip before any step can park. Recovery and
@@ -1075,11 +1080,19 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	}
 }
 
+// SetCommitIdentity binds every Git call in this executor, including recovery.
+func (e *Executor) SetCommitIdentity(identity git.CommitIdentity) {
+	e.commitIdentity = &identity
+}
+
 func (e *Executor) runContext(ctx context.Context) context.Context {
-	if e.forge == nil {
-		return ctx
+	if e.forge != nil {
+		ctx = git.WithEnvironment(ctx, e.forge.Environment)
 	}
-	return git.WithEnvironment(ctx, e.forge.Environment)
+	if e.commitIdentity != nil {
+		ctx = git.WithCommitIdentity(ctx, *e.commitIdentity)
+	}
+	return ctx
 }
 
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
@@ -1268,7 +1281,7 @@ func recoveredLogPath(step *db.StepResult) string {
 }
 
 func (e *Executor) autoFixLimit(stepName types.StepName) int {
-	if e.config == nil {
+	if e.config == nil || (e.deliveryRetry && stepName == types.StepCI) {
 		return 0
 	}
 	return e.config.AutoFixLimit(stepName)
@@ -1517,6 +1530,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Sessions:             e.sessions,
 		Shared:               e.shared,
 		EvidenceDir:          e.runEvidenceDir(run.ID),
+		DeliveryRetry:        e.deliveryRetry,
 		Fixing:               state.fixing,
 		SkipFixExecution:     state.skipFixExecution,
 		FinalizingAnswers:    state.answering,

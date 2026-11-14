@@ -1421,10 +1421,13 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 
 	// Capability probe for --pr-title / --pr-body-file: see ipc.ProbeRunPRTextResult.
 	srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
-		return &ipc.ProbeRunPRTextResult{OK: true}, nil
+		return &ipc.ProbeRunPRTextResult{OK: true, ExistingPRUpdates: true}, nil
 	})
 	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+	})
+	srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
+		return map[string]bool{"ok": true}, nil
 	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1512,6 +1515,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		var p ipc.RerunParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		ctx, err := submittedIdentityContext(ctx, p.CommitIdentity)
+		if err != nil {
+			return nil, err
 		}
 		runID, err := mgr.handleRerun(integration.WithRemote(ctx, p.BaseRemote), p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
@@ -1710,6 +1717,8 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		PRBaseBranch:       r.PRBaseBranch,
 		BaseRemote:         integration.RemoteName(r.Integration),
 		OmitIntent:         r.OmitIntent,
+		PRTitleFresh:       r.PRTitleFresh,
+		PRBodyFresh:        r.PRBodyFresh,
 		QuotaRouting:       r.QuotaRouting,
 		PiProfile:          r.PiProfile,
 		ReviewerProfile:    r.ReviewerProfile,
