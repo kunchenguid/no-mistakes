@@ -27,14 +27,24 @@ func TestCacheRoundTripAndStaleness(t *testing.T) {
 		t.Fatalf("LatestVersion = %q", loaded.LatestVersion)
 	}
 
-	if cacheStale(loaded, "v1.2.2", now.Add(23*time.Hour)) {
-		t.Fatal("cache should be fresh before ttl")
+	if !cacheStale(loaded, "v1.2.2", now.Add(23*time.Hour)) {
+		t.Fatal("a legacy pending answer should be refreshed immediately")
+	}
+	channelAware := &checkCache{CheckedAt: now, LatestVersion: "v1.2.3", StableVersion: "v1.2.3"}
+	if cacheStale(channelAware, "v1.2.2", now.Add(23*time.Hour)) {
+		t.Fatal("a pending update should stay fresh before ttl")
+	}
+	if !cacheStale(channelAware, "v1.2.2", now.Add(25*time.Hour)) {
+		t.Fatal("a pending update should be stale after ttl")
 	}
 	if !cacheStale(loaded, "v1.2.2", now.Add(25*time.Hour)) {
 		t.Fatal("cache should be stale after ttl")
 	}
-	if !cacheStale(loaded, "v1.2.3", now.Add(time.Hour)) {
-		t.Fatal("cache should be stale when current version catches up")
+	if cacheStale(loaded, "v1.2.3", now.Add(time.Hour)) {
+		t.Fatal("cache should stay fresh when current version catches up")
+	}
+	if cacheStale(loaded, "v1.3.0-beta.1", now.Add(time.Hour)) {
+		t.Fatal("cache should stay fresh when a prerelease leads stable")
 	}
 	if !cacheStale(nil, "v1.2.2", now) {
 		t.Fatal("nil cache should be stale")
