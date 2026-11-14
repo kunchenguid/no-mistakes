@@ -401,6 +401,9 @@ func (s *Service) Refresh(ctx context.Context) State {
 	}
 
 	s.classifyRelation(ctx, &state, bound, run.BaseSHA, true)
+	if CanApply(state) {
+		state = s.checkIgnoredCollisions(ctx, state)
+	}
 	return state
 }
 
@@ -481,6 +484,14 @@ func (s *Service) Apply(ctx context.Context) State {
 		}
 	} else if !isAncestor(ctx, s.workDir(), plan.Local.Head, plan.Pipeline.PushedHead) || plan.Local.Head == plan.Pipeline.PushedHead {
 		return blockedPlan(plan, StateAmbiguousContext, "blocked_assumptions_changed", "the strict fast-forward assumptions changed before synchronization; no files or refs were changed")
+	}
+
+	// Refresh checked ignored data too, but it may have appeared while the
+	// remote and mutable binding were being verified. Repeat at the mutation
+	// boundary, before even creating the equivalent-advance recovery anchor.
+	plan = s.checkIgnoredCollisions(ctx, plan)
+	if !CanApply(plan) {
+		return plan
 	}
 
 	var applyErr error
