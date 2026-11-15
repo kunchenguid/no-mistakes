@@ -49,6 +49,7 @@ func newAxiCmd() *cobra.Command {
 	cmd.AddCommand(newAxiSyncCmd())
 	cmd.AddCommand(newAxiLogsCmd())
 	cmd.AddCommand(newAxiRoundsCmd())
+	cmd.AddCommand(newAxiPRVerifyCmd())
 	cmd.AddCommand(newAxiAbortCmd())
 	cmd.AddCommand(newAxiRetryCmd())
 	cmd.AddCommand(newAxiHandoffCmd())
@@ -166,7 +167,7 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 }
 
 func openAxiQueryEnv(explicitRunID string) (*axiEnv, error) {
-	return openAxiEnvWithOptions(axiEnvOptions{explicitRunID: strings.TrimSpace(explicitRunID)})
+	return openAxiEnvWithOptions(axiEnvOptions{explicitRunID: strings.TrimSpace(explicitRunID), readOnlyDB: true})
 }
 
 // runAxiHome renders the content-first home view: tool identity, repo, daemon

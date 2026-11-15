@@ -240,6 +240,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindFixtureCommitIdentity(t, d, source.ID)
 	for _, name := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest} {
 		sr, err := d.InsertStepResult(source.ID, name)
 		if err != nil {
@@ -302,6 +303,13 @@ func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 	}
 	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := f.d.RunCommitIdentity(source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.BindRunCommitIdentity(next.ID, identity); err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range sourceRows {
@@ -440,7 +448,7 @@ func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {
 			}
 			return f.source.ID
 		}},
-		{name: "a run that pushed", proof: "unpublished run", breakProof: func(t *testing.T, f *retryFixture) string {
+		{name: "a run that pushed and failed in validation", proof: "eligible failure", reason: "only a failed pr or ci step can continue", breakProof: func(t *testing.T, f *retryFixture) string {
 			if err := f.d.UpdateRunPushBinding(f.source.ID, db.PushBinding{HeadSHA: f.submitted, TargetKind: "origin", TargetFingerprint: "fp", Ref: "refs/heads/main"}); err != nil {
 				t.Fatal(err)
 			}
@@ -688,6 +696,9 @@ func TestRetryInheritsTheSuppliedPRText(t *testing.T) {
 	run := waitForRunTerminalState(t, f.d, result.RunID)
 	if run.PRTitle == nil || *run.PRTitle != text.Title || run.PRBody == nil || *run.PRBody != text.Body {
 		t.Fatalf("retried run PR text = %v / %v", run.PRTitle, run.PRBody)
+	}
+	if run.PRTitleFresh || run.PRBodyFresh {
+		t.Fatalf("retry marked inherited PR text fresh: %v / %v", run.PRTitleFresh, run.PRBodyFresh)
 	}
 }
 

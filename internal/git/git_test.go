@@ -159,37 +159,6 @@ func TestRemoveRemote(t *testing.T) {
 	}
 }
 
-func TestCopyLocalUserIdentity(t *testing.T) {
-	ctx := context.Background()
-	src := initTestRepo(t)
-	dst := initTestRepo(t)
-
-	run(t, dst, "git", "config", "--local", "--unset", "user.name")
-	run(t, dst, "git", "config", "--local", "--unset", "user.email")
-
-	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
-		t.Fatalf("CopyLocalUserIdentity failed: %v", err)
-	}
-
-	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Test" {
-		t.Fatalf("user.name = %q, want %q", got, "Test")
-	}
-	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "test@test.com" {
-		t.Fatalf("user.email = %q, want %q", got, "test@test.com")
-	}
-	run(t, src, "git", "config", "--local", "--unset", "user.email")
-	run(t, src, "git", "config", "--local", "user.name", "Updated")
-	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
-		t.Fatal(err)
-	}
-	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Updated" {
-		t.Fatalf("user.name = %q, want Updated", got)
-	}
-	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "test@test.com" {
-		t.Fatalf("missing source email replaced destination email with %q", got)
-	}
-}
-
 func TestCopyLocalUserIdentityIgnoresUnreadableSiblingMetadata(t *testing.T) {
 	for _, isolated := range []bool{false, true} {
 		name := "shared config"
@@ -229,7 +198,11 @@ func TestCopyLocalUserIdentityIgnoresUnreadableSiblingMetadata(t *testing.T) {
 			if err := os.Mkdir(commonFile, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := CopyLocalUserIdentity(ctx, src, wt); err != nil {
+			identity, err := CaptureCommitIdentity(ctx, src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := CopyLocalUserIdentity(ctx, wt, identity); err != nil {
 				t.Fatal(err)
 			}
 			for key, want := range map[string]string{"user.name": "Test", "user.email": "test@test.com"} {

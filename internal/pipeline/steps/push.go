@@ -135,6 +135,11 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 	ctx := sctx.Ctx
+	if sctx.Run.Integration != nil {
+		if _, err := sctx.Run.Integration.RuntimeURL(ctx, sctx.Repo.WorkingPath); err != nil {
+			return err
+		}
+	}
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 
@@ -467,11 +472,22 @@ func lastKnownBranchTip(ctx context.Context, sctx *pipeline.StepContext, branch 
 		runs, err := sctx.DB.GetRunsByRepo(sctx.Repo.ID)
 		if err == nil {
 			for _, r := range runs {
-				if strings.TrimPrefix(r.Branch, "refs/heads/") == strings.TrimPrefix(branch, "refs/heads/") && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
+				if sameIntegrationDestination(r, sctx.Run) && strings.TrimPrefix(r.Branch, "refs/heads/") == strings.TrimPrefix(branch, "refs/heads/") && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
 					return strings.TrimSpace(*r.LastPushedSHA)
 				}
 			}
 		}
 	}
+	if sctx.Run.Integration != nil && !fork {
+		sha, _ := git.ResolveRef(ctx, sctx.WorkDir, runIntegrationRef(sctx, branch)+"^{commit}")
+		return sha
+	}
 	return lastFetchedBranchTip(ctx, sctx.WorkDir, branch, fork)
+}
+
+func sameIntegrationDestination(a, b *db.Run) bool {
+	if a.Integration == nil || b.Integration == nil {
+		return a.Integration == nil && b.Integration == nil
+	}
+	return a.Integration.URL == b.Integration.URL
 }

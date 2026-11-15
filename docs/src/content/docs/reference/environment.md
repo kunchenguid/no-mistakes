@@ -47,7 +47,7 @@ Canonical Forgejo web base URL used for provider discovery and forgejo-axi comma
 | Type    | `URL`    |
 | Default | (none)   |
 
-Set this for every SSH origin, because an SSH remote does not identify the canonical Forgejo web scheme, port, or path prefix. Also set it when an HTTPS origin uses a self-hosted hostname other than `codeberg.org` or one containing `forgejo`. Recognized HTTPS origins are detected automatically, including non-default ports and path prefixes inferred from the origin. When set, the host and prefix must match the repository's upstream origin - name the clone hostname with [`FORGEJO_SSH_DOMAIN`](#forgejo_ssh_domain) when the instance serves SSH from a different host; credentials, query strings, and fragments are rejected.
+Set this when the run's [integration remote](/no-mistakes/reference/cli/#other-run-options) uses SSH, because an SSH remote does not identify the canonical Forgejo web scheme, port, or path prefix. Also set it when an HTTPS integration remote uses a self-hosted hostname other than `codeberg.org` or one containing `forgejo`. Recognized HTTPS remotes are detected automatically, including non-default ports and path prefixes inferred from their URLs. When set, the host and prefix must match the integration repository's URL. Name the clone hostname with [`FORGEJO_SSH_DOMAIN`](#forgejo_ssh_domain) when the instance serves SSH from a different host; credentials, query strings, and fragments are rejected.
 
 ## `FORGEJO_SSH_DOMAIN`
 
@@ -58,13 +58,13 @@ Hostname a Forgejo instance publishes in SSH clone URLs when it differs from the
 | Type    | `string` |
 | Default | (none)   |
 
-Set this to the instance's own `SSH_DOMAIN` value when Forgejo serves SSH from a hostname other than its web host, so an origin such as `git@ssh.forgejo.example:octo/widgets.git` is still recognized as that instance.
+Set this to the instance's own `SSH_DOMAIN` value when Forgejo serves SSH from a hostname other than its web host, so an integration remote such as `git@ssh.forgejo.example:octo/widgets.git` is still recognized as that instance.
 
-Give a bare ASCII hostname or IP address, with an optional port that is ignored, because an instance's SSH clone port varies independently of its hostname. Hostname labels hold letters, digits, hyphens, and underscores, with a hyphen or underscore never first or last in a label, and an IPv6 address is bracketed (`[2001:db8::1]`). Any other value is treated as unset: a scheme, path, credentials, query string, or fragment, and also a name that could never match an origin, such as a wildcard or a trailing dot. no-mistakes never echoes a rejected value back into a log or an error, because the setting can hold a pasted credential.
+Give a bare ASCII hostname or IP address, with an optional port that is ignored, because an instance's SSH clone port varies independently of its hostname. Hostname labels hold letters, digits, hyphens, and underscores, with a hyphen or underscore never first or last in a label, and an IPv6 address is bracketed (`[2001:db8::1]`). Any other value is treated as unset: a scheme, path, credentials, query string, or fragment, and also a name that could never match a remote hostname, such as a wildcard or a trailing dot. no-mistakes never echoes a rejected value back into a log or an error, because the setting can hold a pasted credential.
 
-The variable only widens which SSH origins belong to the instance `FORGEJO_BASE_URL` already names, so it does nothing while that variable is unset or invalid. The upstream path prefix must still match, and HTTPS origins are unaffected. GitHub, GitLab, Bitbucket, and Azure DevOps hosts, plus any host configured in `glab`, `gh`, or `tea`, are all matched before the declared domain; against the remaining hostname guesses, the declared domain carries exactly the weight a `FORGEJO_BASE_URL` match already carries.
+The variable only widens which SSH remotes belong to the instance `FORGEJO_BASE_URL` already names, so it does nothing while that variable is unset or invalid. The upstream path prefix must still match, and HTTPS remotes are unaffected. GitHub, GitLab, Bitbucket, and Azure DevOps hosts, plus any host configured in `glab`, `gh`, or `tea`, are all matched before the declared domain; against the remaining hostname guesses, the declared domain carries exactly the weight a `FORGEJO_BASE_URL` match already carries.
 
-If you worked around a split host by adding a `tea` login for it, delete that login when you set this variable. Because tea's configured hosts are matched first, a login whose `url` host or `ssh_host` equals the origin's host keeps the repository on the Gitea provider: the PR and CI steps keep running through `tea` instead of forgejo-axi, and where `tea` is not installed or not logged in, the PR step is skipped. Find the login with `tea logins list` and remove it with `tea logins delete <name>` (on tea 1.0: `tea auth status` and `tea auth logout --host <url>`).
+If you worked around a split host by adding a `tea` login for it, delete that login when you set this variable. Because tea's configured hosts are matched first, a login whose `url` host or `ssh_host` equals the integration remote's host keeps the repository on the Gitea provider: the PR and CI steps keep running through `tea` instead of forgejo-axi, and where `tea` is not installed or not logged in, the PR step is skipped. Find the login with `tea logins list` and remove it with `tea logins delete <name>` (on tea 1.0: `tea auth status` and `tea auth logout --host <url>`).
 
 ## `FORGEJO_TOKEN_<HOST_KEY>`
 
@@ -359,6 +359,14 @@ Disable telemetry collection.
 When set to a disabling value, telemetry stays off even if a runtime or embedded website ID is available.
 
 On macOS and Linux, set this variable before `no-mistakes init` to include it in the managed daemon's service definition. To change an existing installation, export the new value and run `no-mistakes daemon restart`. Service refreshes and binary upgrades preserve the stored value when the current shell has no nonempty value. To re-enable telemetry, explicitly set `NO_MISTAKES_TELEMETRY=1` and restart the daemon. Windows Task Scheduler inherits the user's logon environment, so set it there for the managed daemon.
+
+## Git commit environment
+
+Submission identity capture honors `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` from the submitting process. The [pipeline commit identity policy](/no-mistakes/reference/pipeline-steps/) owns how that identity is bound to a run and preserved during correction rewriting.
+
+Pipeline-owned Git calls set those four variables to the run's saved identity and remove inherited `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`. New commit dates are not pinned. These calls retain inherited command-scope Git configuration, as do provider CLI and plugin calls.
+
+Agent and configured-command environments exclude inherited author and committer name, email and date variables, plus all command-scope Git configuration supplied through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, and `GIT_CONFIG_PARAMETERS`. Filtering happens after step, forge, and adapter overlays, so those overlays cannot restore the excluded variables. This removes non-identity command-scope settings too, such as proxy, credential-helper, and URL-rewrite settings. These subprocesses use normal Git repository and worktree configuration, where the run's identity is stored. Nested repositories retain their own configured identities.
 
 ## Environment the daemon sees
 

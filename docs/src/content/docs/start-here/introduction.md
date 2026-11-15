@@ -37,8 +37,8 @@ touched, so you can keep coding while the pipeline runs.
 - `git push origin` still behaves exactly like normal Git.
 - `git push no-mistakes` is an explicit signal that this branch should go
   through the full gate.
-- For GitHub fork contributions, the configured push target can be your fork
-  while `origin` stays pointed at the parent repository used for the PR base.
+- For GitHub fork contributions, see [Push](/no-mistakes/reference/pipeline-steps/#push)
+  and [PR routing](/no-mistakes/reference/pipeline-steps/#pr).
 
 That design matters for trust. The tool is not trying to hide Git from you. It
 is trying to make one deliberate path mean something consistent.

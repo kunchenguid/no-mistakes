@@ -36,7 +36,7 @@ When you run `no-mistakes init` in a repo:
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
-6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
+6. When `--fork-url` is supplied, it records the GitHub fork separately. The [Push](/no-mistakes/reference/pipeline-steps/#push) and [PR](/no-mistakes/reference/pipeline-steps/#pr) references own destination routing.
 7. It handles the user-level `/no-mistakes` agent skill as described in the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init), which owns installation and skip behavior.
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
@@ -64,7 +64,7 @@ That is a core design choice, not an implementation detail.
    AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
    While a step is actively running or fixing, AXI run objects can also show `active_steps` with the active duration, latest activity, native agent PID, and current execution or fix round.
 8. After local checks pass, the push step forwards the branch to the configured push target only after verifying that the update will not discard unincorporated commits already on that target, and the PR step creates or updates the pull request.
-   For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
+   For target routing, including GitHub forks and selected integration remotes, see [Push](/no-mistakes/reference/pipeline-steps/#push) and [PR](/no-mistakes/reference/pipeline-steps/#pr).
 9. The CI step keeps watching the open PR until it is merged, closed, explicitly handed off with [`no-mistakes axi handoff`](/no-mistakes/reference/cli/#no-mistakes-axi-handoff), or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported. While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable (or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) and no checks are registered), and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it or explicitly hand it off. An empty forge response without that declaration stays not-ready. Under [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass) the step instead records readiness and finishes at that verdict, so the run completes as `checks_passed`, releases its worktree, and leaves the merge decision - and any later observation of it - to you.
 
 **Key design decisions:**
@@ -314,7 +314,7 @@ Legacy `user_fix` rounds are still read as `auto-fix` for backward compatibility
 Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent, plus accumulated `parked_ms` for local performance reporting. For version-specific debugging, inspect `runs.no_mistakes_version` and `runs.no_mistakes_build_sha`: each new run records the version returned by `internal/buildinfo.CurrentVersion()` and the `internal/buildinfo.Commit` build SHA embedded through release `-ldflags`, the same identity shown by `no-mistakes --version`. Historical rows remain `NULL`.
 Each agent invocation records local-only purpose, provider/model metadata, session mode and a truncated session-identity hash, timing, failure category, and token usage; prompts, outputs, diffs, and credentials are never stored there.
 Use `no-mistakes stats --agents` for aggregates or `no-mistakes stats --run <id>` for a run timeline and parked time.
-Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
+Repo records store the default parent `upstream_url` and an optional `fork_url`. An explicit [`--base-remote`](/no-mistakes/reference/cli/#other-run-options) is stored separately on the run and supplies its integration context without changing that registration.
 At the start of each run, no-mistakes best-effort refreshes those URLs from the working clone without changing any clone or gate remote.
 `origin` is the upstream authority, and an existing fork registration is refreshed only when exactly one other clone remote identifies the same fork repository.
 The two registered URLs are replaced atomically after validation; an unreadable, invalid, credential-bearing, or ambiguous remote, or a database failure, leaves the exact prior registration in place and does not stop the run.

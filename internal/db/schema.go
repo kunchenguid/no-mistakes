@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_commit_identities (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    identity_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -450,7 +455,8 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN review_max_fix_rounds INTEGER`,
 	// Caller-supplied PR title and description (axi run --pr-title /
 	// --pr-body-file). Written once, with the row, and NULL when not
-	// supplied; the PR step publishes them only when the run creates the PR.
+	// supplied; creation may use inherited values, while existing-PR updates
+	// require the separately recorded fresh flags.
 	`ALTER TABLE runs ADD COLUMN pr_title TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_body TEXT`,
 	// Run-history lookup indexes. Without them every run snapshot scans the
@@ -472,4 +478,13 @@ COMMIT;`,
 	// Caller transcript roots are immutable launch context. Historical runs
 	// retain NULL and the pre-existing default discovery paths.
 	`ALTER TABLE runs ADD COLUMN transcript_homes TEXT`,
+	// Distinguish explicit flags on this run from text inherited by rerun/retry.
+	// Old rows default false, preserving their existing-PR behavior.
+	`ALTER TABLE runs ADD COLUMN pr_title_fresh BOOLEAN NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN pr_body_fresh BOOLEAN NOT NULL DEFAULT 0`,
+	// Set once this run's fresh supplied PR text has been published, so a CI
+	// repair restart or recovery re-running the PR step treats it as inherited
+	// and never reverts later edits on the live PR.
+	`ALTER TABLE runs ADD COLUMN pr_text_applied_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN integration_destination TEXT`,
 }

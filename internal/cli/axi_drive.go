@@ -25,6 +25,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -217,13 +218,14 @@ func newAxiRunCmd() *cobra.Command {
 			"close nothing. Reattaching may add references until the PR body has been\n" +
 			"composed. It cannot be combined with --skip pr.\n\n" +
 			"--pr-title TEXT and --pr-body-file PATH (- reads stdin) supply the PR\n" +
-			"title and description, used verbatim when this run creates the PR: the\n" +
+			"title and description when this run creates or updates the PR: the\n" +
 			"usual appendix (Intent, evidence in the pr.appendix mode, Issues) and the\n" +
 			"attestation follow the description. Either works alone; the other is\n" +
 			"drafted. pr.title_format applies to a supplied title. Under pr.template\n" +
 			"the description must keep the template's top-level # headings. A supplied\n" +
 			"description is owned author text that later runs keep byte for byte. On\n" +
-			"an existing PR neither is applied. Empty, oversized, multi-line titles,\n" +
+			"an existing PR freshly passed flags replace only their named fields;\n" +
+			"inherited rerun values do not request an update. Empty or oversized titles,\n" +
 			"control or bidi characters, and no-mistakes markers are refused before any\n" +
 			"push. They are inherited by rerun and retry, and cannot be combined with\n" +
 			"--skip pr.\n\n" +
@@ -288,6 +290,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&launchNonce, "launch-nonce", "", "opaque nonce for a daemon-bound pre-drive launch receipt")
 	cmd.Flags().StringVar(&validationGeneration, "validation-generation", "", "opaque generation bound to --launch-nonce proof mode")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
+	cmd.Flags().String("base-remote", "", "integration remote for this run only (default origin; independent of the fork push target)")
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue this PR closes when merged; repeat for multiple issues (42, owner/repo#42, or a nested GitLab project path)")
 	cmd.Flags().String("verification-plan", "", "capture a nonempty UTF-8 verification plan as separate run evidence (new runs only)")
@@ -345,7 +348,13 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	if hasRunPRText(prText) && slices.Contains(skipSteps, types.StepPR) {
 		return emitError(cmd, 2, "--pr-title and --pr-body-file cannot be combined with --skip pr: skipping the PR step creates no PR to use them", "Drop pr from --skip, or drop --pr-title and --pr-body-file.")
 	}
-	ctx := cmd.Context()
+	baseRemote, _ := cmd.Flags().GetString("base-remote")
+	if cmd.Flags().Changed("base-remote") {
+		if err := integration.ValidateRemote(baseRemote); err != nil {
+			return emitError(cmd, 2, err.Error())
+		}
+	}
+	ctx := integration.WithRemote(cmd.Context(), baseRemote)
 	driveCtx, cancel, err := boundAxiWait(ctx, wait)
 	if err != nil {
 		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
@@ -356,6 +365,12 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
+	if baseRemote != "" {
+		var probe ipc.ProbeTranscriptHomesResult
+		if err := env.client.Call(ipc.MethodProbeBaseRemote, nil, &probe); err != nil || !probe.OK {
+			return emitError(cmd, 2, "daemon does not support --base-remote; update it before submitting this run")
+		}
+	}
 	// Probe before any RPC carries omit_intent: an older daemon would drop
 	// the unknown field silently and publish the intent it was asked to
 	// withhold, so the run is refused instead. An unreadable global config
@@ -412,7 +427,7 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profile, reviewer)
+		receipt, err := claimLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, baseRemote, omitIntent, prText, profile, reviewer)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -432,6 +447,9 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 		}
 		if active != nil {
+			if !integration.MatchesRemote(active.BaseRemote, baseRemote) {
+				return emitError(cmd, 2, "active run has a different integration remote; omit --base-remote to reattach")
+			}
 			if !active.ReviewerProfile.Matches(reviewer) {
 				return emitError(cmd, 2, "active run has a different reviewer; omit --reviewer flags to reattach")
 			}
@@ -652,6 +670,17 @@ func validateAxiRunBaseBranch(ctx context.Context, baseBranch string) error {
 	if err != nil {
 		return fmt.Errorf("--base-branch: %w", err)
 	}
+	if integration.RequestedRemote(ctx) != "" {
+		destination, err := integration.ResolveRequest(ctx, ".")
+		if err != nil {
+			return err
+		}
+		remote, err := destination.RuntimeURL(ctx, ".")
+		if err != nil {
+			return err
+		}
+		return steps.VerifyRemoteBranchExistsOn(ctx, ".", remote, normalized)
+	}
 	if normalized == "" {
 		return nil
 	}
@@ -851,6 +880,10 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		return "", err
 	}
 	homes := runenv.CaptureTranscriptHomes()
+	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
+	if err != nil {
+		return "", err
+	}
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
@@ -858,6 +891,10 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
 	pushOptions = append(pushOptions, formatCallerRestrictionsPushOptions(restrictions)...)
+	if remote := integration.RequestedRemote(ctx); remote != "" {
+		pushOptions = append(pushOptions, baseRemotePushOptionPrefix+remote)
+	}
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -951,6 +988,8 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
 	params.TranscriptHomes = homes
 	params.CallerRestrictions = restrictions
+	params.BaseRemote = integration.RequestedRemote(ctx)
+	params.CommitIdentity = identity
 	params.OmitIntent = omitIntent
 	params.FreshLaunch = true
 	params.PiProfile = profile
@@ -972,14 +1011,25 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 }
 
 func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, requested string) gate.ReconciliationUpstream {
-	upstreamURL, err := git.GetRemoteURL(ctx, ".", "origin")
+	var upstreamURL string
+	var err error
+	base := strings.TrimSpace(env.repo.DefaultBranch)
+	if integration.RequestedRemote(ctx) != "" {
+		destination, resolveErr := integration.ResolveRequest(ctx, ".")
+		if resolveErr != nil {
+			return gate.ReconciliationUpstream{}
+		}
+		upstreamURL, err = destination.RuntimeURL(ctx, ".")
+		base = destination.DefaultBranch
+	} else {
+		upstreamURL, err = git.GetRemoteURL(ctx, ".", "origin")
+	}
 	if err != nil || strings.TrimSpace(upstreamURL) == "" {
 		return gate.ReconciliationUpstream{}
 	}
 	if requested = strings.TrimSpace(requested); requested != "" {
 		return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: requested}
 	}
-	base := strings.TrimSpace(env.repo.DefaultBranch)
 	if base == "" {
 		return gate.ReconciliationUpstream{}
 	}
@@ -1020,7 +1070,7 @@ func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, re
 	return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: base}
 }
 
-func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch, baseRemote string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
@@ -1028,6 +1078,7 @@ func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch,
 		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent,
 		PRTextDigest:             db.PRTextDigest(prText.Title, prText.Body),
 		CallerRestrictionsDigest: callerrestrictions.LaunchRecord(ctx).Digest(),
+		BaseRemote:               baseRemote,
 	}, &result); err != nil {
 		return nil, err
 	}
@@ -1053,12 +1104,20 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
+	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
+	if err != nil {
+		return nil, err
+	}
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
 	pushOptions = append(pushOptions, formatCallerRestrictionsPushOptions(restrictions)...)
+	if remote := integration.RequestedRemote(ctx); remote != "" {
+		pushOptions = append(pushOptions, baseRemotePushOptionPrefix+remote)
+	}
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),
@@ -1088,7 +1147,9 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		CallerRestrictions: restrictions,
+		CommitIdentity:     identity,
 		TranscriptHomes:    homes,
+		BaseRemote:         integration.RequestedRemote(ctx),
 		RepoID:             env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
@@ -1105,7 +1166,7 @@ func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branc
 	poll := time.NewTicker(150 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		receipt, err := claimLaunchReceipt(ctx, client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, prText, profiles...)
+		receipt, err := claimLaunchReceipt(ctx, client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, integration.RequestedRemote(ctx), omitIntent, prText, profiles...)
 		if err != nil {
 			return nil, err
 		}

@@ -139,3 +139,31 @@ func TestNonInteractiveEnv_EmptyDirLeavesAmbientPWD(t *testing.T) {
 		t.Errorf("PWD = %q, want ambient \"/ambient/pwd\" when dir is empty", got["PWD"])
 	}
 }
+
+func TestSubprocessEnvironmentPreservesRepositoryConfigSources(t *testing.T) {
+	base := []string{
+		"GIT_AUTHOR_NAME=Daemon", "GIT_AUTHOR_EMAIL=daemon@example.test", "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z",
+		"GIT_COMMITTER_NAME=Daemon", "GIT_COMMITTER_EMAIL=daemon@example.test", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=include.path", "GIT_CONFIG_VALUE_0=/daemon/config",
+		"GIT_CONFIG_KEY_99=user.name", "GIT_CONFIG_VALUE_99=Orphan",
+		"GIT_CONFIG_PARAMETERS='user.name=Daemon'",
+		"GIT_CONFIG_GLOBAL=/private/global", "GIT_CONFIG_NOSYSTEM=1", "PATH=/toolchain", "GH_TOKEN=credential",
+	}
+	if runtime.GOOS == "windows" {
+		for i, entry := range base {
+			key, value, _ := strings.Cut(entry, "=")
+			base[i] = strings.ToLower(key) + "=" + value
+		}
+	}
+	env := SubprocessEnvironment(base)
+	want := []string{"GIT_CONFIG_GLOBAL=/private/global", "GIT_CONFIG_NOSYSTEM=1", "PATH=/toolchain", "GH_TOKEN=credential"}
+	if runtime.GOOS == "windows" {
+		for i, entry := range want {
+			key, value, _ := strings.Cut(entry, "=")
+			want[i] = strings.ToLower(key) + "=" + value
+		}
+	}
+	if strings.Join(env, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("subprocess environment = %q, want %q", env, want)
+	}
+}

@@ -20,6 +20,13 @@ type RecoveryArchive struct {
 	CreatedAt        int64
 }
 
+const recoveryArchiveReadColumns = "id, owner_run_id, repo_id, run_id, branch, required_head_sha, preserved_head_sha, archive_ref, created_at"
+
+func recoveryArchiveScanTargets(record *RecoveryArchive) []any {
+	return []any{&record.ID, &record.OwnerRunID, &record.RepoID, &record.RunID, &record.Branch,
+		&record.RequiredHeadSHA, &record.PreservedHeadSHA, &record.ArchiveRef, &record.CreatedAt}
+}
+
 // RecordRecoveryArchive appends one archive binding. Repeating the exact same
 // binding is idempotent, while reusing its owner-run/ref identity with changed
 // provenance fails closed. Semantic and Git-object verification belong to the
@@ -69,8 +76,12 @@ func (d *DB) RecordRecoveryArchive(record RecoveryArchive) (*RecoveryArchive, er
 // run. Callers require exactly one verified record before it can affect branch
 // custody classification.
 func (d *DB) GetRecoveryArchivesByRun(ownerRunID string) ([]*RecoveryArchive, error) {
+	columns, err := d.readProjection("recovery_archives", recoveryArchiveReadColumns, recoveryArchiveScanTargets(&RecoveryArchive{})...)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.sql.Query(`
-		SELECT id, owner_run_id, repo_id, run_id, branch, required_head_sha, preserved_head_sha, archive_ref, created_at
+		SELECT `+columns+`
 		FROM recovery_archives
 		WHERE owner_run_id = ?
 		ORDER BY created_at, id`, ownerRunID)
@@ -94,9 +105,13 @@ func (d *DB) GetRecoveryArchivesByRun(ownerRunID string) ([]*RecoveryArchive, er
 }
 
 func (d *DB) recoveryArchiveByOwnerAndRef(ownerRunID, archiveRef string) (*RecoveryArchive, bool, error) {
+	columns, err := d.readProjection("recovery_archives", recoveryArchiveReadColumns, recoveryArchiveScanTargets(&RecoveryArchive{})...)
+	if err != nil {
+		return nil, false, err
+	}
 	record := &RecoveryArchive{}
-	err := scanRecoveryArchive(d.sql.QueryRow(`
-		SELECT id, owner_run_id, repo_id, run_id, branch, required_head_sha, preserved_head_sha, archive_ref, created_at
+	err = scanRecoveryArchive(d.sql.QueryRow(`
+		SELECT `+columns+`
 		FROM recovery_archives
 		WHERE owner_run_id = ? AND archive_ref = ?`, ownerRunID, archiveRef), record)
 	if err == sql.ErrNoRows {
@@ -109,10 +124,7 @@ func (d *DB) recoveryArchiveByOwnerAndRef(ownerRunID, archiveRef string) (*Recov
 }
 
 func scanRecoveryArchive(row interface{ Scan(...any) error }, record *RecoveryArchive) error {
-	return row.Scan(
-		&record.ID, &record.OwnerRunID, &record.RepoID, &record.RunID, &record.Branch,
-		&record.RequiredHeadSHA, &record.PreservedHeadSHA, &record.ArchiveRef, &record.CreatedAt,
-	)
+	return row.Scan(recoveryArchiveScanTargets(record)...)
 }
 
 func sameRecoveryArchiveBinding(a, b *RecoveryArchive) bool {

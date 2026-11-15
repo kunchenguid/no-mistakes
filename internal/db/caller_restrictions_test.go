@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 )
 
 func TestCallerRestrictionsAreImmutableAndRunBound(t *testing.T) {
@@ -51,5 +52,53 @@ func TestCallerRestrictionsAreImmutableAndRunBound(t *testing.T) {
 	first, _ := d.GetRun(ids[0])
 	if _, err := d.sql.Exec(`UPDATE runs SET caller_restrictions = ? WHERE id = ?`, first.CallerRestrictions, unset.ID); err == nil {
 		t.Fatal("late caller authority accepted")
+	}
+}
+
+func TestCallerRestrictionsAndIntegrationBindTheSameLaunch(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo(t.TempDir(), "https://example.test/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "caller.txt")
+	if err := os.WriteFile(path, []byte("Use only the private Linux guest.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	restrictions, err := callerrestrictions.Capture(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := &integration.Destination{
+		Remote: "custom", URL: "https://github.com/customer/repo.git", TransportURL: "https://github.com/customer/repo.git",
+		DefaultBranch: "main", Key: "abcdefghijklmnopqrstuvwx",
+	}
+	run, err := d.InsertRunWithDestinationAndCallerRestrictions(repo.ID, "topic", "head", "base", nil, "nonce", "generation", "intent-digest", "", false, nil, RunPRText{}, nil, destination, restrictions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CallerRestrictions == nil || *stored.CallerRestrictions != *restrictions || stored.Integration == nil || *stored.Integration != *destination {
+		t.Fatalf("creation did not preserve both records: %+v", stored)
+	}
+	for _, mismatch := range []struct{ remote, digest string }{
+		{"other", restrictions.Digest()},
+		{"custom", "different-restrictions"},
+	} {
+		_, claimed, _ := d.ClaimLaunchReceiptWithDestinationAndCallerRestrictions(repo.ID, "topic", "nonce", "head", "generation", "intent-digest", "", false, "", mismatch.remote, mismatch.digest)
+		if claimed {
+			t.Fatalf("mismatched request consumed receipt: %+v", mismatch)
+		}
+		stored, err := d.GetRun(run.ID)
+		if err != nil || stored.LaunchReceiptClaimedAt != nil {
+			t.Fatalf("mismatch changed receipt: %+v, %v", stored, err)
+		}
+	}
+	stored, claimed, err := d.ClaimLaunchReceiptWithDestinationAndCallerRestrictions(repo.ID, "topic", "nonce", "head", "generation", "intent-digest", "", false, "", "custom", restrictions.Digest())
+	if err != nil || !claimed || stored.ID != run.ID {
+		t.Fatalf("matching request did not claim exact run: %+v, %t, %v", stored, claimed, err)
 	}
 }
