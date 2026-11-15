@@ -276,7 +276,7 @@ func (s *Store) registerCase(c Case) error {
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO cases
 (id, source_run_id, source_round_id, captured_at, repo_fingerprint, branch, language, size_bucket, severity, gold_count, path)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.SourceRunID, c.SourceRoundID, c.CapturedAt, c.RepoFingerprint, c.Branch, language, size, severity, len(c.Labels.Findings), c.Dir)
+		c.ID, c.SourceRunID, c.SourceRoundID, c.CapturedAt, c.RepoFingerprint, c.Branch, language, size, severity, len(c.Labels.ActiveFindings()), c.Dir)
 	if err != nil {
 		return fmt.Errorf("register eval case: %w", err)
 	}
@@ -290,9 +290,15 @@ func (s *Store) appendFindingGold(c Case, added []FindingGold) (Case, int, error
 	if strings.TrimSpace(c.Dir) == "" {
 		return Case{}, 0, fmt.Errorf("case %q has no directory", c.ID)
 	}
-	labels := c.Labels
-	if labels.Version == 0 {
-		labels.Version = labelsVersion
+	// The caller holds the corpus lock, but its target may have been selected
+	// before locking (miss ingest does this after Capture). Reload so an
+	// adjudication committed in between cannot be overwritten by a stale case.
+	var labels Labels
+	if err := readJSON(filepath.Join(c.Dir, "labels.json"), &labels); err != nil {
+		return Case{}, 0, fmt.Errorf("read current case labels: %w", err)
+	}
+	if err := validateLabels(labels); err != nil {
+		return Case{}, 0, err
 	}
 	seen := make(map[string]bool, len(labels.Findings)+len(added))
 	for _, gold := range labels.Findings {
@@ -322,7 +328,7 @@ func (s *Store) appendFindingGold(c Case, added []FindingGold) (Case, int, error
 		return Case{}, 0, fmt.Errorf("write case labels: %w", err)
 	}
 	c.Labels = labels
-	if _, err := s.db.Exec(`UPDATE cases SET gold_count = ? WHERE id = ?`, len(labels.Findings), c.ID); err != nil {
+	if _, err := s.db.Exec(`UPDATE cases SET gold_count = ? WHERE id = ?`, len(labels.ActiveFindings()), c.ID); err != nil {
 		return Case{}, 0, fmt.Errorf("update eval case gold count: %w", err)
 	}
 	return c, n, nil
@@ -674,8 +680,8 @@ func loadCase(dir string) (Case, error) {
 	if err := readJSON(filepath.Join(dir, "labels.json"), &labels); err != nil {
 		return Case{}, err
 	}
-	if labels.Version != labelsVersion {
-		return Case{}, fmt.Errorf("unsupported case labels version %d (finding-level gold replaced the park/pass verdict; remove the eval directory to start a fresh corpus)", labels.Version)
+	if err := validateLabels(labels); err != nil {
+		return Case{}, err
 	}
 	var decision Decision
 	if err := readJSON(filepath.Join(dir, "original", "decision.json"), &decision); err != nil {

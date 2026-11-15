@@ -46,10 +46,11 @@ type Score struct {
 // reported separately so a threshold change is visible.
 func ScoreCandidate(labels Labels, findingsJSON string) Score {
 	candidate := parseFindingItems(findingsJSON)
-	assigned := assignMatches(labels.Findings, candidate)
+	goldFindings := labels.ActiveFindings()
+	assigned := assignMatches(goldFindings, candidate)
 	used := make([]bool, len(candidate))
 	var score Score
-	for i, gold := range labels.Findings {
+	for i, gold := range goldFindings {
 		if gold.Kind == GoldFalsePositive {
 			score.FalsePositiveGold++
 		}

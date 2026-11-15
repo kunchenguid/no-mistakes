@@ -2,8 +2,11 @@ package eval
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -18,10 +21,12 @@ type Interval struct {
 
 // CandidateReport is one locally observed candidate slice.
 type CandidateReport struct {
-	Cohort      string
-	Summary     EvaluationSummary
-	RepeatCount int
-	Confidence  *Interval
+	Cohort           string
+	Summary          EvaluationSummary
+	RepeatCount      int
+	Confidence       *Interval
+	Provenance       LabelProvenance
+	AdjudicatedCases int
 	// AverageTokens is the honest per-replay total: fresh-input + output plus
 	// cache-read and cache-write where the adapter reported them. Cache reads
 	// dominate review cost by orders of magnitude, so ranking the
@@ -41,8 +46,54 @@ func Report(store *Store) ([]CandidateReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	byID := make(map[string]Case)
+	seenCases := map[string]bool{}
+	for _, row := range evaluations {
+		if seenCases[row.CaseID] {
+			continue
+		}
+		seenCases[row.CaseID] = true
+		var dir string
+		err := store.db.QueryRow(`SELECT path FROM cases WHERE id = ?`, row.CaseID).Scan(&dir)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var labels Labels
+		if err := readJSON(filepath.Join(dir, "labels.json"), &labels); err != nil {
+			// Historical reports never required case files. Keep their stored
+			// scores readable, and explicitly mark unavailable provenance.
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read labels for case %s: %w", row.CaseID, err)
+		}
+		if err := validateLabels(labels); err != nil {
+			return nil, err
+		}
+		byID[row.CaseID] = Case{Labels: labels}
+	}
 	byCandidateCohort := make(map[string][]Evaluation)
 	for _, evaluation := range evaluations {
+		// Historical results retain their captured scoring by default. An
+		// explicit adjudication opts this case into scoring its saved outputs
+		// against current gold, without rewriting measurements or rerunning agents.
+		if c, ok := byID[evaluation.CaseID]; ok && c.Labels.HasAdjudication() {
+			evaluation.HasFindingGold = c.Labels.HasGold()
+			evaluation.GoldCount = c.Labels.TrueIssueCount()
+			evaluation.FalsePositiveGold = c.Labels.FalsePositiveCount()
+			if evaluation.Status == "completed" {
+				score := ScoreCandidate(c.Labels, evaluation.FindingsJSON)
+				evaluation.TruePositive = score.TruePositive
+				evaluation.TruePositiveExact = score.TruePositiveExact
+				evaluation.TruePositiveFuzzy = score.TruePositiveFuzzy
+				evaluation.FalseNegative = score.FalseNegative
+				evaluation.FalsePositive = score.FalsePositive
+				evaluation.Pending = score.Pending
+			}
+		}
 		cohort := evaluation.Cohort
 		if cohort == "" {
 			cohort = "legacy-unmatched"
@@ -61,6 +112,21 @@ func Report(store *Store) ([]CandidateReport, error) {
 			RepeatCount:   repeats,
 			Confidence:    confidenceInterval(candidate, rows),
 			AverageWallMS: averageWallMS(rows),
+		}
+		seen := map[string]bool{}
+		for _, row := range rows {
+			if seen[row.CaseID] {
+				continue
+			}
+			seen[row.CaseID] = true
+			if c, ok := byID[row.CaseID]; ok {
+				report.Provenance.Add(c.Labels)
+				if c.Labels.HasAdjudication() {
+					report.AdjudicatedCases++
+				}
+			} else {
+				report.Provenance.UnavailableCases++
+			}
 		}
 		if total, cacheRead, cacheWrite, ok := averageTokens(rows); ok {
 			report.AverageTokens = &total
@@ -233,6 +299,7 @@ type SetSummary struct {
 	Warning        string
 	Composition    []CompositionRow
 	SelfScore      EvaluationSummary
+	Provenance     LabelProvenance
 }
 
 // CompositionRow is one stratum bucket of a case set: the same axes the
@@ -294,9 +361,10 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 		}
 		composition := map[compositionKey]int{}
 		for _, c := range cases {
+			summary.Provenance.Add(c.Labels)
 			if c.Labels.HasGold() {
 				summary.GoldCases++
-				for _, finding := range c.Labels.Findings {
+				for _, finding := range c.Labels.ActiveFindings() {
 					switch finding.Kind {
 					case GoldTruePositive:
 						summary.TruePositive++
@@ -414,6 +482,10 @@ func RenderReport(reports []CandidateReport) string {
 		s := report.Summary
 		fmt.Fprintf(&b, "\n%s (cohort %s)\n", s.Candidate, report.Cohort)
 		fmt.Fprintf(&b, "  replays: %d across %d repeat(s); labeled: %d; failures: %d\n", s.Total, report.RepeatCount, s.Labeled, s.Failures)
+		fmt.Fprintf(&b, "  current gold provenance (distinct cases): %s\n", report.Provenance)
+		if report.AdjudicatedCases > 0 {
+			fmt.Fprintf(&b, "  scoring saved outputs against current labels for %d explicitly adjudicated case(s); other scores as recorded\n", report.AdjudicatedCases)
+		}
 		if s.Labeled == 0 {
 			b.WriteString("  finding scores: unlabeled / pending (no finding-level gold yet)\n")
 		} else {
@@ -429,7 +501,7 @@ func RenderReport(reports []CandidateReport) string {
 					fmt.Fprintf(&b, "  case-level recall range: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
 				}
 			}
-			fmt.Fprintf(&b, "  precision bounds: %.1f%%-%.1f%% (adjudicated %.1f%%; pending treated as FP for the lower bound)\n",
+			fmt.Fprintf(&b, "  precision bounds: %.1f%%-%.1f%% (gold-scored %.1f%%; pending treated as FP for the lower bound)\n",
 				100*s.PrecisionLower(), 100*s.Precision(), 100*s.Precision())
 			if s.HasFalsePositiveGold() {
 				fmt.Fprintf(&b, "  F1: %.1f%% (headline; false-positive gold is present)\n", 100*s.F1())

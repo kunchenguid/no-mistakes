@@ -663,6 +663,17 @@ func mergeGold(existing, computed Labels) Labels {
 	keptID := map[string]bool{}
 	keptContent := map[string]bool{}
 	for _, g := range existing.Findings {
+		// An explicit decision survives even an ambiguous legacy duplicate ID.
+		// --index can select such a row; ordinary deduplication must not erase it.
+		if g.Adjudication != nil {
+			out.Findings = append(out.Findings, g)
+			if id := strings.TrimSpace(g.ID); id != "" {
+				keptID[id] = true
+			} else {
+				keptContent[goldContentKey(g)] = true
+			}
+			continue
+		}
 		if isDerivedMergeGold(g.Source) {
 			continue
 		}
@@ -827,7 +838,7 @@ func relabelExistingCase(store *Store, dir string, round *db.StepRound, decision
 	if err := store.registerCase(c); err != nil {
 		return Case{}, err
 	}
-	if err := store.updateCaseGoldCount(c.ID, len(c.Labels.Findings)); err != nil {
+	if err := store.updateCaseGoldCount(c.ID, len(c.Labels.ActiveFindings())); err != nil {
 		return Case{}, err
 	}
 	return c, nil
