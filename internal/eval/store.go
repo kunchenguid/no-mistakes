@@ -508,33 +508,16 @@ func (s *Store) updateCaseGoldCount(id string, n int) error {
 	return nil
 }
 
-// pendingFindingCounts sums the queued unmatched candidate findings per case
-// from the recorded completed replays. The evaluations table is the single
-// owner of that count: deriving it here (instead of incrementing a stored
-// counter inside labels.json on every replay) keeps replay from ever rewriting
-// a case's labels, so re-running the same eval run cannot double-append corpus
-// state. Legacy stored counters carry the same information - every historical
-// increment corresponded to one persisted evaluation row - so they are ignored.
 func (s *Store) pendingFindingCounts() (map[string]int, error) {
-	if s == nil || s.db == nil {
-		return nil, fmt.Errorf("eval registry is closed")
-	}
-	rows, err := s.db.Query(`SELECT case_id, COALESCE(SUM(pending), 0) FROM evaluations WHERE status = 'completed' GROUP BY case_id`)
+	evaluations, _, err := effectiveEvaluations(s)
 	if err != nil {
-		return nil, fmt.Errorf("sum queued candidate findings: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 	out := map[string]int{}
-	for rows.Next() {
-		var caseID string
-		var pending int
-		if err := rows.Scan(&caseID, &pending); err != nil {
-			return nil, fmt.Errorf("scan queued candidate findings: %w", err)
+	for _, evaluation := range evaluations {
+		if evaluation.Status == "completed" {
+			out[evaluation.CaseID] += evaluation.Pending
 		}
-		out[caseID] = pending
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sum queued candidate findings: %w", err)
 	}
 	return out, nil
 }

@@ -39,12 +39,10 @@ type CandidateReport struct {
 	OnFrontier              bool
 }
 
-// Report loads every local evaluation result grouped by candidate. It never
-// contacts a forge, agent provider, telemetry endpoint, or remote case store.
-func Report(store *Store) ([]CandidateReport, error) {
+func effectiveEvaluations(store *Store) ([]Evaluation, map[string]Case, error) {
 	evaluations, err := store.evaluations()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	byID := make(map[string]Case)
 	seenCases := map[string]bool{}
@@ -59,7 +57,7 @@ func Report(store *Store) ([]CandidateReport, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var labels Labels
 		if err := readJSON(filepath.Join(dir, "labels.json"), &labels); err != nil {
@@ -68,15 +66,15 @@ func Report(store *Store) ([]CandidateReport, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("read labels for case %s: %w", row.CaseID, err)
+			return nil, nil, fmt.Errorf("read labels for case %s: %w", row.CaseID, err)
 		}
 		if err := validateLabels(labels); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		byID[row.CaseID] = Case{Labels: labels}
 	}
-	byCandidateCohort := make(map[string][]Evaluation)
-	for _, evaluation := range evaluations {
+	for i := range evaluations {
+		evaluation := &evaluations[i]
 		// Historical results retain their captured scoring by default. An
 		// explicit adjudication opts this case into scoring its saved outputs
 		// against current gold, without rewriting measurements or rerunning agents.
@@ -94,6 +92,19 @@ func Report(store *Store) ([]CandidateReport, error) {
 				evaluation.Pending = score.Pending
 			}
 		}
+	}
+	return evaluations, byID, nil
+}
+
+// Report loads every local evaluation result grouped by candidate. It never
+// contacts a forge, agent provider, telemetry endpoint, or remote case store.
+func Report(store *Store) ([]CandidateReport, error) {
+	evaluations, byID, err := effectiveEvaluations(store)
+	if err != nil {
+		return nil, err
+	}
+	byCandidateCohort := make(map[string][]Evaluation)
+	for _, evaluation := range evaluations {
 		cohort := evaluation.Cohort
 		if cohort == "" {
 			cohort = "legacy-unmatched"

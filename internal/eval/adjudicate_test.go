@@ -55,7 +55,27 @@ func TestAdjudicationReportsRescoreSavedOutputsOnlyAfterExplicitDecision(t *test
 		}
 		return reports[0]
 	}
+	assertQueued := func(want int) {
+		t.Helper()
+		sets, err := InspectSets(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sets) != 4 {
+			t.Fatalf("sets: %#v", sets)
+		}
+		for _, set := range sets {
+			expected := want
+			if set.Cases == 0 {
+				expected = 0
+			}
+			if set.QueuedFindings != expected {
+				t.Fatalf("set %s queued = %d, want %d", set.Name, set.QueuedFindings, expected)
+			}
+		}
+	}
 	baseline := report()
+	assertQueued(0)
 	if baseline.Summary.FalsePositive != 2 || baseline.Summary.FalsePositiveGold != 3 || baseline.Provenance.Inferred != 1 || baseline.AdjudicatedCases != 0 {
 		t.Fatalf("baseline: %#v", baseline)
 	}
@@ -67,6 +87,7 @@ func TestAdjudicationReportsRescoreSavedOutputsOnlyAfterExplicitDecision(t *test
 		t.Fatal(err)
 	}
 	corrected := report()
+	assertQueued(0)
 	if corrected.Summary.TruePositive != 2 || corrected.Summary.FalseNegative != 1 || corrected.Summary.FalsePositive != 0 || corrected.Summary.Failures != 1 || corrected.Provenance.Adjudicated != 1 || corrected.AdjudicatedCases != 1 {
 		t.Fatalf("corrected: %#v", corrected)
 	}
@@ -78,6 +99,7 @@ func TestAdjudicationReportsRescoreSavedOutputsOnlyAfterExplicitDecision(t *test
 		t.Fatal(err)
 	}
 	excluded := report()
+	assertQueued(2)
 	if excluded.Summary.Labeled != 0 || excluded.Summary.Pending != 2 || excluded.Summary.TruePositive != 0 || excluded.Provenance.Excluded != 1 {
 		t.Fatalf("excluded: %#v", excluded)
 	}
@@ -89,6 +111,14 @@ func TestAdjudicationReportsRescoreSavedOutputsOnlyAfterExplicitDecision(t *test
 	if cases, err := store.ListCases("all"); err != nil || len(cases) != 1 {
 		t.Fatalf("excluded case lost: %v %v", cases, err)
 	}
+	_, err = store.Adjudicate(ctx, c.ID, "real-bug", 0, Adjudication{Kind: GoldFalsePositive, Reason: "confirmed false alarm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored := report(); restored.Summary.Pending != 0 || restored.Summary.FalsePositive != 2 {
+		t.Fatalf("restored: %#v", restored)
+	}
+	assertQueued(0)
 	after, err := store.evaluations()
 	if err != nil || !reflect.DeepEqual(stored, after) {
 		t.Fatalf("report changed saved evaluations: %v", err)
