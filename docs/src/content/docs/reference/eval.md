@@ -101,7 +101,7 @@ The command stores the latest decision, reason, and timestamp separately from th
 
 Exclusion removes a label from gold matching, denominators, and gold-only set eligibility; a case with every label excluded remains in `all`. A candidate finding that no longer matches active gold becomes pending, as with any unmatched candidate finding. It is not automatically deemed invalid.
 
-Reports continue to use recorded scores by default. Once you explicitly adjudicate any label in a case, `eval report` scores that case's **saved candidate outputs against its current active labels**, including corrections and exclusions, without invoking an agent or modifying saved replay measurements. It identifies how many cases use this view. New replays and the sets' self-score also use active labels. Other cases' stored scores remain unchanged. Provenance counts in reports describe current labels once per distinct evaluated case, not once per repeat; missing historical label files are marked as unavailable, with their stored scores retained.
+Reports continue to use recorded scores by default. Once you explicitly adjudicate any label in a case, `eval report` scores that case's **saved candidate outputs against its current active labels**, including corrections and exclusions, without invoking an agent or modifying saved replay measurements. It identifies how many cases use this view. `eval sets` uses the same view for queued candidate counts, so exclusions and corrections affect both commands without rewriting saved measurements. New replays and the sets' self-score also use active labels. Other cases' stored scores remain unchanged. Provenance counts in reports describe current labels once per distinct evaluated case, not once per repeat; missing historical label files are marked as unavailable, with their stored scores retained.
 
 ## Disk use and retention
 
@@ -155,9 +155,9 @@ The replay restores each case into a fresh temporary bare gate and worktree, the
 
 Replay scores each candidate finding against that gold:
 
-- **true-positive**: the candidate raises the same underlying issue as a true-issue gold finding (user Fix, auto-fix-merged, human-added miss, a confirmed post-PR miss, or an automatically ingested CI miss)
+- **true-positive**: the candidate raises the same underlying issue as an active true-positive or false-negative gold label (see [Finding-level gold](#finding-level-gold) and [adjudication](#inspect-and-adjudicate-gold-labels))
 - **false-negative**: the candidate misses a true-issue gold finding
-- **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
+- **false-positive**: only when a candidate finding matches an active false-positive gold label. Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
 
 Matching is a documented cascade of strengths: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is one globally optimal matching over every gold and candidate finding at once, ranked so an exact match outweighs any number of fuzzy ones, so neither gold-label order nor a tier boundary can undercount recall. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match on the text, location, or containment strengths.
@@ -194,7 +194,7 @@ Eval records cache-read and cache-write counts in each evaluation payload and in
 
 Opening an older registry automatically backfills available cache counts from saved evaluation payloads and corrects its legacy input and fresh-input counters for the provider's accounting. Missing, unreadable, or malformed historical payloads are skipped with a warning on stderr naming each evaluation and its path; the registry still opens, and skipped rows retain unset cache counts (unknown, not zero). Reports use those corrected registry counters; captured labels, manifests, and historical payloads stay unchanged. Cache writes that were never recorded cannot be recovered.
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations produce identical text output.
+The report is deliberately cautious. It never treats an unmatched candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations and labels produce identical text output.
 
 ## Current boundary
 
