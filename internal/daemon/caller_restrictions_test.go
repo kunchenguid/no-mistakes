@@ -246,6 +246,7 @@ func TestCallerRestrictionsPrivateDaemonStartupRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindFixtureCommitIdentity(t, d, run.ID)
 	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
