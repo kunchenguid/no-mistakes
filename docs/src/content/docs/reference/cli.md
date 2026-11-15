@@ -25,7 +25,7 @@ The only valid `--skip` step names are `intent`, `rebase`, `review`, `test`, `do
 
 Initialize or refresh the gate for the current repository.
 
-`init` requires an `origin` remote to identify the upstream repository: later pipeline steps push validated branches to the configured target and open pull requests against that upstream. If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
+`init` requires an `origin` remote to identify the default upstream repository. For per-run integration routing, see [`--base-remote`](#other-run-options). If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
 
 ```sh
 no-mistakes init
@@ -36,7 +36,7 @@ no-mistakes init --skip-user-skill
 
 | Flag                | Type     | Default | Description                                                                                      |
 | ------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`        | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--fork-url`        | `string` | (none)  | GitHub fork remote URL for branch pushes; see [integration routing](#other-run-options) for the PR destination |
 | `--worktree-root`   | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 | `--skip-user-skill` | `bool`   | `false` | Do not install or refresh the `/no-mistakes` agent skill at user level                           |
 
@@ -158,10 +158,11 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--base-remote` | `string` | `origin` | Named integration remote for this run, independent of a configured fork push target |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
-| `--pr-title` | `string` | (none) | PR title used verbatim when this run creates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
-| `--pr-body-file` | `string` | (none) | Read the PR description used verbatim when this run creates the PR; `-` reads stdin to EOF |
+| `--pr-title` | `string` | (none) | PR title used when this run creates or updates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
+| `--pr-body-file` | `string` | (none) | Read the PR description used when this run creates or updates the PR; `-` reads stdin to EOF |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 | `--reviewer` | `string` | (none) | Independent immutable [reviewer harness](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) |
@@ -216,6 +217,34 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 ### Other run options
 
+`--base-remote custom` explicitly selects the configured remote whose branches
+feed integration and whose project receives the PR or MR. Without the flag,
+the integration remote remains `origin`. Branch tracking never selects another
+remote implicitly. For example:
+
+```sh
+no-mistakes axi run --intent "Fix the customer release" --base-remote custom --base-branch release/customer
+```
+
+For a plain gate push, pass `-o no-mistakes.base-remote=custom`.
+
+The selected remote must have exactly one configured URL and a resolvable
+remote default branch. An explicit selection pins the remote name, URL and
+default branch on the run.
+Base lookup, fresh fetches, change scoping and forge routing use that destination,
+including after daemon recovery. Fetches use private refs and leave `origin`'s
+configuration and tracking refs unchanged. See the [repository configuration
+trust boundary](/no-mistakes/reference/repo-config/) for trusted settings. A configured GitHub fork still
+receives the head branch, while the PR targets the selected integration project.
+Other providers retain their existing restrictions on fork routing.
+
+Missing, invalid, unreachable or moved selections refuse rather than falling
+back to `origin`. Reattaching cannot change the remote. Omit `--base-remote` to
+keep the selection when reattaching to an active run. A later run on a branch
+with a PR on another integration remote is refused unless that PR is recorded
+as merged or closed. `rerun` and `retry` preserve the destination. Before
+submission, `axi run` refuses a daemon that cannot honor the selector.
+
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
@@ -235,11 +264,11 @@ The references are persisted on the run and survive daemon restarts, fix rounds,
 
 ### Supplied PR title and description
 
-`--pr-title TEXT` and `--pr-body-file PATH` supply the PR's title and description, for teams with a description convention. They are used only when this run **creates** the PR; the PR step then adds the usual appendix (Intent, the evidence in the configured [`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) mode, the `## Issues` section) and the attestation after the description. Either flag works alone: a run with only `--pr-title` drafts the description as usual, and a run with only `--pr-body-file` drafts the title. Without either flag nothing changes. A supplied description needs a provider that supports [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate); on a host without raw PR-content reads the PR step fails, as template mode does. See the [PR step](/no-mistakes/reference/pipeline-steps/#pr) for how each is published and what later runs keep.
+`--pr-title TEXT` and `--pr-body-file PATH` supply the PR's title and description, for teams with a description convention. On creation, the PR step adds the usual appendix (Intent, the evidence in the configured [`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) mode, the `## Issues` section) and the attestation after the description. Either flag works alone: a run with only `--pr-title` drafts the description as usual, and a run with only `--pr-body-file` drafts the title. On an existing PR, a freshly passed flag overrides its named field once per run; a supplied description replaces the author narrative and refreshes the owned appendix. A description-only update keeps the live title unless `pr.title_format` is set, which redrafts it; a title-only update leaves the body to its ordinary update behavior (`pr.update_text`, or the preserved narrative of an owned body). Once the run has published the supplied text, later PR-step passes in the same run (a CI repair restart, or recovery after a daemon restart) keep edits made on the PR in the meantime instead of reapplying it; the one exception is a supplied title on a PR whose body `pr.update_text: regenerate` rewrites, which keeps the supplied title rather than a newly drafted one. Without either flag, existing-PR updates follow the configured `pr.update_text` behavior. A supplied description needs a provider that supports [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate); on a host without raw PR-content reads the PR step fails, as template mode does. See the [PR step](/no-mistakes/reference/pipeline-steps/#pr) for how each is published and what later runs keep.
 
 There is no inline description flag, because Markdown with backticks and dollars is exactly the text a caller's shell expands; pass a file or `--pr-body-file -` to read stdin to EOF. `--pr-body-file -` and `--intent -` cannot both read stdin. The title is trimmed and must be one non-empty line of at most 4,096 bytes of valid UTF-8 with no control, bidi, or invisible format characters. The description must be non-blank, valid UTF-8, at most **49,122 bytes** (the same single push-option transport as [intent](#intent-input)), free of control characters other than tab, newline, and carriage return, free of bidi override and isolate characters, and must not contain no-mistakes appendix or attestation markers. Every refusal is a usage error before any push; the daemon re-checks the same rules. A description that is valid but does not fit the provider's body budget together with the appendix fails at the PR step instead of being truncated.
 
-Both values are persisted on the run, survive daemon restarts, and are inherited by `no-mistakes rerun` and [`axi retry`](#no-mistakes-axi-retry); a plain gate push carries neither unless it passes the `-o no-mistakes.pr-title=<base64>` and `-o no-mistakes.pr-body=<base64>` push options. Reattaching with a title or description that differs from the active run's is refused; omit the flags to reattach. Like `--closes`, `axi run` refuses a running daemon too old to honor them and rejects them combined with `--skip pr`. A run whose PR step is skipped any other way, or that finds the PR already open, logs that the supplied text went unused.
+Both values are persisted on the run, survive daemon restarts, and are inherited by `no-mistakes rerun` and [`axi retry`](#no-mistakes-axi-retry); a plain gate push carries neither unless it passes the `-o no-mistakes.pr-title=<base64>` and `-o no-mistakes.pr-body=<base64>` push options. Inherited values remain available if a rerun creates a PR, but do not request an existing-PR rewrite; pass either flag again on the rerun to update that field. Reattaching with a title or description is refused unless the active run has the same text freshly supplied; omit the flags to reattach to an inherited-text run. Like `--closes`, `axi run` refuses a running daemon too old to honor them and rejects them combined with `--skip pr`. A create-only daemon also fails the capability check before a run with either flag, since the CLI cannot prove in advance that the run will create a new PR. A run whose PR step is skipped any other way logs that the supplied text went unused.
 Ordinary reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
@@ -531,7 +560,7 @@ Genuine divergence still reports `safety: blocked_diverged` and changes nothing 
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
 A terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) is verified by recovery itself only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
-Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
+Synchronization verifies the run's push target and exact feature ref. The [Push step](/no-mistakes/reference/pipeline-steps/#push) owns target routing.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
 
@@ -697,7 +726,7 @@ That cancels the pipeline's in-flight work and forces a full re-validation; use 
 
 ## no-mistakes axi retry
 
-Continue a run that failed because an agent invocation itself failed, instead of starting the whole pipeline again.
+Continue a run that failed because an agent invocation itself failed, or a run that pushed and then failed in its PR or CI step, instead of starting the whole pipeline again.
 
 ```sh
 no-mistakes axi retry --run <id>
@@ -705,7 +734,7 @@ no-mistakes axi retry --run <id>
 
 An agent invocation failure is an error the agent call returned while its context was still live: a provider processing error, a usage or quota limit, a transport failure, or the agent process exiting.
 The executor records that cause on the failed step when the step fails with that error.
-A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never retried; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
+A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never retried before Push; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
 
 The retry starts a new run at the failed run's preserved head, so every correction the pipeline already committed is kept:
 
@@ -713,7 +742,15 @@ The retry starts a new run at the failed run's preserved head, so every correcti
 - The failed step restarts from the beginning, with round trigger `retry`. A failed agent turn is never replayed, so a Review that failed during a fix round reviews the resulting head again in full before Test runs. Fixer commits the failed run never re-reviewed are flagged to that review together with the failed run's rounds, exactly as for a rerun.
 - Every later step runs normally. Per-run skips of steps that never ran are kept.
 
-The failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
+For a run that never pushed, the failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
+
+A run that already pushed continues only its delivery.
+Its failed step must be PR or CI, and any failure there qualifies, such as a transient forge API error or a forge CLI call that timed out.
+A PR or CI step that was skipped, for example because the forge CLI was not authenticated when the step started, leaves the run `completed` rather than `failed`, so it is not continued.
+The new run carries every step through Push, so Review, Test, and the other validation steps never run again, and Push never runs: the continuation never pushes.
+Instead, the remote branch is read fresh from the push target the run used, and it must still be exactly the run's `last_pushed_sha`. The new run records that verified head as its own push binding, and the PR and CI steps then run as usual.
+A failed PR step runs again, which finds and updates the branch's existing PR rather than opening a second one; a failed CI step runs again against the inherited PR.
+The new run reads the failed run's evidence directory, so the PR body keeps the carried Test artifacts.
 The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, Pi profile, and [reviewer pin](/no-mistakes/reference/global-config/#per-run-reviewer-profiles); retry takes none of the flags that would change them.
 
 `--run` names the failed run, as `axi status` shows it.
@@ -726,15 +763,15 @@ The retry refuses, changing nothing, unless every proof holds:
 | `latest run` | no newer run exists on the branch |
 | `no active run` | no run is active on the branch |
 | `failed run` | the run's status is `failed`, not `cancelled` or `completed` |
-| `unpublished run` | the run never pushed |
 | `durable checkpoint` | the run's record holds one row per step of its pinned pipeline: completed or skipped steps, exactly one failed step, then steps that never ran |
-| `eligible failure` | the failed step's recorded cause is an agent invocation failure |
-| `reusable evidence` | the failed step is Test or an earlier step |
-| `preserved head` | the run verified its final head when it failed, and the gate still keeps exactly that commit: its recovery ref when the pipeline moved the head, the submitted commit otherwise |
+| `eligible failure` | for a run that never pushed, the failed step's recorded cause is an agent invocation failure; for a run that pushed, the failed step is PR or CI |
+| `reusable evidence` | for a run that never pushed, the failed step is Test or an earlier step; for a run that pushed, a failed CI step ran no fix round, because the new run would restart its [`auto_fix.ci`](/no-mistakes/reference/repo-config/#auto_fix) budget |
+| `preserved head` | a run that never pushed verified its final head when it failed, and the gate still keeps exactly that commit: its recovery ref when the pipeline moved the head, the submitted commit otherwise |
+| `published head` | a run that pushed completed Push, its head is its `last_pushed_sha`, its recorded push target is the repository's current push target, and a fresh `git ls-remote` of that branch returns exactly `last_pushed_sha`. A remote that cannot be read, a deleted branch, and any other head refuse. The read is repeated when the new run launches, so a remote change between the two refuses the retry |
 | `clean branch` | the working tree has no uncommitted changes |
-| `matching head` | the local `HEAD` is exactly the preserved head; adopt it first with `no-mistakes axi sync --recover` |
+| `matching head` | the local `HEAD` is exactly the run's head: its preserved head, or for a run that pushed, its pushed head; adopt a preserved head first with `no-mistakes axi sync --recover` |
 | `compatible configuration` | the run has no verification plan, its Pi profile still resolves to the same model and effort, and the repository's gates, read from the freshly fetched trusted default branch, are the gates the run pinned. A carried Review also needs the same effective repository configuration as the trusted commit its rounds recorded, the same global configuration when its rounds recorded one, and the same agent and model that served each carried step (an `auto` agent is resolved first). The configuration is checked twice: once before the launch, and again against the configuration the new run actually loads, so a change between the two refuses the retry. The refusal names the changed setting |
-| `review conversation` | a carried Review that recorded a question still has its question records on disk. They are copied into the new run, so open and withdrawn questions reach the PR body; if they are gone, the retry is refused |
+| `review conversation` | a carried Review that recorded a question still has its question records on disk. They are copied into the new run, or read in place by a delivery continuation, so open and withdrawn questions reach the PR body; if they are gone, the retry is refused |
 
 For the agent and model proof, configured reviewer fallbacks are eligible under
 the base or later-round role that served the invocation, including coverage turns.
@@ -831,8 +868,8 @@ failed step instead of repeating every completed step.
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
-| `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); used only if this rerun creates the PR |
-| `--pr-body-file` | `string` | (none) | Replace the inherited supplied PR description from a file, or `-` for stdin |
+| `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); freshly passing it also updates an existing PR |
+| `--pr-body-file` | `string` | (none) | Replace the inherited supplied PR description from a file, or `-` for stdin; freshly passing it also updates an existing PR |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 | `--reviewer` | `string` | inherited | Reviewer harness for the new run; omission inherits the previous run's resolved reviewer pin |

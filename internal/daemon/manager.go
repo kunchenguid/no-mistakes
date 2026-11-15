@@ -26,6 +26,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -56,7 +57,11 @@ var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu              sync.Mutex
+	mu sync.Mutex
+	// evidencePinMu orders evidence deletion against a delivery retry adding
+	// its shared-evidence pin: a sweep reads the active pins and deletes under
+	// it, and the retry records its pin under it.
+	evidencePinMu   sync.Mutex
 	executors       map[string]*pipeline.Executor      // runID → executor
 	cancels         map[string]context.CancelCauseFunc // runID → cancel function with cause
 	dones           map[string]chan struct{}           // runID → closed when goroutine exits
@@ -193,6 +198,10 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
 	}
+	repo, err = integrationRepo(ctx, repo, run.Integration)
+	if err != nil {
+		return nil, err
+	}
 	workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), repo.ID, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("worktree is missing")
@@ -293,9 +302,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if repo.DefaultBranch != "" {
 		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
 		defer cancel()
-		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", repo.DefaultBranch); err != nil {
+		if err := fetchRecoveredIntegrationBranch(fetchCtx, workDir, repo); err != nil {
 			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
-		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
+		} else if sha, err := git.ResolveRef(ctx, workDir, integrationBranchRef(repo, repo.DefaultBranch)); err != nil {
 			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
 			trustedSHA = sha
@@ -795,7 +804,9 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	}
 	now := time.Now()
 	roots := append(evidenceRootsFor(m.paths, nil, m.db), filepath.Dir(removePath))
+	m.evidencePinMu.Lock()
 	reapLegacyEvidence(m.db, roots[0], policy, now, roots[1:]...)
+	m.evidencePinMu.Unlock()
 	reapWorktrees(m.db, m.paths, wtPolicy, now)
 	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
@@ -815,6 +826,7 @@ func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason str
 		slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)
 		return
 	}
+	m.cleanupIntegrationRefs(context.Background(), run, gateDir)
 	if refusal := protectedPathCleanupReason(m.db, run); refusal != "" {
 		slog.Warn("preserving run worktree", "run_id", runID, "path", wtDir, "reason", refusal)
 		return
@@ -1005,6 +1017,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // handlePushReceived is HandlePushReceived; fromReplay marks a push an
 // earlier daemon held, which replayHeldPushes starts ahead of fresh pushes.
 func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushReceivedParams, fromReplay bool) (string, error) {
+	ctx = integration.WithRemote(ctx, params.BaseRemote)
 	var identityErr error
 	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
 	if identityErr != nil {
@@ -1074,6 +1087,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 // HandleStartFreshRun creates or replays a proof-mode launch only after
 // checking the creation context under the repository/branch lock.
 func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartFreshRunParams) (ipc.LaunchReceipt, error) {
+	ctx = integration.WithRemote(ctx, params.BaseRemote)
 	var identityErr error
 	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
 	if identityErr != nil {
@@ -1130,6 +1144,9 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			return "", err
 		}
 		if existing != nil {
+			if err := matchingIntegrationRequest(ctx, existing); err != nil {
+				return "", err
+			}
 			if planID != "" && (existing.VerificationPlan == nil || existing.VerificationPlan.ID != planID) {
 				return "", fmt.Errorf("verification plan cannot replace an existing run attachment")
 			}
@@ -1167,7 +1184,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				receipt = replayed
 				return existing.ID, nil
 			}
-			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithPRText(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, profiles...)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithDestination(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, integration.RequestedRemote(ctx), profiles...)
 			if err != nil {
 				return "", err
 			}
@@ -1201,7 +1218,10 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			baseSHA = headSHA
 			if len(runs) > 0 {
 				baseSHA = runs[0].BaseSHA
-				inheritedPRURL = inheritablePRURL(runs[0])
+				inheritedPRURL, err = inheritIntegrationPRURL(ctx, repo, runs[0])
+				if err != nil {
+					return "", err
+				}
 			}
 		}
 		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, profiles...)
@@ -1218,7 +1238,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				return "", err
 			}
 		} else {
-			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithPRText(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, profiles...)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithDestination(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, integration.RequestedRemote(ctx), profiles...)
 			if err != nil {
 				return "", err
 			}
@@ -1280,7 +1300,8 @@ func normalizeRunPRText(prText db.RunPRText) (db.RunPRText, error) {
 	if err := steps.ValidateRunPRBody(prText.Body); err != nil {
 		return db.RunPRText{}, fmt.Errorf("pr body: %w", err)
 	}
-	return db.RunPRText{Title: title, Body: prText.Body}, nil
+	prText.Title = title
+	return prText, nil
 }
 
 func validateLaunchNonce(nonce string) error {
@@ -1409,6 +1430,12 @@ func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	baseSHA := latestForBranch.BaseSHA
+	if integration.RequestedRemote(ctx) == "" && !freshLaunch {
+		ctx = integration.WithPinned(ctx, selectedRun.Integration)
+	}
+	if integration.RequestedRemote(ctx) != "" && selectedRun.Integration != nil && integration.RequestedRemote(ctx) != selectedRun.Integration.Remote && inheritablePRURL(selectedRun) != "" {
+		return "", fmt.Errorf("cannot move an existing PR to another integration remote")
+	}
 	if matchingHead != nil && headSHA == gateHead {
 		baseSHA = matchingHead.BaseSHA
 	}
@@ -1444,7 +1471,11 @@ func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRu
 	if homes == nil {
 		homes = selectedRun.TranscriptHomes
 	}
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, inheritRunPRText(selectedRun, prText), homes, profiles...)
+	prURL, err := inheritIntegrationPRURL(ctx, repo, selectedRun)
+	if err != nil {
+		return "", err
+	}
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, prURL, planID, closingIssues, inheritRunPRText(selectedRun, prText), homes, profiles...)
 }
 
 // inheritRunPRText keeps the selected run's supplied PR text, field by field,
@@ -1453,15 +1484,19 @@ func inheritRunPRText(run *db.Run, requested db.RunPRText) db.RunPRText {
 	inherited := db.RunPRText{}
 	if run != nil && run.PRTitle != nil {
 		inherited.Title = *run.PRTitle
+		inherited.InheritedTitle = true
 	}
 	if run != nil && run.PRBody != nil {
 		inherited.Body = *run.PRBody
+		inherited.InheritedBody = true
 	}
 	if requested.Title != "" {
 		inherited.Title = requested.Title
+		inherited.InheritedTitle = false
 	}
 	if requested.Body != "" {
 		inherited.Body = requested.Body
+		inherited.InheritedBody = false
 	}
 	return inherited
 }
@@ -1521,13 +1556,21 @@ func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Ru
 	return "", fmt.Errorf("refusing rerun from stale gate head %s: terminal run %s recorded unpublished head %s, but that head is unavailable; inspect with `no-mistakes axi status` and reconcile custody first", gateHead, latest.ID, latest.HeadSHA)
 }
 
-// fetchRunDefaultBranch fetches the trusted branch from the refreshed
-// registration when it differs from the gate worktree's inherited origin. It
-// updates only the run worktree's existing origin tracking ref and never
-// rewrites clone or gate remote configuration. When the values agree after
-// redaction, origin remains authoritative so embedded credentials retained in
-// the gate can still authenticate without ever entering the database.
+// fetchRunDefaultBranch uses a selected destination's private ref when pinned.
+// Otherwise it fetches the trusted branch from the refreshed registration when
+// it differs from the gate worktree's inherited origin, updating origin's
+// tracking ref. Neither path rewrites clone or gate remote configuration.
+// Without a pin, when the values agree after redaction, origin remains
+// authoritative so embedded credentials retained in the gate can still
+// authenticate without ever entering the database.
 func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) error {
+	if repo.Integration != nil {
+		remote, err := repo.Integration.RuntimeURL(ctx, repo.WorkingPath)
+		if err != nil {
+			return err
+		}
+		return git.FetchRemoteBranchToPrivateRef(ctx, workDir, remote, repo.DefaultBranch, repo.Integration.Ref(repo.DefaultBranch))
+	}
 	originURL, err := git.GetRemoteURL(ctx, workDir, "origin")
 	if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
 		return git.FetchRemoteBranch(ctx, workDir, "origin", repo.DefaultBranch)
@@ -1551,7 +1594,13 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 	}()
 	originURL, err := git.GetRemoteURL(ctx, gateDir, "origin")
 	var fetchErr error
-	if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
+	if repo.Integration != nil {
+		remote, resolveErr := repo.Integration.RuntimeURL(ctx, repo.WorkingPath)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		fetchErr = git.FetchRemoteBranchToPrivateRef(ctx, gateDir, remote, repo.DefaultBranch, privateRef)
+	} else if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
 		fetchErr = git.FetchRemoteBranchToPrivateRef(ctx, gateDir, "origin", repo.DefaultBranch, privateRef)
 	} else {
 		fetchErr = git.FetchRemoteBranchToPrivateRef(ctx, gateDir, repo.UpstreamURL, repo.DefaultBranch, privateRef)
@@ -1751,6 +1800,26 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	} else {
 		repo = refreshed
 	}
+	if err := m.checkBranchIntegrationPR(ctx, repo, branch); err != nil {
+		return "", err
+	}
+	destination, err := integration.ResolveRequest(ctx, repo.WorkingPath)
+	if err != nil {
+		return "", err
+	}
+	repo, err = integrationRepo(ctx, repo, destination)
+	if err != nil {
+		return "", err
+	}
+	if destination != nil && strings.TrimSpace(prBaseBranch) != "" {
+		remote, err := destination.RuntimeURL(ctx, repo.WorkingPath)
+		if err != nil {
+			return "", err
+		}
+		if err := steps.VerifyRemoteBranchExistsOn(ctx, repo.WorkingPath, remote, prBaseBranch); err != nil {
+			return "", err
+		}
+	}
 
 	// Resolve before cancellation, row creation or any pipeline work. A bad
 	// dispatch request must not supersede a healthy active validation.
@@ -1794,7 +1863,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	var intentCheckJSON string
 	var trustedSHA string
 	var trustedFetchErr error
-	var err error
 	trustedFetchAttempted := false
 	if globalCfgErr == nil {
 		check := globalCfg.Intent.Check
@@ -1908,7 +1976,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithTranscriptHomes(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, pin, reviewer)
+	run, err := m.db.InsertRunWithDestination(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, destination, pin, reviewer)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -1974,6 +2042,17 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("record_worktree_placement")
 		return "", fmt.Errorf("record worktree placement: %w", err)
 	}
+	if shared := retry.sharedEvidenceDir(); shared != "" {
+		m.evidencePinMu.Lock()
+		err := m.db.SetRunEvidenceDir(run.ID, shared)
+		m.evidencePinMu.Unlock()
+		if err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
+			trackStartFailure("record_evidence_dir")
+			return "", fmt.Errorf("record evidence dir: %w", err)
+		}
+		run.EvidenceDir = &shared
+	}
 	if err := m.pinRunEvidenceDir(run, globalCfg); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
 		trackStartFailure("record_evidence_dir")
@@ -2002,7 +2081,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git identity: %w", err)
 	}
-	if storedPRBaseBranch != "" {
+	if storedPRBaseBranch != "" && destination == nil {
 		if err := steps.VerifyRemoteBranchExists(ctx, wtDir, storedPRBaseBranch); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("pr_base_branch_missing")
@@ -2022,7 +2101,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		fetchErr := fetchRunDefaultBranch(ctx, wtDir, repo)
 		if fetchErr != nil {
 			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
-		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
+		} else if sha, err := git.ResolveRef(ctx, wtDir, integrationBranchRef(repo, repo.DefaultBranch)); err != nil {
 			slog.Warn("failed to resolve fetched default-branch ref; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
 			trustedSHA = sha
@@ -2110,12 +2189,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}
 	if retry != nil {
 		if err := retry.proveAtLaunch(ctx, m, globalCfg, cfg, effectiveRepoCfg, run.ID); err != nil {
-			m.discardRefusedRetryRun(run.ID, cfg)
+			m.discardRefusedRetryRun(run.ID, cfg, retry)
 			trackStartFailure("retry_proof")
 			return "", err
 		}
 		if err := retry.record(m.db, run); err != nil {
-			m.discardRefusedRetryRun(run.ID, cfg)
+			m.discardRefusedRetryRun(run.ID, cfg, retry)
 			trackStartFailure("record_retry")
 			return "", err
 		}

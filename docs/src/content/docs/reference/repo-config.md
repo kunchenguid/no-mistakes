@@ -25,14 +25,14 @@ After refusal, run `no-mistakes axi sync --recover` from the registered working 
 
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
-To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
+To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch**, never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved. The trusted default branch belongs to the run's [integration remote](/no-mistakes/reference/cli/#other-run-options), which defaults to `origin`. A stale cached ref cannot serve a value the live default branch removed.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 [`push.external_publisher`](#pushexternal_publisher) is also trusted-only, regardless of `allow_repo_commands`.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -145,6 +145,11 @@ test:
   # Product startup and live-validation runbook, read only from the trusted default branch.
   instructions: |
     Start the app with `make dev`, then drive the checkout flow in a browser.
+  # Extra runbook text for the paths a change touches, also trusted-only.
+  # instructions_file reads a file from the trusted default-branch commit.
+  path_instructions:
+    - path: "apps/web/**"
+      instructions_file: apps/web/TESTING.md
   evidence:
     store_in_repo: true
     attach_media: true
@@ -197,7 +202,7 @@ Opt in to honoring the code-executing selection fields (`commands.{prepare,test,
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. The PR-target exception is documented under [`pr.base_branch`](#prbase_branch); `pr.template`, `pr.publish_intent`, `pr.appendix`, and the other trusted-only fields listed above do not follow this opt-in. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. The security callout at the top of this page defines that trusted source, which prevents a pushed SHA from injecting shell or picking the launched agent on the daemon host. The PR-target exception is documented under [`pr.base_branch`](#prbase_branch); `pr.template`, `pr.publish_intent`, `pr.appendix`, and the other trusted-only fields listed above do not follow this opt-in. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 
@@ -313,7 +318,7 @@ If the complete author text, closing references, and evidence selected by [`pr.a
 
 Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behavior; existing owned bodies retain author-safe updates even after the setting is removed. Providers without a raw content contract reject configured templates.
 
-A description supplied with [`axi run --pr-body-file`](/no-mistakes/reference/cli/#supplied-pr-title-and-description) replaces the agent's template fill when the run creates the PR, and is held to the same structural rule: it must keep every top-level `#` heading of the template, with the same text and in the same order, or the PR step fails with an error naming the missing heading before anything is published. Nothing else about the template is enforced on it. A supplied title likewise replaces the agent's title.
+A description supplied with [`axi run --pr-body-file`](/no-mistakes/reference/cli/#supplied-pr-title-and-description) replaces the agent's template fill when the run creates the PR or, when freshly supplied, updates an existing PR, and is held to the same structural rule: it must keep every top-level `#` heading of the template, with the same text and in the same order, or the PR step fails with an error naming the missing heading before anything is published. Nothing else about the template is enforced on it. A supplied title likewise replaces the agent's title.
 
 **Provider caveats:** Azure DevOps' 4,000-character budget (and any non-zero `max_pr_body_chars` declared by a provider plugin) is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
 
@@ -334,6 +339,8 @@ Control publication of the **generated `Intent` section**, independently of inte
 A contributor can keep the section off for their own runs without touching this repository policy: `axi run --no-publish-intent` records a tighten-only omission on the run, and an operator can set the global `intent.publish_intent: false` default. Both compose with this field and can only reduce publication: the trusted repository policy is the ceiling, and a caller can never publish intent on a repository whose trusted config disabled it. Neither signal changes what review, test, document, lint, or CI auto-fix prompts receive. The caller-side omission goes one step further than this repository policy: the PR-drafting turns (ordinary narrative, title-only fallback, and repository-template narrative) receive no intent text at all and draft from the diff and commit messages only, so no paraphrase of the withheld intent can reach the public PR. The intent is withheld, never scanned for: there is no output filter.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
+
+To keep the Intent section out of squash-merge commits that use the PR description, see [Readable squash-merge commits](/no-mistakes/guides/squash-merge-commits/).
 
 ### pr.intent
 
@@ -384,6 +391,8 @@ An unrecognized value fails config parsing closed. Body size limits and truncati
 pr:
   appendix: minimal
 ```
+
+`minimal` keeps a squash-merge commit that uses the PR description short; see [Readable squash-merge commits](/no-mistakes/guides/squash-merge-commits/).
 
 ### pr.title_format
 
@@ -1164,7 +1173,6 @@ Override the auto-fix commit subject template for this repository.
 | Default | Inherits from global config, whose default is `no-mistakes({{.Step}}): {{.Summary}}` |
 
 The value follows the [global `commit.fix_message` template syntax and validation rules](/no-mistakes/reference/global-config/#commitfix_message).
-That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte summary and rendered-subject limits, and rejection of bidi and invisible Unicode format characters.
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. When set to anything other than the default, it also renders the Push step's catch-all commit (`{{.Step}}` is `push`, `{{.Summary}}` is `apply agent fixes`). It does not apply to commits created by the Rebase step or to evidence-branch commits.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit-subject convention without enabling `allow_repo_commands`.
@@ -1286,7 +1294,69 @@ Repository-specific runbook for standing the product up during live validation.
 The Test step injects these instructions into its repair and evidence prompts so each agent can start and drive the real product the way an end user would.
 Like `document.instructions`, this field steers its own gate, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`. A contributor's pushed branch cannot rewrite the runbook that validates that branch.
 
+The runbook is prompt text, so it is flattened before injection exactly like [`document.instructions`](#documentinstructions): merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are removed, and each line's runs of whitespace, including leading indentation, collapse to a single space.
+Line breaks survive, but nested lists, indented code blocks, and YAML or Markdown structure that depends on indentation do not. Write the runbook as flat prose or a one-level list.
+
 An operator can add their own runbook for this repository through a machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-documentation-and-test-guidance) entry; it is rendered as a separate, labeled section before this field's and never replaces it.
+
+### test.instructions_file
+
+The file-backed form of [`test.instructions`](#testinstructions): a repository-relative path whose contents become the runbook.
+
+| | |
+| --- | --- |
+| Type | `string` (literal repository-relative path) |
+| Default | Empty |
+
+```yaml
+test:
+  instructions_file: docs/TESTING.md
+```
+
+The file is read the same way as [`pr.template`](#prtemplate): the daemon reads it as a literal Git tree entry from the pinned trusted default-branch commit, never through the pushed worktree, so a pushed branch that edits the file does not change the runbook that validates it.
+The path must be a literal repository-relative path with no `..`, `.git`, leading `/` or `-`, backslash, colon, or control characters; that is checked when the config is parsed.
+When the Test step runs, the entry must be a regular file (not a symlink or submodule) holding 1 to 16,384 bytes of UTF-8 text without NUL bytes. A missing, oversize, non-UTF-8, or otherwise unreadable file fails the Test step before any agent turn, rather than running without the guidance.
+The contents are flattened like `test.instructions`, and the prompt labels the runbook with the file's path.
+
+`test.instructions` and `test.instructions_file` are mutually exclusive; setting both fails when the config is parsed.
+This field is trusted-only for the same reason as `test.instructions`, regardless of `allow_repo_commands`, and it is repository-only: the global config refuses it.
+
+### test.path_instructions
+
+Extra live-validation guidance, scoped to the paths a change touches. It is the Test step's counterpart of [`review.path_instructions`](#reviewpath_instructions), for repositories where how to stand up and drive the product differs by directory, such as a monorepo.
+
+| | |
+| --- | --- |
+| Type | `object[]` with `path` (`string`) and one of `instructions` (`string`, multiline) or `instructions_file` (`string`) |
+| Default | Empty |
+
+```yaml
+test:
+  instructions: |
+    Use the shared dev database container from `make db`.
+  path_instructions:
+    - path: "apps/web/**"
+      instructions: |
+        Start the web app with `npm run dev -w apps/web` and drive it in a browser.
+    - path: "apps/api/**"
+      instructions_file: apps/api/TESTING.md
+```
+
+Each matched rule is injected into the Test repair and evidence prompts after the repository runbook, labeled with its path and the files it matched, in the same block format as `review.path_instructions`.
+
+- **Matching** uses the same glob syntax and duplicate handling as `review.path_instructions`. It runs against the full changed-file list between the base and the current head, and is not filtered by [`ignore_patterns`](#ignore_patterns), so a pushed branch cannot drop a rule by ignoring its path.
+- **Files.** `instructions_file` is read from the pinned trusted default-branch commit with the same rules as [`test.instructions_file`](#testinstructions_file). Every entry's file is read on every Test run, matched or not, so a broken entry fails the first run instead of the first run that touches its path.
+- **Limits.** The limits are those of `review.path_instructions`: at most 32 entries, and at most 16,384 bytes for the rendered section. Inline entries are checked when the config is parsed; file-backed entries are checked again after their files are read, and an overrun fails the Test step.
+- **Validation.** A missing `path`, an invalid glob, an entry with both or neither of `instructions` and `instructions_file`, an `instructions` value that renders empty, or an invalid `instructions_file` path fails when the config is parsed, on whichever copy is parsed.
+- **Unchanged prompt.** With nothing configured, or nothing matching the change, the Test prompts are exactly what they would be without this setting. The step log names the rules it applied and the rules that matched nothing.
+
+Like `test.instructions`, this field is honored **only from the trusted default-branch copy**, regardless of `allow_repo_commands`, and the global config refuses it.
+
+### Unknown `test` keys
+
+A key under `test:` that no-mistakes does not recognize, such as a misspelled `path_instruction`, is not an error, because failing the trusted copy's parse would stop every run of the repository.
+Instead the Test step log warns about each unknown key, including nested keys under `test.evidence` and `test.path_instructions` entries, and names the copy of `.no-mistakes.yaml` that carries it. The key has no effect.
+Keys merged in through a YAML merge key (`<<: *anchor`) are checked too, with the same precedence the YAML decoder uses: a key written in the mapping overrides a merged one, and the first of several merge sources wins.
 
 ### test.allow_approve_over_failure
 

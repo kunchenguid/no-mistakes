@@ -162,8 +162,9 @@ func TestSuppliedPRTextJourney(t *testing.T) {
 
 	// Reattach with different values while a run is active is refused; skip.
 	// Rerun after a daemon restart inherits the stored text; a --pr-title
-	// passed to rerun replaces the inherited title in storage, but the PR
-	// already exists so it is not applied.
+	// freshly passed to rerun replaces the inherited title in storage and
+	// updates the existing PR's title (issue #1762), while the inherited
+	// description does not rewrite the owned narrative.
 	if out, err := h.Run("daemon", "restart"); err != nil {
 		t.Fatalf("daemon restart: %v\n%s", err, out)
 	}
@@ -181,8 +182,8 @@ func TestSuppliedPRTextJourney(t *testing.T) {
 	}
 	pr = livePR(t, statePath, branch)
 	saveSuppliedEvidence(t, "03-rerun-pr.md", "TITLE: "+pr.Title+"\n\n"+pr.Body)
-	if pr.Title != title {
-		t.Errorf("rerun changed existing PR title to %q; existing PR must keep %q", pr.Title, title)
+	if pr.Title != newTitle {
+		t.Errorf("rerun --pr-title left existing PR title %q; want freshly supplied %q", pr.Title, newTitle)
 	}
 	if !strings.HasPrefix(pr.Body, createdBody[:narrativeEnd]) {
 		t.Errorf("rerun did not keep the narrative byte for byte; body:\n%s", pr.Body)

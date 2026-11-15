@@ -200,6 +200,12 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 
 // stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
+	return stepGitRunCapturing(sctx, false, args...)
+}
+
+// stepGitRunCapturing is stepGitRunRaw that can append the failed command's
+// stdout to the error, for pushes whose pre-push hook prints its diagnosis there.
+func stepGitRunCapturing(sctx *pipeline.StepContext, withStdoutInError bool, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
 	out, err := cmd.Output()
@@ -208,7 +214,10 @@ func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+		if stdout := strings.TrimSpace(string(out)); withStdoutInError && stdout != "" {
+			stderr = stdout + "\n" + stderr
+		}
+		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr)))
 	}
 	return string(out), nil
 }
@@ -263,7 +272,7 @@ func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, fo
 		}
 	}
 	args = append(args, "HEAD:"+ref)
-	_, err := stepGitRun(sctx, args...)
+	_, err := stepGitRunCapturing(sctx, true, args...)
 	return err
 }
 
@@ -281,7 +290,7 @@ func stepGitPushCommit(sctx *pipeline.StepContext, remote, commitSHA, ref, expec
 		}
 	}
 	args = append(args, commitSHA+":"+ref)
-	_, err := stepGitRun(sctx, args...)
+	_, err := stepGitRunCapturing(sctx, true, args...)
 	return err
 }
 

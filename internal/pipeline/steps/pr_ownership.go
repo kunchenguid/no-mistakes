@@ -41,6 +41,8 @@ type prOwnedBody struct {
 
 var errUnownedLegacyAttestation = errors.New("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
 
+var errPRAppendixMismatch = errors.New("PR appendix was edited or is malformed; refusing to overwrite possible author content")
+
 // The digest is an accidental-edit/ownership guard, NOT authentication. PR
 // authors can edit every byte, including the attestation. We never infer
 // ownership from headings: only an intact, unchanged, explicitly delimited
@@ -64,8 +66,11 @@ func parsePROwnedBody(body string) (prOwnedBody, error) {
 		return prOwnedBody{}, fmt.Errorf("malformed PR appendix ownership markers")
 	}
 	parts := prOwnedBody{before: body[:start], appendix: body[contentStart : end-1], after: body[afterEnd:], managed: true}
-	if markdownFenceOpen(parts.appendix) || !appendixDigestMatches(parts.appendix, body[digestStart:digestStart+64]) {
+	if markdownFenceOpen(parts.appendix) {
 		return prOwnedBody{}, fmt.Errorf("PR appendix was edited or is malformed; refusing to overwrite possible author content")
+	}
+	if !appendixDigestMatches(parts.appendix, body[digestStart:digestStart+64]) {
+		return prOwnedBody{}, errPRAppendixMismatch
 	}
 	if strings.Contains(parts.before+parts.after, pipelineAttestationCommentPrefix) || strings.Count(parts.appendix, pipelineAttestationCommentPrefix) != 1 {
 		return prOwnedBody{}, fmt.Errorf("ambiguous PR attestation ownership")
@@ -158,10 +163,19 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 
 // updateOwnedPR re-reads before the full-body write and verifies afterwards.
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
-// pre-write edits are merged from their latest version (bounded). Readback may
+// pre-write edits are merged from their latest version (bounded); supplied
+// narrative replacement refuses a newer edit instead. Readback may
 // briefly retain that exact pre-write body; any other divergence or a write error
 // fails without replaying a potentially applied write.
 func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
+	return updateOwnedPRWithNarrative(sctx, host, pr, initial, title, emptyNarrative, appendix, bodyLimit, nil)
+}
+
+// A freshly supplied description replaces the author narrative, including
+// text after a previous owned appendix. The generated appendix is rebuilt for
+// this head. A legacy unowned attestation can be replaced because the caller
+// explicitly supplied the entire replacement narrative.
+func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int, suppliedNarrative *string) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
 		return fmt.Errorf("provider cannot read PR content; author-safe template updates are unsupported")
@@ -169,10 +183,15 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 	current := initial
 	for attempt := 0; attempt < 3; attempt++ {
 		parts, err := parsePROwnedBody(current.Body)
+		if suppliedNarrative != nil && errors.Is(err, errUnownedLegacyAttestation) {
+			parts, err = prOwnedBody{}, nil
+		}
 		if err != nil {
 			return err
 		}
-		if current.Body == "" && !parts.managed {
+		if suppliedNarrative != nil {
+			parts = prOwnedBody{before: *suppliedNarrative}
+		} else if current.Body == "" && !parts.managed {
 			parts.before = emptyNarrative
 		}
 		// The author text around the appendix is kept verbatim, so only
@@ -190,6 +209,9 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 			return fmt.Errorf("re-read PR before template update: %w", err)
 		}
 		if latest.Body != current.Body {
+			if suppliedNarrative != nil {
+				return fmt.Errorf("PR body changed while preparing supplied description; refusing to overwrite newer author text")
+			}
 			current = latest
 			continue
 		}

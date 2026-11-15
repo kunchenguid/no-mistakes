@@ -642,9 +642,9 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 		if cursor != "" {
 			args = append(args, "-F", "cursor="+cursor)
 		}
-		out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+		out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 		if err != nil {
-			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", detail, err)
 		}
 		var response struct {
 			Data struct {
@@ -919,9 +919,9 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		"-f", "per_page=100",
 		"--paginate", "--slurp",
 	)
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 	if err != nil {
-		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", detail, err)
 	}
 	type workflowRun struct {
 		ID           int64  `json:"id"`

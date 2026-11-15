@@ -1024,6 +1024,10 @@ func TestSuppliedPRTextPersistsAndRerunInheritsOrReplacesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	var capability ipc.ProbeRunPRTextResult
+	if err := client.Call(ipc.MethodProbeRunPRText, &ipc.ProbeRunPRTextParams{}, &capability); err != nil || !capability.OK || !capability.ExistingPRUpdates {
+		t.Fatalf("daemon supplied-text update capability = %+v, %v", capability, err)
+	}
 	push := func(title, body string) (string, error) {
 		var result ipc.PushReceivedResult
 		err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
@@ -1059,14 +1063,33 @@ func TestSuppliedPRTextPersistsAndRerunInheritsOrReplacesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := text(waitForRunTerminalState(t, d, first)); got != "Add widget|Our words.\n" {
+	firstRun := waitForRunTerminalState(t, d, first)
+	if got := text(firstRun); got != "Add widget|Our words.\n" {
 		t.Fatalf("pushed run PR text = %q", got)
 	}
-	if got := text(rerun("", "")); got != "Add widget|Our words.\n" {
+	if !firstRun.PRTitleFresh || !firstRun.PRBodyFresh {
+		t.Fatalf("directly supplied fields lost freshness: %+v", firstRun)
+	}
+	inherited := rerun("", "")
+	if got := text(inherited); got != "Add widget|Our words.\n" {
 		t.Fatalf("rerun did not inherit the PR text: %q", got)
 	}
-	if got := text(rerun("New title", "")); got != "New title|Our words.\n" {
+	if inherited.PRTitleFresh || inherited.PRBodyFresh {
+		t.Fatalf("plain rerun marked inherited fields fresh: %+v", inherited)
+	}
+	titleOnly := rerun("New title", "")
+	if got := text(titleOnly); got != "New title|Our words.\n" {
 		t.Fatalf("rerun --pr-title did not replace only the title: %q", got)
+	}
+	if !titleOnly.PRTitleFresh || titleOnly.PRBodyFresh {
+		t.Fatalf("rerun title freshness = %v/%v", titleOnly.PRTitleFresh, titleOnly.PRBodyFresh)
+	}
+	bodyOnly := rerun("", "New words.\n")
+	if got := text(bodyOnly); got != "New title|New words.\n" {
+		t.Fatalf("rerun --pr-body-file did not replace only the body: %q", got)
+	}
+	if bodyOnly.PRTitleFresh || !bodyOnly.PRBodyFresh {
+		t.Fatalf("rerun body freshness = %v/%v", bodyOnly.PRTitleFresh, bodyOnly.PRBodyFresh)
 	}
 	superseding, err := push("", "")
 	if err != nil {
