@@ -734,8 +734,8 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	m.admitRun(sequence, queuedRun{
 		runID: plan.run.ID, repoID: plan.repo.ID, branch: plan.run.Branch,
-		gateDir: plan.gateDir, wtDir: plan.workDir, recovered: plan.run,
-		executor: executor, cancel: cancel, done: done, agent: plan.agent, spawn: spawn,
+		recovered: plan.run,
+		executor:  executor, cancel: cancel, done: done, agent: plan.agent, spawn: spawn,
 	})
 }
 
@@ -2339,7 +2339,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("cursor_model_preflight")
 		return "", err
 	}
-	m.cancelActiveRuns(repo.ID, branch, run.ID)
+	if err := m.cancelActiveRuns(repo.ID, branch, run.ID); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("supersede active runs: %s", err))
+		return "", fmt.Errorf("supersede active runs: %w", err)
+	}
 
 	// Create agent. In demo mode, newPipelineAgent returns a no-op agent, and it
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
@@ -2522,7 +2525,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	bgOwnsWorktree = true
 	m.admitRun(sequence, queuedRun{
 		runID: run.ID, repoID: repo.ID, branch: branch,
-		gateDir: gateDir, wtDir: wtDir,
 		executor: executor, cancel: cancel, done: done, agent: ag, spawn: spawn,
 	})
 
@@ -2895,7 +2897,13 @@ func (m *RunManager) Shutdown() {
 	m.runQueue = nil
 	m.mu.Unlock()
 	for _, qe := range queued {
-		m.shutdownQueuedRun(qe)
+		if qe.spawn == nil {
+			continue
+		}
+		_, _ = m.withBranchLock(qe.repoID, qe.branch, func() (string, error) {
+			m.shutdownQueuedRun(qe)
+			return "", nil
+		})
 	}
 
 	m.mu.Lock()
@@ -2930,14 +2938,30 @@ func (m *RunManager) HandleCancel(runID string) error {
 	m.mu.Lock()
 	if qe, ok := m.extractQueuedLocked(runID); ok {
 		m.mu.Unlock()
-		m.cancelQueuedRun(qe, types.RunCancelReasonAbortedByUser)
-		return nil
+		_, err := m.withBranchLock(qe.repoID, qe.branch, func() (string, error) {
+			return "", m.cancelQueuedRun(qe, types.RunCancelReasonAbortedByUser)
+		})
+		return err
 	}
 	cancel, ok := m.cancels[runID]
 	m.resolveHandoffRequestLocked(runID, fmt.Errorf(types.RunCancelReasonAbortedByUser))
 	m.mu.Unlock()
 
 	if !ok {
+		run, err := m.db.GetRun(runID)
+		if err != nil {
+			return err
+		}
+		if run != nil && run.Status == types.RunRunning && run.AwaitingAgentSince != nil {
+			_, err := m.withBranchLock(run.RepoID, run.Branch, func() (string, error) {
+				stored, err := m.db.GetRun(runID)
+				if err != nil {
+					return "", err
+				}
+				return "", m.cancelInactiveRun(stored, types.RunCancelReasonAbortedByUser)
+			})
+			return err
+		}
 		return fmt.Errorf("no active run %s", runID)
 	}
 
@@ -3091,11 +3115,11 @@ func (m *RunManager) HandleHandoff(ctx context.Context, runID string) error {
 // concurrent pushes to upstream.
 // The cancellation cause is propagated to the executor via context.Cause,
 // which uses it as the run's error message in the DB.
-func (m *RunManager) cancelActiveRuns(repoID, branch string, except ...string) {
+func (m *RunManager) cancelActiveRuns(repoID, branch string, except ...string) error {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
 		slog.Error("failed to query active runs for cancellation", "repo", repoID, "branch", branch, "error", err)
-		return
+		return err
 	}
 
 	// A superseding push also clears the branch's queued runs before their
@@ -3106,7 +3130,9 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string, except ...string) {
 	queued := m.extractQueuedForBranchLocked(repoID, branch)
 	m.mu.Unlock()
 	for _, qe := range queued {
-		m.cancelQueuedRun(qe, types.RunCancelReasonSuperseded)
+		if err := m.cancelQueuedRun(qe, types.RunCancelReasonSuperseded); err != nil {
+			return err
+		}
 	}
 
 	var toWait []chan struct{}
@@ -3127,6 +3153,16 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string, except ...string) {
 		m.resolveHandoffRequestLocked(run.ID, fmt.Errorf(types.RunCancelReasonSuperseded))
 		m.mu.Unlock()
 		if !ok {
+			stored, err := m.db.GetRun(run.ID)
+			if err != nil {
+				return err
+			}
+			if stored == nil || stored.Status != types.RunPending && stored.Status != types.RunRunning {
+				continue
+			}
+			if err := m.cancelInactiveRun(stored, types.RunCancelReasonSuperseded); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -3143,7 +3179,8 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string, except ...string) {
 		case <-done:
 		case <-timeout:
 			slog.Warn("timed out waiting for cancelled runs to finish")
-			return
+			return fmt.Errorf("timed out waiting for cancelled runs to finish")
 		}
 	}
+	return nil
 }

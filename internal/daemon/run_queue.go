@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 type queuedRun struct {
@@ -21,8 +23,6 @@ type queuedRun struct {
 	runID     string
 	repoID    string
 	branch    string
-	gateDir   string
-	wtDir     string
 	executor  *pipeline.Executor
 	cancel    context.CancelCauseFunc
 	done      chan struct{}
@@ -123,15 +123,14 @@ func (m *RunManager) pumpQueue() {
 }
 
 func (m *RunManager) shutdownQueuedRun(qe queuedRun) {
-	if qe.spawn == nil {
-		return
-	}
 	if qe.recovered != nil {
 		qe.cancel(pipeline.ErrDaemonShutdown)
 		_ = qe.agent.Close()
 		return
 	}
-	m.cancelQueuedRun(qe, "daemon shutting down")
+	if err := m.cancelQueuedRun(qe, "daemon shutting down"); err != nil {
+		slog.Error("failed to cancel queued run on shutdown", "run_id", qe.runID, "error", err)
+	}
 }
 
 // extractQueuedLocked removes and returns the queued run with the given id,
@@ -171,43 +170,54 @@ func (m *RunManager) extractQueuedForBranchLocked(repoID, branch string) []queue
 // its executor and releases its setup resources. A recovered run's head must
 // be preserved before its worktree is removed. It frees no execution slot in
 // this daemon lifetime, so no pump follows.
-func (m *RunManager) cancelQueuedRun(qe queuedRun, cause string) {
-	var head string
-	var verified bool
-	if qe.recovered != nil {
-		head, verified = preserveRunHead(m.db, qe.wtDir, qe.recovered)
-	}
-	var err error
-	if verified {
-		err = m.db.UpdateRunErrorStatusWithVerifiedHead(qe.runID, cause, types.RunCancelled, head)
-	} else {
-		err = m.db.UpdateRunErrorStatus(qe.runID, cause, types.RunCancelled)
-	}
-	if err != nil {
-		slog.Error("failed to mark queued run cancelled", "run_id", qe.runID, "error", err)
-	}
-	if err == nil && qe.recovered != nil && qe.recovered.AwaitingAgentSince != nil {
-		parkStart := time.Unix(*qe.recovered.AwaitingAgentSince, 0)
-		if dbErr := m.db.CompleteRunAwaitingAgent(qe.runID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			slog.Warn("failed to complete queued run awaiting-agent state", "run_id", qe.runID, "error", dbErr)
-		}
-	}
+func (m *RunManager) cancelQueuedRun(qe queuedRun, cause string) error {
+	run, err := m.db.GetRun(qe.runID)
 	if err == nil {
-		status := string(types.RunCancelled)
-		event := ipc.Event{
-			Type: ipc.EventRunCompleted, RunID: qe.runID, RepoID: qe.repoID,
-			Branch: &qe.branch, Status: &status, Error: &cause,
-		}
-		if qe.recovered != nil {
-			event.PRURL = qe.recovered.PRURL
-		}
-		m.broadcast(event)
-	}
-	if err == nil && (qe.recovered == nil || verified) {
-		m.removeRunWorktree(qe.repoID, qe.runID, qe.gateDir, qe.wtDir, "queued_run_cancelled")
+		err = m.cancelInactiveRun(run, cause)
 	}
 	qe.cancel(nil)
 	qe.agent.Close()
-	m.closeSubscribers(qe.runID)
-	slog.Info("cancelled queued run", "run_id", qe.runID, "branch", qe.branch)
+	return err
+}
+
+func (m *RunManager) cancelInactiveRun(run *db.Run, cause string) error {
+	if run == nil {
+		return fmt.Errorf("no active run to cancel")
+	}
+	if run.Status != types.RunPending && run.Status != types.RunRunning {
+		return nil
+	}
+	workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), run.RepoID, run.ID)
+	gateDir := m.paths.RepoDir(run.RepoID)
+	var head string
+	var verified bool
+	if run.Status == types.RunRunning {
+		head, verified = preserveRunHead(m.db, workDir, run)
+	}
+	var err error
+	if verified {
+		err = m.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, cause, types.RunCancelled, head)
+	} else {
+		err = m.db.UpdateRunErrorStatus(run.ID, cause, types.RunCancelled)
+	}
+	if err != nil {
+		return fmt.Errorf("mark run cancelled: %w", err)
+	}
+	if run.AwaitingAgentSince != nil {
+		parkStart := time.Unix(*run.AwaitingAgentSince, 0)
+		if err := m.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); err != nil {
+			return fmt.Errorf("complete cancelled run awaiting-agent state: %w", err)
+		}
+	}
+	status := string(types.RunCancelled)
+	m.broadcast(ipc.Event{
+		Type: ipc.EventRunCompleted, RunID: run.ID, RepoID: run.RepoID,
+		Branch: &run.Branch, Status: &status, Error: &cause, PRURL: run.PRURL,
+	})
+	if run.Status == types.RunPending || verified {
+		m.removeRunWorktree(run.RepoID, run.ID, gateDir, workDir, "inactive_run_cancelled")
+	}
+	m.closeSubscribers(run.ID)
+	slog.Info("cancelled inactive run", "run_id", run.ID, "branch", run.Branch)
+	return nil
 }

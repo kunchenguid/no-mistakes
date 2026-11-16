@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -288,6 +290,205 @@ func TestCursorStartupRecoveryPreservesRefusedParkedWork(t *testing.T) {
 				t.Fatalf("startup invoked model work: %v", err)
 			}
 		})
+	}
+}
+
+func TestCursorPreservedRunSettlementAcrossRestarts(t *testing.T) {
+	for _, refusal := range []string{"unsupported", "indeterminate"} {
+		for _, action := range []string{"supersede", "abort", "settlement failure"} {
+			t.Run(refusal+"/"+action, func(t *testing.T) {
+				m, run, _ := gatePinFixture(t, "", nil)
+				defer m.Shutdown()
+				repo, err := m.db.GetRepo(run.RepoID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				submitted := run.HeadSHA
+				gateDir := m.paths.RepoDir(run.RepoID)
+				operatorRoot := t.TempDir()
+				workDir := filepath.Join(operatorRoot, run.ID)
+				gitCmd(t, gateDir, "worktree", "move", m.paths.WorktreeDir(run.RepoID, run.ID), workDir)
+				if err := m.db.SetRunWorktreeDir(run.ID, workDir); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(workDir, "pipeline-fix.txt"), []byte("preserve committed fix\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, workDir, "add", "pipeline-fix.txt")
+				gitCmd(t, workDir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "pipeline fix")
+				fixed := gitOutput(t, workDir, "rev-parse", "HEAD")
+				if err := m.db.UpdateRunHeadSHA(run.ID, fixed); err != nil {
+					t.Fatal(err)
+				}
+				marker := filepath.Join(workDir, "uncommitted-work")
+				if err := os.WriteFile(marker, []byte("retain on refusal"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				beforeReview := &mockPassStep{name: types.StepRebase}
+				execSteps := steps.AllSteps()
+				for i, step := range execSteps {
+					switch step.Name() {
+					case types.StepRebase:
+						execSteps[i] = beforeReview
+					case types.StepReview:
+						execSteps[i] = &mockApprovalStep{name: types.StepReview}
+					default:
+						execSteps[i] = &mockPassStep{name: step.Name()}
+					}
+				}
+				m.steps = func() []pipeline.Step { return execSteps }
+				unrelated, err := m.db.InsertRun(run.RepoID, "other-branch", submitted, submitted)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bindFixtureCommitIdentity(t, m.db, unrelated.ID)
+				if err := m.db.UpdateRunStatus(unrelated.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+				unrelatedDir := filepath.Join(operatorRoot, unrelated.ID)
+				gitCmd(t, gateDir, "worktree", "add", "--detach", unrelatedDir, submitted)
+				if err := m.db.SetRunWorktreeDir(unrelated.ID, unrelatedDir); err != nil {
+					t.Fatal(err)
+				}
+				parkRunAtReviewGate(t, m.db, unrelated.ID, execSteps)
+				unrelatedMarker := filepath.Join(unrelatedDir, "uncommitted-work")
+				if err := os.WriteFile(unrelatedMarker, []byte("retain unrelated work"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				bin, modelCounter := writeCursorCatalogPackage(t)
+				runtimePath := filepath.Join(filepath.Dir(bin), "runtime.js")
+				runtimeBody, err := os.ReadFile(runtimePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeConfig := func(model string) {
+					t.Helper()
+					cfg := fmt.Sprintf("agent: cursor\nacpx_path: %s\nacp_registry_overrides:\n  cursor: %s\nagent_config:\n  cursor: {model: '%s'}\nworktree_roots:\n  %s: %s\n", bin, bin, model, repo.WorkingPath, operatorRoot)
+					if err := os.WriteFile(m.paths.ConfigFile(), []byte(cfg), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if refusal == "unsupported" {
+					writeConfig("fixture-absent")
+				} else {
+					writeConfig("fixture-supported[mode=careful]")
+					if err := os.WriteFile(runtimePath, []byte(`export async function inspectAgentModels(){throw new Error('unavailable');}`), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				layout := worktrees.New(m.paths, map[string]string{repo.WorkingPath: operatorRoot})
+				recoverOnStartup(m.db, m.paths, m, layout)
+				m.mu.Lock()
+				launched := len(m.executors) != 0 || len(m.cancels) != 0
+				m.mu.Unlock()
+				if launched || beforeReview.execCnt.Load() != 0 {
+					t.Fatal("catalog refusal created an executor or cancellation callback")
+				}
+				if body, err := os.ReadFile(marker); err != nil || string(body) != "retain on refusal" {
+					t.Fatalf("refusal lost uncommitted work: %q %v", body, err)
+				}
+				if err := os.WriteFile(runtimePath, runtimeBody, 0600); err != nil {
+					t.Fatal(err)
+				}
+				writeConfig("fixture-supported[mode=careful]")
+				if action == "settlement failure" {
+					raw, err := sql.Open("sqlite", m.paths.DB())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer raw.Close()
+					if _, err := raw.Exec(fmt.Sprintf("CREATE TRIGGER reject_settlement BEFORE UPDATE OF status ON runs WHEN OLD.id = '%s' AND NEW.status = 'cancelled' BEGIN SELECT RAISE(FAIL, 'injected settlement failure'); END", run.ID)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var replacementID string
+				if action == "abort" {
+					err = m.HandleCancel(run.ID)
+				} else {
+					replacementID, err = m.startRun(context.Background(), repo, run.Branch, submitted, submitted, "test", nil, "replace preserved run", "", false, "", nil)
+				}
+				if action == "settlement failure" {
+					if err == nil || !strings.Contains(err.Error(), "injected settlement failure") || beforeReview.execCnt.Load() != 0 {
+						t.Fatalf("failed settlement admitted replacement: %v", err)
+					}
+					stored, err := m.db.GetRun(run.ID)
+					if err != nil || stored.Status != types.RunRunning || stored.AwaitingAgentSince == nil {
+						t.Fatalf("failed settlement changed old run: %+v %v", stored, err)
+					}
+					if body, err := os.ReadFile(marker); err != nil || string(body) != "retain on refusal" {
+						t.Fatalf("failed settlement lost edits: %q %v", body, err)
+					}
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					terminal, err := m.db.GetRun(run.ID)
+					wantCause := types.RunCancelReasonSuperseded
+					if action == "abort" {
+						wantCause = types.RunCancelReasonAbortedByUser
+					}
+					if err != nil || terminal.Status != types.RunCancelled || terminal.Error == nil || *terminal.Error != wantCause || terminal.AwaitingAgentSince != nil || terminal.TerminalHeadVerifiedAt == nil || terminal.HeadSHA != fixed {
+						t.Fatalf("preserved run was not settled with custody: %+v %v", terminal, err)
+					}
+					if got := gitOutput(t, gateDir, "show", custody.RecoveryRef(run.ID)+":pipeline-fix.txt"); got != "preserve committed fix" {
+						t.Fatalf("settlement lost unpublished commit: %q", got)
+					}
+				}
+				other, err := m.db.GetRun(unrelated.ID)
+				if err != nil || other.Status != types.RunRunning || other.AwaitingAgentSince == nil {
+					t.Fatalf("settlement changed unrelated run: %+v %v", other, err)
+				}
+				if action == "supersede" {
+					waitForParked(t, m.db, replacementID)
+					replacementDir := filepath.Join(operatorRoot, replacementID)
+					replacementMarker := filepath.Join(replacementDir, "uncommitted-replacement-work")
+					if err := os.WriteFile(replacementMarker, []byte("retain replacement edits"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					m.Shutdown()
+					restarted := NewRunManager(m.db, m.paths, m.steps)
+					defer restarted.Shutdown()
+					recoverOnStartup(m.db, m.paths, restarted, layout)
+					restarted.mu.Lock()
+					resumed := restarted.executors[replacementID] != nil && restarted.executors[unrelated.ID] != nil && restarted.executors[run.ID] == nil
+					restarted.mu.Unlock()
+					if !resumed || beforeReview.execCnt.Load() != 1 {
+						t.Fatal("second restart lost replacement or re-executed settled work")
+					}
+					restarted.Shutdown()
+					stored, err := m.db.GetRun(replacementID)
+					if err != nil || stored.Status != types.RunRunning || stored.AwaitingAgentSince == nil {
+						t.Fatalf("replacement did not survive second restart: %+v %v", stored, err)
+					}
+					if body, err := os.ReadFile(replacementMarker); err != nil || string(body) != "retain replacement edits" {
+						t.Fatalf("second restart lost replacement edits: %q %v", body, err)
+					}
+				}
+				active, err := m.db.GetActiveRuns()
+				if err != nil {
+					t.Fatal(err)
+				}
+				branchCount := 0
+				for _, activeRun := range active {
+					if activeRun.RepoID == run.RepoID && activeRun.Branch == run.Branch {
+						branchCount++
+					}
+				}
+				wantActive := 1
+				if action == "abort" {
+					wantActive = 0
+				}
+				if branchCount != wantActive {
+					t.Fatalf("active records for branch = %d, want %d", branchCount, wantActive)
+				}
+				if body, err := os.ReadFile(unrelatedMarker); err != nil || string(body) != "retain unrelated work" {
+					t.Fatalf("settlement lost unrelated work: %q %v", body, err)
+				}
+				if _, err := os.Stat(modelCounter); !os.IsNotExist(err) {
+					t.Fatalf("lifecycle settlement started model work: %v", err)
+				}
+			})
+		}
 	}
 }
 
