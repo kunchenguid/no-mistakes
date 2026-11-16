@@ -421,6 +421,160 @@ func TestCursorAdmissionKeepsFirstAliasProfile(t *testing.T) {
 	}
 }
 
+func TestCursorAutoAliasPrecedenceThroughLaunchAndRecovery(t *testing.T) {
+	const supported = "fixture-supported[mode=careful]"
+	for _, tc := range []struct {
+		name, selection, cursorModel, aliasModel string
+		native, accepted                         bool
+	}{
+		{name: "auto selects supported cursor", selection: "[auto, acp:cursor]", cursorModel: supported, aliasModel: "unused-absent", accepted: true},
+		{name: "auto selects unsupported cursor", selection: "[auto, acp:cursor]", cursorModel: "selected-absent", aliasModel: supported},
+		{name: "explicit alias precedes auto", selection: "[acp:cursor, auto]", cursorModel: "unused-absent", aliasModel: supported, accepted: true},
+		{name: "explicit unsupported alias precedes auto", selection: "[acp:cursor, auto]", cursorModel: supported, aliasModel: "selected-absent"},
+		{name: "native auto leaves explicit alias selected", selection: "[auto, acp:cursor]", cursorModel: "unused-absent", aliasModel: supported, native: true, accepted: true},
+		{name: "native auto keeps unsupported explicit alias", selection: "[auto, acp:cursor]", cursorModel: supported, aliasModel: "selected-absent", native: true},
+	} {
+		for _, route := range []string{"launch", "recovery"} {
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				m, run, _ := gatePinFixture(t, "", nil)
+				defer m.Shutdown()
+				bin, modelCounter := writeCursorCatalogPackage(t)
+				cfg := fmt.Sprintf("agent: %s\nacpx_path: %s\nacp_registry_overrides:\n  cursor: %s\nagent_config:\n  cursor: {model: '%s'}\n  'acp:cursor': {model: '%s'}\nagent_path_override:\n", tc.selection, bin, bin, tc.cursorModel, tc.aliasModel)
+				nativeCounter := filepath.Join(filepath.Dir(bin), "native-work")
+				for _, name := range agentcfg.Agents() {
+					if _, acp := types.ACPTargetFor(name); acp {
+						continue
+					}
+					path := filepath.Join(filepath.Dir(bin), "missing-native")
+					if name == types.AgentCodex && tc.native {
+						path = filepath.Join(filepath.Dir(bin), "codex")
+						if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf invoked > "+strconvQuote(nativeCounter)+"\nexit 99\n"), 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					cfg += fmt.Sprintf("  %s: %s\n", name, path)
+				}
+				if err := os.WriteFile(m.paths.ConfigFile(), []byte(cfg), 0600); err != nil {
+					t.Fatal(err)
+				}
+				marker := filepath.Join(m.paths.WorktreeDir(run.RepoID, run.ID), "uncommitted-work")
+				if err := os.WriteFile(marker, []byte("preserve"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if route == "launch" {
+					dependent := &mockPassStep{name: types.StepTest}
+					m.steps = func() []pipeline.Step { return []pipeline.Step{dependent} }
+					repo, err := m.db.GetRepo(run.RepoID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					id, err := m.startRun(context.Background(), repo, run.Branch, run.HeadSHA, run.HeadSHA, "test", nil, "canonical selection", "", false, "", nil)
+					if tc.accepted {
+						if err != nil {
+							t.Fatalf("supported canonical selection refused: %v", err)
+						}
+						stored := waitForRunTerminalState(t, m.db, id)
+						if stored.Status != types.RunCompleted || dependent.execCnt.Load() != 1 {
+							t.Fatalf("admitted pipeline did not execute: status=%s count=%d", stored.Status, dependent.execCnt.Load())
+						}
+					} else {
+						var refusal *agent.CursorModelError
+						if !errors.As(err, &refusal) || refusal.Status != agent.CursorModelUnsupported || refusal.Model != "selected-absent" {
+							t.Fatalf("effective unsupported selection was skipped: %v", err)
+						}
+						if dependent.execCnt.Load() != 0 {
+							t.Fatal("refused selection started dependent execution")
+						}
+					}
+				} else {
+					recoverOnStartup(m.db, m.paths, m, worktrees.New(m.paths, nil))
+					m.mu.Lock()
+					resumed := m.executors[run.ID] != nil
+					m.mu.Unlock()
+					if resumed != tc.accepted {
+						t.Fatalf("canonical recovery selection resumed=%t, want %t", resumed, tc.accepted)
+					}
+				}
+				m.Shutdown()
+				if !tc.accepted || route == "recovery" {
+					stored, err := m.db.GetRun(run.ID)
+					if err != nil || stored.Status != types.RunRunning || stored.AwaitingAgentSince == nil {
+						t.Fatalf("parked run changed: %+v %v", stored, err)
+					}
+					if body, err := os.ReadFile(marker); err != nil || string(body) != "preserve" {
+						t.Fatalf("parked edits changed: %q %v", body, err)
+					}
+				}
+				body, err := os.ReadFile(filepath.Join(filepath.Dir(bin), "catalog-probes"))
+				if err != nil || string(body) != "probe\n" {
+					t.Fatalf("canonical selection probe count: %q %v", body, err)
+				}
+				for _, counter := range []string{modelCounter, nativeCounter} {
+					if _, err := os.Stat(counter); !os.IsNotExist(err) {
+						t.Fatalf("admission or recovery started a model turn: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCursorRecoveryMissingOrderedCandidatePreservesWork(t *testing.T) {
+	for _, name := range []string{"cursor", "acp:cursor"} {
+		for _, missing := range []string{"target", "acpx"} {
+			for _, order := range []string{"first", "last"} {
+				t.Run(name+"/"+missing+"/"+order, func(t *testing.T) {
+					m, run, _ := gatePinFixture(t, "", nil)
+					defer m.Shutdown()
+					bin, modelCounter := writeCursorCatalogPackage(t)
+					codexCounter := filepath.Join(filepath.Dir(bin), "codex-work")
+					codex := filepath.Join(filepath.Dir(bin), "codex")
+					if err := os.WriteFile(codex, []byte("#!/bin/sh\nprintf invoked > "+strconvQuote(codexCounter)+"\nexit 99\n"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					shim, target := bin, bin
+					if missing == "acpx" {
+						shim = filepath.Join(filepath.Dir(bin), "missing-acpx")
+					} else {
+						target = filepath.Join(filepath.Dir(bin), "missing-cursor")
+					}
+					selection := "[" + name + ", codex]"
+					if order == "last" {
+						selection = "[codex, " + name + "]"
+					}
+					cfg := "agent: " + selection + "\nagent_path_override:\n  codex: " + codex + "\nacpx_path: " + shim + "\nacp_registry_overrides:\n  cursor: " + target + "\nagent_config:\n  cursor: {model: 'fixture-supported[mode=careful]'}\n"
+					if err := os.WriteFile(m.paths.ConfigFile(), []byte(cfg), 0600); err != nil {
+						t.Fatal(err)
+					}
+					marker := filepath.Join(m.paths.WorktreeDir(run.RepoID, run.ID), "uncommitted-work")
+					if err := os.WriteFile(marker, []byte("preserve"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					recoverOnStartup(m.db, m.paths, m, worktrees.New(m.paths, nil))
+					m.mu.Lock()
+					resumed := len(m.executors) != 0
+					m.mu.Unlock()
+					if resumed {
+						t.Fatal("missing explicit Cursor candidate resumed on Codex")
+					}
+					stored, err := m.db.GetRun(run.ID)
+					if err != nil || stored.Status != types.RunRunning || stored.AwaitingAgentSince == nil {
+						t.Fatalf("refused recovery lost parked run: %+v %v", stored, err)
+					}
+					if body, err := os.ReadFile(marker); err != nil || string(body) != "preserve" {
+						t.Fatalf("refused recovery lost edits: %q %v", body, err)
+					}
+					for _, counter := range []string{modelCounter, codexCounter, filepath.Join(filepath.Dir(bin), "catalog-probes")} {
+						if _, err := os.Stat(counter); !os.IsNotExist(err) {
+							t.Fatalf("missing candidate started a dependent process: %v", err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestCursorRefusalPrecedesPreparation(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
