@@ -83,16 +83,10 @@ func TestCursorModelCatalogOutcomes(t *testing.T) {
 	}
 }
 
-func TestCursorModelDefaultMustBeAdvertised(t *testing.T) {
-	for _, current := range []string{"", ",currentModelId:'fixture-default'"} {
-		a, dir := cursorCatalogFixture(t, "export async function inspectAgentModels(){return {availableModelIds:['fixture-default']"+current+"}}")
-		a.model = ""
-		err := a.preflightCursor(context.Background(), RunOpts{CWD: dir}, "agent_config.cursor")
-		if (err == nil) != (current != "") {
-			t.Fatalf("default observation %q: %v", current, err)
-		}
-		if a.model != "" {
-			t.Fatal("default observation fabricated an explicit model pin")
+func TestCursorOmittedModelNeedsNoCatalog(t *testing.T) {
+	for _, name := range []types.AgentName{types.AgentCursor, "acp:cursor"} {
+		if err := PreflightCursorModel(context.Background(), name, filepath.Join(t.TempDir(), "unavailable-sdk"), Options{}, RunOpts{}, "agent_config.cursor.model"); err != nil {
+			t.Fatalf("omitted effective model required catalog verification: %v", err)
 		}
 	}
 }

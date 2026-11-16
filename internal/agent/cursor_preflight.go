@@ -47,9 +47,6 @@ func (e *CursorModelError) Error() string {
 	return fmt.Sprintf("Cursor model %q in %s is indeterminate; verify Cursor authentication and an installed acpx public runtime/agent-registry SDK with Node >=22.13, and set acpx_path to its direct Node entrypoint; this model invocation was blocked", e.Model, e.Owner)
 }
 
-// PreflightCursorModel checks only Cursor. Other providers make no catalog
-// claim. A default is accepted only when the catalog advertises its current ID;
-// that observation never becomes an explicit model pin.
 func PreflightCursorModel(ctx context.Context, name types.AgentName, bin string, options Options, run RunOpts, owner string) error {
 	target, ok := types.ACPTargetFor(name)
 	if !ok || target != "cursor" {
@@ -72,6 +69,9 @@ func (a *acpxAgent) preflightCursor(ctx context.Context, opts RunOpts, owner str
 	}
 	if a.disableProjectSettings {
 		return EnsureGateNeutralized(a)
+	}
+	if a.model == "" {
+		return nil
 	}
 	refuse := func(status CursorModelStatus) error {
 		return &CursorModelError{Status: status, Owner: owner, Model: a.model}

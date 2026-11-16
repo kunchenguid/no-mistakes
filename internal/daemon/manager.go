@@ -161,16 +161,19 @@ type recoveredRunPlan struct {
 	forge   *forgecontext.Context
 }
 
-func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
+func (m *RunManager) recoverableParkedRuns(ctx context.Context) ([]recoveredRunPlan, map[string]struct{}) {
 	runs, err := m.db.GetActiveRuns()
 	if err != nil {
 		slog.Error("failed to list active runs for recovery", "error", err)
-		return nil
+		return nil, nil
 	}
 	plans := make([]recoveredRunPlan, 0, len(runs))
+	preserved := make(map[string]struct{}, len(runs))
 	branchCounts := make(map[string]int, len(runs))
 	for _, run := range runs {
-		branchCounts[run.RepoID+"\x00"+run.Branch]++
+		if run.Status == types.RunRunning {
+			branchCounts[run.RepoID+"\x00"+run.Branch]++
+		}
 	}
 	for _, run := range runs {
 		if branchCounts[run.RepoID+"\x00"+run.Branch] != 1 {
@@ -179,12 +182,17 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		}
 		plan, err := m.prepareRecoveredRun(ctx, run)
 		if err != nil {
+			var refusal *agent.CursorModelError
+			if errors.As(err, &refusal) {
+				preserved[run.ID] = struct{}{}
+			}
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
 			continue
 		}
+		preserved[run.ID] = struct{}{}
 		plans = append(plans, *plan)
 	}
-	return plans
+	return plans, preserved
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
@@ -382,6 +390,30 @@ func preflightCursorSelections(ctx context.Context, cfg *config.Config, cwd stri
 	}
 	seen := map[string]bool{}
 	check := func(current *config.Config, owner string) error {
+		checkSelection := func(name types.AgentName) error {
+			target, ok := types.ACPTargetFor(name)
+			if !ok || target != "cursor" {
+				return nil
+			}
+			options := agent.Options{DisableProjectSettings: current.DisableProjectSettings, ACPRegistryOverrides: current.ACPRegistryOverrides, Profile: current.AgentProfileFor(name), Environment: environment}
+			key, _ := json.Marshal([]string{current.AgentPathFor(name), types.ACPRawCommand(target, current.ACPRegistryOverrides), options.Profile.Model})
+			if seen[string(key)] {
+				return nil
+			}
+			seen[string(key)] = true
+			selectionOwner := owner
+			if selectionOwner == "" {
+				selectionOwner = agent.CursorModelConfigOwner(name)
+			}
+			if options.Profile.Model != "" {
+				selection := *current
+				selection.Agent, selection.Agents = name, []types.AgentName{name}
+				if err := selection.ResolveAgent(ctx, exec.LookPath); err != nil {
+					return &agent.CursorModelError{Status: agent.CursorModelIndeterminate, Owner: selectionOwner, Model: options.Profile.Model}
+				}
+			}
+			return agent.PreflightCursorModel(ctx, name, current.AgentPathFor(name), options, agent.RunOpts{CWD: cwd}, selectionOwner)
+		}
 		configured := current.Agents
 		if len(configured) == 0 {
 			configured = []types.AgentName{current.Agent}
@@ -394,16 +426,16 @@ func preflightCursorSelections(ctx context.Context, cfg *config.Config, cwd stri
 		if !maySelectCursor {
 			return nil
 		}
-		if err := current.ResolveAgent(ctx, exec.LookPath); err != nil {
-			for _, name := range configured {
-				if target, ok := types.ACPTargetFor(name); ok && target == "cursor" {
-					selectionOwner := owner
-					if selectionOwner == "" {
-						selectionOwner = agent.CursorModelConfigOwner(name)
-					}
-					return &agent.CursorModelError{Status: agent.CursorModelIndeterminate, Owner: selectionOwner, Model: current.AgentProfileFor(name).Model}
-				}
+		for _, name := range configured {
+			if target, ok := types.ACPTargetFor(name); !ok || target != "cursor" {
+				continue
 			}
+			if err := checkSelection(name); err != nil {
+				return err
+			}
+			break
+		}
+		if err := current.ResolveAgent(ctx, exec.LookPath); err != nil {
 			return err
 		}
 		names := current.Agents
@@ -411,21 +443,7 @@ func preflightCursorSelections(ctx context.Context, cfg *config.Config, cwd stri
 			names = []types.AgentName{current.Agent}
 		}
 		for _, name := range names {
-			target, ok := types.ACPTargetFor(name)
-			if !ok || target != "cursor" {
-				continue
-			}
-			options := agent.Options{DisableProjectSettings: current.DisableProjectSettings, ACPRegistryOverrides: current.ACPRegistryOverrides, Profile: current.AgentProfileFor(name), Environment: environment}
-			key, _ := json.Marshal([]string{current.AgentPathFor(name), types.ACPRawCommand(target, current.ACPRegistryOverrides), options.Profile.Model})
-			if seen[string(key)] {
-				continue
-			}
-			seen[string(key)] = true
-			selectionOwner := owner
-			if selectionOwner == "" {
-				selectionOwner = agent.CursorModelConfigOwner(name)
-			}
-			if err := agent.PreflightCursorModel(ctx, name, current.AgentPathFor(name), options, agent.RunOpts{CWD: cwd}, selectionOwner); err != nil {
+			if err := checkSelection(name); err != nil {
 				return err
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,6 +35,31 @@ fi
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCursorOmittedModelRunsWithoutCatalogSDK(t *testing.T) {
+	for _, name := range []types.AgentName{types.AgentCursor, "acp:cursor"} {
+		t.Run(string(name), func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "argv.txt")
+			t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
+			t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
+			a, err := NewWithOptions(name, writeStubAcpx(t, dir), nil, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			result, err := a.Run(context.Background(), RunOpts{CWD: dir, Prompt: "default model control flow"})
+			if err != nil || result == nil || result.Text != "cursor stub reply" {
+				t.Fatalf("default invocation: %+v %v", result, err)
+			}
+			for _, arg := range readStubAcpxArgv(t, argsFile) {
+				if arg == "--model" {
+					t.Fatal("omitted model became an explicit pin")
+				}
+			}
+		})
+	}
 }
 
 // TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides proves both
@@ -310,20 +336,15 @@ printf 'acpx: unknown option --file\n' >&2
 // OutputTokens=0 - a fabricated zero rather than an unknown.
 func TestAcpxAgent_Run_FailedTurnEstimatesTheOutputItStreamed(t *testing.T) {
 	const streamed = "partial answer before acpx died"
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node required for the fake acpx process")
+	}
 
 	dir := t.TempDir()
-	catalogCounter := filepath.Join(dir, "catalog-calls")
 	modelCounter := filepath.Join(dir, "model-turns")
 	argsFile := filepath.Join(dir, "model-args.json")
 	quoted := func(value string) string { data, _ := json.Marshal(value); return string(data) }
-	// Controlled public-SDK metadata advertises its default. It is not a
-	// fabricated explicit pin or evidence of real-account inference success.
-	sdk, _ := cursorCatalogFixture(t, `import fs from 'node:fs'; export async function inspectAgentModels(options){
-if(JSON.stringify(options.agentCommand)!==JSON.stringify(['synthetic-cursor','--opaque'])) throw new Error('wrong fixture launch');
-fs.appendFileSync(`+quoted(catalogCounter)+`, 'catalog\n');
-return {availableModelIds:['fixture-base'],currentModelId:'fixture-base'};
-}`)
-	stub := sdk.bin
+	stub := filepath.Join(dir, "acpx.mjs")
 	script := `#!/usr/bin/env node
 import fs from 'node:fs';
 fs.appendFileSync(` + quoted(modelCounter) + `, 'model\n');
@@ -358,11 +379,9 @@ process.exitCode=1;
 	if want := estimateAcpxTokens(len(streamed)); res.Usage.OutputTokens != want {
 		t.Errorf("output tokens = %d, want the %d-token estimate of the text acpx streamed", res.Usage.OutputTokens, want)
 	}
-	for _, counter := range []struct{ path, want string }{{catalogCounter, "catalog\n"}, {modelCounter, "model\n"}} {
-		data, err := os.ReadFile(counter.path)
-		if err != nil || string(data) != counter.want {
-			t.Fatalf("fixture invocation counter = %q, %v; want exactly %q", data, err, counter.want)
-		}
+	data, err := os.ReadFile(modelCounter)
+	if err != nil || string(data) != "model\n" {
+		t.Fatalf("fixture invocation counter = %q, %v; want exactly one model turn", data, err)
 	}
 	var args []string
 	raw, err := os.ReadFile(argsFile)
@@ -374,12 +393,11 @@ process.exitCode=1;
 	}
 	for _, arg := range args {
 		if arg == "--model" {
-			t.Fatal("observed advertised default became a fabricated explicit pin")
+			t.Fatal("omitted model became a fabricated explicit pin")
 		}
 	}
 }
 
-// Cursor's spawn fixture supplies the public SDK now required before a prompt.
 func writeCursorStubAcpx(t *testing.T) string {
 	a, dir := cursorCatalogFixture(t, `export async function inspectAgentModels(){return {availableModelIds:['fixture-base','fixture-model[mode=careful]'],currentModelId:'fixture-base'}}`)
 	registry := `export function createAgentRegistry(){return {inspect:()=>({launch:{kind:'installed',argv:['synthetic-cursor','acp']}})}}`

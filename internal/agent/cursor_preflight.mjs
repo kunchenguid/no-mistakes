@@ -40,7 +40,6 @@ try {
   for (const id of ids) { catalogBytes += Buffer.byteLength(id, 'utf8'); if (catalogBytes > 16384) throw new Error(); }
   if (new Set(ids).size !== ids.length) throw new Error();
   if (models.currentModelId !== undefined && (typeof models.currentModelId !== 'string' || !ids.includes(models.currentModelId))) throw new Error();
-  if (input.Model) output.status = ids.includes(input.Model) ? 'supported' : 'unsupported';
-  else if (models.currentModelId) output.status = 'supported';
+  output.status = ids.includes(input.Model) ? 'supported' : 'unsupported';
 } catch {}
 process.stdout.write(JSON.stringify(output));

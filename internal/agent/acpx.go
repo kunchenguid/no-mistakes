@@ -74,7 +74,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	}
 	args := a.buildArgs(rawCommand, opts)
 	bin := a.bin
-	if a.target == "cursor" {
+	if a.target == "cursor" && a.model != "" {
 		var err error
 		bin, err = cursorExecutable(bin, opts.CWD, a.gitSafeEnv(opts.CWD, opts.Env))
 		if err != nil {

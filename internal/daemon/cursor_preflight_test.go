@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // A synthetic public acpx package keeps catalog discovery non-generating. Its
@@ -208,6 +209,215 @@ func TestCursorRecoveryChecksFreshSelectionAndPreservesWork(t *testing.T) {
 	stored, err := m.db.GetRun(run.ID)
 	if err != nil || stored.Status != types.RunRunning {
 		t.Fatalf("parked recovery run changed: %+v %v", stored, err)
+	}
+}
+
+func TestCursorStartupRecoveryPreservesRefusedParkedWork(t *testing.T) {
+	for _, tc := range []struct {
+		name, model                   string
+		pending, unavailable, missing bool
+	}{
+		{name: "supported with pending candidate", model: "fixture-supported[mode=careful]", pending: true},
+		{name: "unsupported", model: "absent"},
+		{name: "unsupported with pending candidate", model: "absent", pending: true},
+		{name: "unavailable", model: "fixture-supported[mode=careful]", unavailable: true},
+		{name: "unavailable with pending candidate", model: "fixture-supported[mode=careful]", unavailable: true, pending: true},
+		{name: "missing executable with pending candidate", model: "fixture-supported[mode=careful]", missing: true, pending: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, run, _ := gatePinFixture(t, "", nil)
+			defer m.Shutdown()
+			bin, modelCounter := writeCursorCatalogPackage(t)
+			if tc.unavailable {
+				if err := os.WriteFile(filepath.Join(filepath.Dir(bin), "runtime.js"), []byte(`export async function inspectAgentModels(){throw new Error('unavailable');}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := bin
+			if tc.missing {
+				command = filepath.Join(filepath.Dir(bin), "missing-cursor")
+			}
+			if err := os.WriteFile(m.paths.ConfigFile(), []byte("agent: cursor\nacpx_path: "+bin+"\nacp_registry_overrides:\n  cursor: "+command+"\nagent_config:\n  cursor: {model: '"+tc.model+"'}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			operatorDir := filepath.Join(t.TempDir(), "operator-work")
+			gitCmd(t, m.paths.RepoDir(run.RepoID), "worktree", "move", m.paths.WorktreeDir(run.RepoID, run.ID), operatorDir)
+			if err := m.db.SetRunWorktreeDir(run.ID, operatorDir); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(operatorDir, "uncommitted-work")
+			if err := os.WriteFile(marker, []byte("preserve operator edits"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var candidate *db.Run
+			if tc.pending {
+				var err error
+				candidate, err = m.db.InsertRun(run.RepoID, run.Branch, run.HeadSHA, run.HeadSHA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidateDir := m.paths.WorktreeDir(run.RepoID, candidate.ID)
+				gitCmd(t, m.paths.RepoDir(run.RepoID), "worktree", "add", "--detach", candidateDir, run.HeadSHA)
+				if err := m.db.SetRunWorktreeDir(candidate.ID, candidateDir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recoverOnStartup(m.db, m.paths, m, worktrees.New(m.paths, nil))
+			m.mu.Lock()
+			resumed := m.executors[run.ID] != nil
+			m.mu.Unlock()
+			wantResume := tc.model != "absent" && !tc.unavailable && !tc.missing
+			if resumed != wantResume {
+				t.Fatalf("recovery execution permitted = %t, want %t", resumed, wantResume)
+			}
+			m.Shutdown()
+			stored, err := m.db.GetRun(run.ID)
+			if err != nil || stored.Status != types.RunRunning || stored.AwaitingAgentSince == nil {
+				t.Fatalf("parked run was terminalized: %+v %v", stored, err)
+			}
+			if body, err := os.ReadFile(marker); err != nil || string(body) != "preserve operator edits" {
+				t.Fatalf("startup removed uncommitted operator work: %q %v", body, err)
+			}
+			if candidate != nil {
+				stored, err := m.db.GetRun(candidate.ID)
+				if err != nil || stored.Status != types.RunFailed {
+					t.Fatalf("unadmitted candidate remained active: %+v %v", stored, err)
+				}
+			}
+			if _, err := os.Stat(modelCounter); !os.IsNotExist(err) {
+				t.Fatalf("startup invoked model work: %v", err)
+			}
+		})
+	}
+}
+
+func TestCursorMissingCandidatePreservesActiveRun(t *testing.T) {
+	for _, name := range []string{"cursor", "acp:cursor"} {
+		for _, missing := range []string{"target", "acpx"} {
+			for _, route := range []string{"first", "last", config.RoleReviewer, config.RoleFixer, config.RoleReviewerAfterRound, config.RoleFixerAfterRound, "fallback"} {
+				t.Run(name+"/"+missing+"/"+route, func(t *testing.T) {
+					p := paths.WithRoot(t.TempDir())
+					if err := p.EnsureDirs(); err != nil {
+						t.Fatal(err)
+					}
+					d, err := db.Open(p.DB())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer d.Close()
+					repo, _ := setupTestGitRepo(t, p, d, "cursor-missing")
+					bin, modelCounter := writeCursorCatalogPackage(t)
+					prepCounter := filepath.Join(filepath.Dir(bin), "preparation")
+					head := commitDefaultBranchConfig(t, repo.WorkingPath, "test:\n  prepare: true\ncommands:\n  prepare: "+strconvQuote("printf prepared > "+strconvQuote(prepCounter))+"\n")
+					codexCounter := filepath.Join(filepath.Dir(bin), "codex-work")
+					codex := filepath.Join(filepath.Dir(bin), "codex")
+					if err := os.WriteFile(codex, []byte("#!/bin/sh\nprintf invoked > "+strconvQuote(codexCounter)+"\nexit 1\n"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					shim, target := bin, bin
+					if missing == "acpx" {
+						shim = filepath.Join(filepath.Dir(bin), "missing-acpx")
+					} else {
+						target = filepath.Join(filepath.Dir(bin), "missing-cursor")
+					}
+					selection := "agent: codex\n"
+					switch route {
+					case "first":
+						selection = "agent: [" + name + ", codex]\n"
+					case "last":
+						selection = "agent: [codex, " + name + "]\n"
+					case "fallback":
+						selection += "review_agents:\n  reviewer:\n    agent: codex\n    fallback:\n      - agent: " + name + "\n"
+					default:
+						selection += "review_agents:\n  " + route + ": {agent: '" + name + "'}\n"
+					}
+					cfg := selection + "agent_path_override:\n  codex: " + codex + "\nacpx_path: " + shim + "\nacp_registry_overrides:\n  cursor: " + target + "\nagent_config:\n  cursor: {model: 'fixture-supported[mode=careful]'}\n"
+					if err := os.WriteFile(p.ConfigFile(), []byte(cfg), 0600); err != nil {
+						t.Fatal(err)
+					}
+					active, err := d.InsertRun(repo.ID, "feature", head, head)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := d.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
+						t.Fatal(err)
+					}
+					oldDir := t.TempDir()
+					if err := d.SetRunWorktreeDir(active.ID, oldDir); err != nil {
+						t.Fatal(err)
+					}
+					oldWork := filepath.Join(oldDir, "existing-work")
+					if err := os.WriteFile(oldWork, []byte("preserve"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					dependent := &mockPassStep{name: types.StepTest}
+					m := NewRunManager(d, p, func() []pipeline.Step { return []pipeline.Step{dependent} })
+					defer m.Shutdown()
+					cancelled := false
+					m.cancels[active.ID] = func(error) { cancelled = true }
+					_, err = m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "missing explicit candidate", "", false, "", nil)
+					var refusal *agent.CursorModelError
+					if !errors.As(err, &refusal) || refusal.Status != agent.CursorModelIndeterminate || refusal.Model != "fixture-supported[mode=careful]" {
+						t.Fatalf("missing explicit candidate bypassed admission: %v", err)
+					}
+					stored, err := d.GetRun(active.ID)
+					if err != nil || stored.Status != types.RunRunning || cancelled {
+						t.Fatalf("refusal superseded existing run: %+v cancelled=%t err=%v", stored, cancelled, err)
+					}
+					if body, err := os.ReadFile(oldWork); err != nil || string(body) != "preserve" {
+						t.Fatalf("existing work changed: %q %v", body, err)
+					}
+					if dependent.execCnt.Load() != 0 {
+						t.Fatal("dependent pipeline work ran")
+					}
+					for _, counter := range []string{prepCounter, modelCounter, codexCounter, filepath.Join(filepath.Dir(bin), "catalog-probes")} {
+						if _, err := os.Stat(counter); !os.IsNotExist(err) {
+							t.Fatalf("missing candidate started a dependent process: %v", err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCursorAdmissionOmittedModelSkipsCatalog(t *testing.T) {
+	bin, counter := writeCursorCatalogPackage(t)
+	if err := os.Remove(filepath.Join(filepath.Dir(bin), "runtime.js")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Agent: types.AgentCursor, ACPXPath: bin, ACPRegistryOverrides: map[string]string{"cursor": bin}, ReviewAgents: map[string]config.ReviewAgent{}}
+	for _, role := range config.ReviewAgentRoles {
+		entry := config.ReviewAgent{Agent: "acp:cursor"}
+		if role == config.RoleReviewer || role == config.RoleReviewerAfterRound {
+			entry.Fallback = []config.ReviewAgent{{Agent: types.AgentCursor}}
+		}
+		cfg.ReviewAgents[role] = entry
+	}
+	if err := preflightCursorSelections(context.Background(), cfg, filepath.Dir(bin), runenv.Overlay{}); err != nil {
+		t.Fatalf("omitted effective models required catalog SDK: %v", err)
+	}
+	for _, file := range []string{counter, filepath.Join(filepath.Dir(bin), "catalog-probes")} {
+		if _, err := os.Stat(file); !os.IsNotExist(err) {
+			t.Fatalf("omitted model started discovery or model work: %v", err)
+		}
+	}
+}
+
+func TestCursorAdmissionKeepsFirstAliasProfile(t *testing.T) {
+	for _, names := range [][]types.AgentName{{types.AgentCursor, "acp:cursor"}, {"acp:cursor", types.AgentCursor}} {
+		bin, _ := writeCursorCatalogPackage(t)
+		cfg := &config.Config{Agents: names, ACPXPath: bin, ACPRegistryOverrides: map[string]string{"cursor": bin}, AgentConfig: map[string]agentcfg.Profile{
+			string(names[0]): {Model: "fixture-supported[mode=careful]"},
+			string(names[1]): {Model: "unused-absent"},
+		}}
+		if err := preflightCursorSelections(context.Background(), cfg, filepath.Dir(bin), runenv.Overlay{}); err != nil {
+			t.Fatalf("unselected duplicate alias profile was checked: %v", err)
+		}
+		body, err := os.ReadFile(filepath.Join(filepath.Dir(bin), "catalog-probes"))
+		if err != nil || string(body) != "probe\n" {
+			t.Fatalf("alias deduplication: %q %v", body, err)
+		}
 	}
 }
 
