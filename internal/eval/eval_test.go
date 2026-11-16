@@ -491,7 +491,7 @@ func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	queued, err := store.pendingFindingCounts()
+	queued, err := store.pendingFindingCounts([]Case{c})
 	if err != nil {
 		t.Fatal(err)
 	}

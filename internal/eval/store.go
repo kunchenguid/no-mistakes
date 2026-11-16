@@ -508,16 +508,38 @@ func (s *Store) updateCaseGoldCount(id string, n int) error {
 	return nil
 }
 
-func (s *Store) pendingFindingCounts() (map[string]int, error) {
-	evaluations, _, err := effectiveEvaluations(s)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]int{}
-	for _, evaluation := range evaluations {
-		if evaluation.Status == "completed" {
-			out[evaluation.CaseID] += evaluation.Pending
+func (s *Store) pendingFindingCounts(cases []Case) (map[string]int, error) {
+	adjudicated := map[string]Labels{}
+	for _, c := range cases {
+		if c.Labels.HasAdjudication() {
+			adjudicated[c.ID] = c.Labels
 		}
+	}
+	rows, err := s.db.Query(`SELECT case_id, path, pending FROM evaluations WHERE status = 'completed'`)
+	if err != nil {
+		return nil, fmt.Errorf("list queued eval findings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var caseID, path string
+		var pending int
+		if err := rows.Scan(&caseID, &path, &pending); err != nil {
+			return nil, fmt.Errorf("scan queued eval findings: %w", err)
+		}
+		// Unchanged gold retains its registry count even if historical output
+		// is unavailable. Only an explicit decision requires rescoring it.
+		if labels, ok := adjudicated[caseID]; ok {
+			var evaluation Evaluation
+			if err := readJSON(path, &evaluation); err != nil {
+				return nil, fmt.Errorf("read eval result: %w", err)
+			}
+			pending = ScoreCandidate(labels, evaluation.FindingsJSON).Pending
+		}
+		out[caseID] += pending
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued eval findings: %w", err)
 	}
 	return out, nil
 }

@@ -341,7 +341,7 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 			labeledCount++
 		}
 	}
-	queuedByCase, err := store.pendingFindingCounts()
+	queuedByCase, err := store.pendingFindingCounts(all)
 	if err != nil {
 		return nil, err
 	}
