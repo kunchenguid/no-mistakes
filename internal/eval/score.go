@@ -29,14 +29,9 @@ type Score struct {
 	Pending           int
 }
 
-// ScoreCandidate matches a candidate finding list against recorded gold.
-//
-//   - TP: the candidate raises the same underlying issue as a true-issue gold
-//     (human-accepted Fix, auto-fix that landed in a merged PR, a
-//     human-added miss, or a confirmed post-PR miss)
-//   - FN: the candidate misses a true-issue gold
-//   - FP: only an explicit false-positive gold that the candidate still raised
-//   - Pending: unmatched candidate findings, never inferred as invalid
+// ScoreCandidate matches a candidate finding list against active gold,
+// applying adjudications and excluding labels without discarding evidence.
+// Scoring semantics are owned by docs/src/content/docs/reference/eval.md.
 //
 // Matching is a documented cascade of strengths: exact-id, exact-text,
 // nearby-line Jaccard, then gated containment. Assignment is one globally

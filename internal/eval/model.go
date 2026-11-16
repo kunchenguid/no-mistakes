@@ -30,13 +30,9 @@ const (
 	labelsVersion = 2
 )
 
-// Gold kinds are the scientific labels written from the recorded gate decision
-// (see goldFromRound). Capture writes true-positive gold from a user Fix or
-// from an auto-fix selection on a merged run, false-negative gold from a
-// user-added finding, and false-positive gold from a finding the human did not
-// select for fix that shipped in a merged PR. IngestPostPRMiss writes
-// additional false-negative gold after a green review. Adjudicated labels are
-// never inferred from pending unmatched candidate findings.
+// Gold kinds describe finding-level labels, not case-level verdicts.
+// Capture and provenance rules are owned by docs/src/content/docs/reference/eval.md.
+// Unmatched candidate findings never imply false-positive gold.
 const (
 	GoldTruePositive  = "true-positive"
 	GoldFalseNegative = "false-negative"

@@ -536,10 +536,9 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 //   - Selected for fix with an auto-fix source on a merged source run:
 //     true-positive gold.
 //   - Not selected for fix on a merged source run: false-positive
-//     "shipped unfixed" gold. This deliberately reverses the earlier principle
-//     that a skip is too ambiguous to auto-label: in this operator's corpus a
-//     finding they approve and ship without fixing IS a false positive. It
-//     still needs the merge - skip or approve without one stays unlabeled - and
+//     "shipped unfixed" gold. This is inference, not a curator decision;
+//     accepted risk or a later fix can require adjudication. It still needs
+//     the merge - skip or approve without one stays unlabeled - and
 //     informational no-op findings are never labeled this way.
 //   - No recorded decision for the round: unlabeled, whether or not the finding
 //     survives into a later round. Absence of evidence is never a label.
@@ -633,10 +632,9 @@ func goldForRecordedFinding(finding types.Finding, source, kind string) FindingG
 }
 
 // hasRecordedDecision reports whether the gate resolution for this round was
-// actually persisted. Only then can an unselected finding be read as "the human
-// looked at this and chose not to fix it", which is what makes a shipped-unfixed
-// false-positive label evidence rather than a guess. A legacy or unresolved round
-// with no persisted decision records no such choice, so its findings stay unlabeled.
+// actually persisted. A merge alone cannot establish a gate decision; requiring
+// both bounds the shipped-unfixed inference without treating it as adjudication.
+// A legacy or unresolved round with no persisted decision stays unlabeled.
 func hasRecordedDecision(decision Decision) bool {
 	if strings.TrimSpace(decision.SelectionSource) != "" {
 		return true
