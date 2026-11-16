@@ -814,13 +814,9 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	}
 	now := time.Now()
 	roots := append(evidenceRootsFor(m.paths, nil, m.db), filepath.Dir(removePath))
-<<<<<<< HEAD
 	m.evidencePinMu.Lock()
 	reapLegacyEvidence(m.db, m.paths, roots[0], policy, now, roots[1:]...)
 	m.evidencePinMu.Unlock()
-=======
-	reapLegacyEvidence(m.db, m.paths, roots[0], policy, now, roots[1:]...)
->>>>>>> 039e2129 (no-mistakes(review): Batch mandatory process reaping before evidence removal)
 	reapWorktrees(m.db, m.paths, wtPolicy, now)
 	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
