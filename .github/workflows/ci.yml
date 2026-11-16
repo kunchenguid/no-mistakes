@@ -41,15 +41,22 @@ jobs:
         include:
           - os: ubuntu-latest
             name: test (ubuntu-latest)
+            unix_run: '^Test[A-K]'
+          - os: ubuntu-latest
+            name: test (ubuntu-2)
+            unix_run: '^Test[L-Q]'
+          - os: ubuntu-latest
+            name: test (ubuntu-3)
+            unix_skip: '^Test[A-Q]'
           - os: macos-latest
             name: test (macos-latest)
-            macos_run: '^Test[A-K]'
+            unix_run: '^Test[A-K]'
           - os: macos-latest
             name: test (macos-2)
-            macos_run: '^Test[L-Q]'
+            unix_run: '^Test[L-Q]'
           - os: macos-latest
             name: test (macos-3)
-            macos_skip: '^Test[A-Q]'
+            unix_skip: '^Test[A-Q]'
           - os: windows-latest
             name: test (windows-core)
             shard: core
@@ -153,20 +160,16 @@ jobs:
             Write-Host "::warning::Defender exclusions unavailable, Windows tests run untuned: $_"
           }
 
-      - name: Test on Linux
-        if: runner.os == 'Linux'
-        run: go test -race ./...
-
       # Serial fixture setup plus the race detector pushed daemon and steps
-      # past Go's 10m package timeout on macOS. Partition names instead of
+      # past Go's 10m package timeout on Unix. Partition names instead of
       # extending the timeout; the final complement includes future tests,
       # examples, and fuzz seeds. Every row still tests every package.
-      - name: Test on macOS
-        if: runner.os == 'macOS'
+      - name: Test on Unix
+        if: runner.os != 'Windows'
         env:
-          NM_CI_MACOS_RUN: ${{ matrix.macos_run }}
-          NM_CI_MACOS_SKIP: ${{ matrix.macos_skip }}
-        run: go test -race "-run=$NM_CI_MACOS_RUN" "-skip=$NM_CI_MACOS_SKIP" ./...
+          NM_CI_UNIX_RUN: ${{ matrix.unix_run }}
+          NM_CI_UNIX_SKIP: ${{ matrix.unix_skip }}
+        run: go test -race "-run=$NM_CI_UNIX_RUN" "-skip=$NM_CI_UNIX_SKIP" ./...
 
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
       # on the core shard is the union of the git, steps, daemon, and gate
