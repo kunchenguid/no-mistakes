@@ -19,6 +19,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -1017,6 +1018,10 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // handlePushReceived is HandlePushReceived; fromReplay marks a push an
 // earlier daemon held, which replayHeldPushes starts ahead of fresh pushes.
 func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushReceivedParams, fromReplay bool) (string, error) {
+	if err := params.CallerRestrictions.Validate(); err != nil {
+		return "", err
+	}
+	ctx = callerrestrictions.WithLaunchRecord(ctx, params.CallerRestrictions)
 	ctx = integration.WithRemote(ctx, params.BaseRemote)
 	var identityErr error
 	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
@@ -1087,6 +1092,10 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 // HandleStartFreshRun creates or replays a proof-mode launch only after
 // checking the creation context under the repository/branch lock.
 func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartFreshRunParams) (ipc.LaunchReceipt, error) {
+	if err := params.CallerRestrictions.Validate(); err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
+	ctx = callerrestrictions.WithLaunchRecord(ctx, params.CallerRestrictions)
 	ctx = integration.WithRemote(ctx, params.BaseRemote)
 	var identityErr error
 	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
@@ -1144,6 +1153,9 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			return "", err
 		}
 		if existing != nil {
+			if requested := callerrestrictions.LaunchRecord(ctx); requested != nil && (existing.CallerRestrictions == nil || *requested != *existing.CallerRestrictions) {
+				return "", fmt.Errorf("caller restrictions cannot replace an existing run record")
+			}
 			if err := matchingIntegrationRequest(ctx, existing); err != nil {
 				return "", err
 			}
@@ -1184,7 +1196,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				receipt = replayed
 				return existing.ID, nil
 			}
-			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithDestination(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, integration.RequestedRemote(ctx), profiles...)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithDestinationAndCallerRestrictions(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, integration.RequestedRemote(ctx), callerrestrictions.LaunchRecord(ctx).Digest(), profiles...)
 			if err != nil {
 				return "", err
 			}
@@ -1238,7 +1250,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				return "", err
 			}
 		} else {
-			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithDestination(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, integration.RequestedRemote(ctx), profiles...)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithDestinationAndCallerRestrictions(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest, integration.RequestedRemote(ctx), callerrestrictions.LaunchRecord(ctx).Digest(), profiles...)
 			if err != nil {
 				return "", err
 			}
@@ -1470,6 +1482,9 @@ func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 	if homes == nil {
 		homes = selectedRun.TranscriptHomes
+	}
+	if !freshLaunch && callerrestrictions.LaunchRecord(ctx) == nil {
+		ctx = callerrestrictions.WithLaunchRecord(ctx, selectedRun.CallerRestrictions)
 	}
 	prURL, err := inheritIntegrationPRURL(ctx, repo, selectedRun)
 	if err != nil {
@@ -1764,6 +1779,10 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // the repository/branch lock. Proof fields are empty for ordinary launches,
 // and retry is nil for every run that does not continue a failed one.
 func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (string, error) {
+	restrictions := callerrestrictions.LaunchRecord(ctx)
+	if err := restrictions.Validate(); err != nil {
+		return "", err
+	}
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
@@ -1976,7 +1995,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithDestination(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, destination, pin, reviewer)
+	run, err := m.db.InsertRunWithDestinationAndCallerRestrictions(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, destination, restrictions, pin, reviewer)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)

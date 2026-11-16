@@ -61,6 +61,7 @@ Final diff paths and statuses:
 	prompt += prIntentBriefPromptSection(sctx)
 	prompt += agent.MemoryFilesRule
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{
+		Purpose:    "pr-draft",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: prIntentBriefOnlySchema,

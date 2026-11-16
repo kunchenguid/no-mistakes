@@ -237,18 +237,19 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	}
 
 	return intent.Extract(ctx, intent.ExtractParams{
-		TranscriptHomes: run.TranscriptHomes,
-		OriginCWD:       repo.WorkingPath,
-		DiffFiles:       diffFiles,
-		Change:          intent.ChangeContext{Base: resolvedBaseSHA, Head: run.HeadSHA, Diff: diff},
-		BaseTime:        baseTime,
-		HeadTime:        headTime,
-		SlackDays:       cfg.Intent.SlackDays,
-		Threshold:       cfg.Intent.Threshold,
-		Readers:         intent.AllReaders(cfg.Intent.DisabledReaders),
-		Cache:           intent.NewDBCache(sctx.DB),
-		Summarizer:      intent.NewAgentSummarizer(sctx.Agent, gitWorkDir),
-		Disambiguator:   intent.NewAgentDisambiguator(sctx.Agent, gitWorkDir),
+		TranscriptHomes:          run.TranscriptHomes,
+		OriginCWD:                repo.WorkingPath,
+		DiffFiles:                diffFiles,
+		Change:                   intent.ChangeContext{Base: resolvedBaseSHA, Head: run.HeadSHA, Diff: diff},
+		BaseTime:                 baseTime,
+		HeadTime:                 headTime,
+		SlackDays:                cfg.Intent.SlackDays,
+		Threshold:                cfg.Intent.Threshold,
+		Readers:                  intent.AllReaders(cfg.Intent.DisabledReaders),
+		Cache:                    intent.NewDBCache(sctx.DB),
+		CallerRestrictionsDigest: run.CallerRestrictions.Digest(),
+		Summarizer:               intent.NewAgentSummarizer(sctx.Agent, gitWorkDir),
+		Disambiguator:            intent.NewAgentDisambiguator(sctx.Agent, gitWorkDir),
 		Logf: func(format string, args ...any) {
 			sctx.Log(fmt.Sprintf("intent "+format, args...))
 		},

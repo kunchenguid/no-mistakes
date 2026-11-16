@@ -17,6 +17,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/closingissues"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -293,6 +294,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue this PR closes when merged; repeat for multiple issues (42, owner/repo#42, or a nested GitLab project path)")
 	cmd.Flags().String("verification-plan", "", "capture a nonempty UTF-8 verification plan as separate run evidence (new runs only)")
+	bindCallerRestrictionsFlag(cmd)
 	bindPRTextFlags(cmd, &prTitle, &prBodyFile)
 	bindAxiWaitFlag(cmd, &wait)
 	bindPiProfileFlags(cmd, &model, &effort)
@@ -388,6 +390,16 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	if err := requireDaemonHonorsRunPRText(env.client, prText); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
+	// The first receipt lookup can already claim a competing run. Capture and
+	// bind restrictions before that lookup, as well as before the push.
+	restrictions, captureErr := captureCallerRestrictions(cmd)
+	if captureErr != nil {
+		return emitError(cmd, 2, captureErr.Error())
+	}
+	if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
+	ctx = callerrestrictions.WithLaunchRecord(ctx, restrictions)
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {
@@ -415,7 +427,7 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, baseRemote, omitIntent, prText, profile, reviewer)
+		receipt, err := claimLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, baseRemote, omitIntent, prText, profile, reviewer)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -461,6 +473,9 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	}
 	if runID != "" && planRequested {
 		return emitError(cmd, 2, "--verification-plan is accepted only when starting a new run; omit it to reattach")
+	}
+	if runID != "" && callerRestrictionsRequested(cmd) {
+		return emitError(cmd, 2, "--caller-restrictions is accepted only when starting a new run; omit it to reattach")
 	}
 	if runID == "" {
 		resolvedReviewer, resolveErr := resolveReviewer(env.client, env.repo.ID, reviewer)
@@ -857,6 +872,10 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 // triggerRunWithPRText is triggerRun carrying caller-supplied PR text on the
 // push and on the rerun fallback.
 func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (string, error) {
+	restrictions := callerrestrictions.LaunchRecord(ctx)
+	if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
+		return "", err
+	}
 	if err := env.client.RequireTranscriptHomes(); err != nil {
 		return "", err
 	}
@@ -871,6 +890,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
+	pushOptions = append(pushOptions, formatCallerRestrictionsPushOptions(restrictions)...)
 	if remote := integration.RequestedRemote(ctx); remote != "" {
 		pushOptions = append(pushOptions, baseRemotePushOptionPrefix+remote)
 	}
@@ -953,6 +973,9 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		if planID != "" && (run.VerificationPlan == nil || run.VerificationPlan.ID != planID) {
 			return "", fmt.Errorf("triggered run has a conflicting verification plan")
 		}
+		if restrictions != nil && run.CallerRestrictionsDigest != restrictions.Digest() {
+			return "", fmt.Errorf("triggered run has conflicting caller restrictions")
+		}
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
@@ -964,6 +987,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	var rr ipc.RerunResult
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
 	params.TranscriptHomes = homes
+	params.CallerRestrictions = restrictions
 	params.BaseRemote = integration.RequestedRemote(ctx)
 	params.CommitIdentity = identity
 	params.OmitIntent = omitIntent
@@ -1046,14 +1070,15 @@ func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, re
 	return gate.ReconciliationUpstream{URL: upstreamURL, BaseBranch: base}
 }
 
-func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch, baseRemote string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch, baseRemote string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
 		ReviewerProfile:  agentcfg.OptionalReviewerProfile(profiles),
 		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent,
-		PRTextDigest: db.PRTextDigest(prText.Title, prText.Body),
-		BaseRemote:   baseRemote,
+		PRTextDigest:             db.PRTextDigest(prText.Title, prText.Body),
+		CallerRestrictionsDigest: callerrestrictions.LaunchRecord(ctx).Digest(),
+		BaseRemote:               baseRemote,
 	}, &result); err != nil {
 		return nil, err
 	}
@@ -1070,6 +1095,10 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
 func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+	restrictions := callerrestrictions.LaunchRecord(ctx)
+	if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
+		return nil, err
+	}
 	if err := env.client.RequireTranscriptHomes(); err != nil {
 		return nil, err
 	}
@@ -1084,6 +1113,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
+	pushOptions = append(pushOptions, formatCallerRestrictionsPushOptions(restrictions)...)
 	if remote := integration.RequestedRemote(ctx); remote != "" {
 		pushOptions = append(pushOptions, baseRemotePushOptionPrefix+remote)
 	}
@@ -1116,10 +1146,11 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	}
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-		CommitIdentity:  identity,
-		TranscriptHomes: homes,
-		BaseRemote:      integration.RequestedRemote(ctx),
-		RepoID:          env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
+		CallerRestrictions: restrictions,
+		CommitIdentity:     identity,
+		TranscriptHomes:    homes,
+		BaseRemote:         integration.RequestedRemote(ctx),
+		RepoID:             env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
 		ReviewerProfile: agentcfg.OptionalReviewerProfile(profiles),
@@ -1135,7 +1166,7 @@ func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branc
 	poll := time.NewTicker(150 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, integration.RequestedRemote(ctx), omitIntent, prText, profiles...)
+		receipt, err := claimLaunchReceipt(ctx, client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, integration.RequestedRemote(ctx), omitIntent, prText, profiles...)
 		if err != nil {
 			return nil, err
 		}

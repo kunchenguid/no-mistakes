@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -22,6 +23,7 @@ const (
 	MethodProbeOmitIntent           = "probe_omit_intent"
 	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodProbeTranscriptHomes      = "probe_transcript_homes"
+	MethodProbeCallerRestrictions   = "probe_caller_restrictions"
 	MethodProbeCommitIdentity       = "probe_commit_identity"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
@@ -91,11 +93,12 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts. LaunchNonce and ValidationGeneration together
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
-	CommitIdentity     *git.CommitIdentity       `json:"commit_identity,omitempty"`
-	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
+	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -130,11 +133,12 @@ type PushReceivedParams struct {
 // branch head. The daemon checks the gate while holding the branch lock, so a
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
-	CommitIdentity     *git.CommitIdentity       `json:"commit_identity,omitempty"`
-	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
+	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -218,6 +222,9 @@ type ClaimLaunchReceiptParams struct {
 	// PRTextDigest is db.PRTextDigest of the supplied PR title and
 	// description, "" for none. A replay must match the run's stored text.
 	PRTextDigest string `json:"pr_text_digest,omitempty"`
+	// CallerRestrictionsDigest binds the requested captured record without
+	// disclosing its private content or provenance path.
+	CallerRestrictionsDigest string `json:"caller_restrictions_digest,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -271,12 +278,13 @@ type GetActiveRunParams struct {
 // leaves the new run to perform fresh inference.
 // ClosingIssueRefs are merged with the selected run's persisted references.
 type RerunParams struct {
-	CommitIdentity     *git.CommitIdentity       `json:"commit_identity,omitempty"`
-	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
-	FreshLaunch        bool                      `json:"fresh_launch,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
+	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
+	FreshLaunch        bool                       `json:"fresh_launch,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -582,9 +590,10 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ReviewerProfile  *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
-	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
-	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	CallerRestrictionsDigest string                     `json:"caller_restrictions_digest,omitempty"`
+	ReviewerProfile          *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlan         *verificationplan.Snapshot `json:"verification_plan"`
+	PiProfile                *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`
