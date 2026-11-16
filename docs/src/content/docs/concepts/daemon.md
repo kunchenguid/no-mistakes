@@ -68,7 +68,7 @@ Pass `--when-idle` to update without interrupting anything: `update` installs th
 
 1. Lets every run that is executing a step, or queued for a slot, finish on the version it started on.
 2. Holds a plain gate push that arrives meanwhile in `~/.no-mistakes/held-pushes.jsonl` instead of starting a run, and refuses `rerun`, retries, fresh launches, and pushes from `axi run` with "the daemon is restarting for an update; try again shortly".
-3. Does not wait for runs parked at an approval gate: a clean stop keeps them (see [Crash recovery](#crash-recovery)), so they resume on the new version.
+3. Does not wait for runs parked at an approval gate; a clean stop keeps them for [Crash recovery](#crash-recovery) on the new version.
 4. Once no run is executing, stops cleanly and restarts from the executable file. On macOS and Linux it replaces its own process, keeping its PID, so the managed service or detached launch keeps owning it. Windows cannot replace a running process, so there the stopping daemon starts the new version as a detached daemon, waits until it answers, and exits; the PID changes, and a daemon first started by the scheduled task runs detached until its next `daemon start`.
 5. Starts each held push as a new run as soon as the restarted daemon is ready, in the order they arrived, then removes the file. A push that arrives while held pushes are still being started is held behind them, so an older held push never replaces the run of a newer one. If another restart is scheduled mid-replay, the pushes not yet started stay in a `.replay` file beside the held file, and the next daemon starts them before any push held since.
 
@@ -130,9 +130,11 @@ An existing unit picks up the policy when `no-mistakes daemon start`, `restart`,
 
 If you push to the same branch while a run is already active, the daemon:
 
-1. Cancels the earlier run, including one waiting in the queue (reason: "cancelled: superseded by new push")
-2. Waits for it to finish
-3. Submits a new run with the latest push
+1. Checks the candidate's effective configuration and admission in its own worktree, including [Cursor model preflight](/no-mistakes/reference/global-config/#cursor-model-preflight)
+2. After admission succeeds, cancels the earlier run, including one waiting in the queue or preserved without an executor after a recovery refusal (reason: "cancelled: superseded by new push")
+3. Waits for cancellation to finish before submitting the new run with the latest push; a cancellation failure refuses the replacement
+
+If Cursor model preflight refuses admission, the earlier run and its worktree stay intact, and cleanup removes only the refused candidate's worktree.
 
 Runs on different branches can execute concurrently. See
 [`max_concurrent_runs`](/no-mistakes/reference/global-config/#max_concurrent_runs)
@@ -143,7 +145,7 @@ reason about in one long-lived process than inside independent hook invocations.
 
 ## Crash recovery
 
-A clean stop (`SIGTERM`, `daemon stop`, `daemon restart`) leaves a run that is fully recorded as waiting at an approval gate exactly as a crash would, so the next start resumes it at that gate. A clean stop still fails a run that is in the middle of a step.
+A clean stop (`SIGTERM`, `daemon stop`, `daemon restart`) leaves a run that is fully recorded as waiting at an approval gate exactly as a crash would, so the next start can resume it at that gate after recovery checks pass. A clean stop still fails a run that is in the middle of a step.
 
 On startup, the daemon checks for runs that were left in `pending` or `running` status (which means the daemon stopped while they were active):
 
@@ -151,6 +153,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Resumes only fully recorded parked approval gates whose worktree and step history can be validated; incomplete or ambiguous active runs fail closed
 - Rebuilds a parked run with the repository gate list pinned in `runs.gates_json` when that run started, never the current default-branch list. An absent pin on an older run means the core pipeline, while an invalid pin refuses recovery
 - Re-resolves and validates any configured repository forge profile before rebuilding the recovered run, so resumed provider checks and agents use the same repository-scoped identity model rather than persisted credentials or ambient active accounts
+- Rechecks [explicit Cursor model selections](/no-mistakes/reference/global-config/#cursor-model-preflight) before creating a recovered executor. An unsupported or indeterminate selection keeps the validated parked run `running`, its waiting marker and its worktree, including uncommitted files, without resuming it. A later admitted run supersedes it through normal cancellation, and an explicit abort can cancel it too
 - Before resuming a parked CI gate, re-checks its persisted PR URL through the configured provider; a currently merged or closed PR completes the stale gate, while an open, unknown, or unreachable PR remains parked. The [`protected_paths` refusal exception](/no-mistakes/reference/repo-config/#protected_paths) prevents automatic reconciliation
 - Finalizes a stale pending or running run as `checks_passed` when CI completion, readiness, and the durable release marker (set only under `ci.release_after_checks_pass`) were recorded while its PR state remained open. A default-mode run is not promoted. Recovery preserves the recorded CI duration and does not resume monitoring
 - Preserves a run that was actively monitoring CI for an already-created PR as `ci_monitor_interrupted` rather than failing it: the PR is still open, so a restart mid-monitor is not a pipeline failure. That run is terminal and never resumed, so recovery releases its push ownership and a fresh run on the branch is not refused. Startup also releases push ownership that an older daemon left on any terminal run
@@ -162,7 +165,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Migrates gates named by authoritative repository records, plus legacy directories with the strict `<repoID>.git` shape. Before changing an unstamped candidate, it validates that the directory is a bare repository without relying on the current directory or ancestor Git discovery; unrelated and malformed directories are rejected without hook or Git mutation
 - For a validated legacy gate, installs or refreshes the no-mistakes-managed pre-receive admission and post-receive notification hooks, preserving an existing custom pre-receive hook behind the admission wrapper, then enables push-option support and reapplies per-worktree hook-path isolation
 - Records a content-versioned gate configuration stamp only after the whole migration succeeds. Normal restarts check current stamped gates from the filesystem without rerunning the mutating Git commands
-- Clears any parked-awaiting-agent marker so a recovered failed run is not shown as still waiting for `axi respond`
+- Clears parked-awaiting-agent markers on runs finalized as failed so they are not shown as still waiting for `axi respond`
 
 ## Logging
 
@@ -186,6 +189,6 @@ The [starting and stopping](#starting-and-stopping) section owns the active-run
 guard, the top-level `--force` override, and the separate validation-step
 containment rule.
 
-1. Cancels all active runs, except that a run fully recorded as waiting at an approval gate keeps its record and worktree so the next start resumes it (see [Crash recovery](#crash-recovery))
+1. Cancels all active runs, except that a run fully recorded as waiting at an approval gate keeps its record and worktree for [Crash recovery](#crash-recovery)
 2. Waits up to 30 seconds for goroutines to finish
 3. Removes the PID file and socket

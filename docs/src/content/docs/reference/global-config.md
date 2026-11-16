@@ -171,7 +171,7 @@ agent: [codex, grok]
 The list is filtered to entries available to the daemon at run startup. By default, the first available entry becomes the primary agent; opt-in [quota-aware routing](#quota_routing) can reorder that resolved list.
 After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` (or `devin` and `acp:devin`) provide one fallback and preserve whichever spelling appears first.
 If no entry is available, the gate fails before its first pipeline step.
-If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
+After admission, if a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback, subject to [Cursor model preflight](#cursor-model-preflight).
 Fallback candidates share the invocation's existing bounded context and use only its remaining time; once that context expires or is cancelled, no further candidate is announced or started.
 Structured findings and validation failures in an agent's returned output do not trigger fallback. A recognized Codex provider rejection of the requested structured-output schema does trigger fallback.
 
@@ -184,7 +184,7 @@ Path to the user-installed `acpx` binary used for `agent: acp:<target>` and ACP 
 | Type    | `string` |
 | Default | `acpx`   |
 
-Cursor model preflight requires Node 22.13 or later and the public `acpx/runtime` and `acpx/agent-registry` exports from the same installed package that owns this executable. Set `acpx_path` to that package's direct Node entrypoint, using a simple Node shebang. An unrecognized shell wrapper, missing export, or ambiguous package/interpreter provenance makes discovery indeterminate. The check uses installed dependencies and never installs a package. See [Cursor model preflight](#cursor-model-preflight) for refusal and correction.
+Explicit Cursor model preflight requires Node 22.13 or later and the public `acpx/runtime` and `acpx/agent-registry` exports from the same installed package that owns this executable. Set `acpx_path` to that package's direct Node entrypoint, using a simple Node shebang. An unrecognized shell wrapper, missing export, or ambiguous package/interpreter provenance makes discovery indeterminate. The check uses installed dependencies and never installs a package. See [Cursor model preflight](#cursor-model-preflight) for refusal and correction.
 
 ### forgejo_axi_path
 
@@ -316,11 +316,11 @@ agent_args_override:
 
 #### Cursor model preflight
 
-For `cursor` and `acp:cursor`, admission checks each nonempty effective primary, review-role, later-round and configured fallback model selection against the selected ACP executable's catalog before superseding an existing run or starting preparation and pipeline work. Explicit Cursor candidates are checked before unavailable agents are filtered from ordered lists. The check uses the candidate worktree and the agent's launch environment, including forge overlays and gate markers. The existing [project-settings opt-out](/no-mistakes/reference/repo-config/#disable_project_settings) can refuse an adapter before catalog inspection. Identical selections share a check only within that admission. Recovery and each model invocation perform a fresh check with their effective working directory and environment. A recovery refusal keeps the parked run and its worktree without resuming it.
+For `cursor` and `acp:cursor`, admission checks each nonempty effective primary, review-role, later-round and configured fallback model selection against the selected ACP executable's catalog before superseding an existing run or starting preparation and pipeline work. Selection follows the [agent-list and alias precedence](#agent); a missing executable for an explicit Cursor candidate with a model refuses admission instead of silently filtering that candidate out. The check uses the candidate worktree and the agent's launch environment, including forge overlays and gate markers. The existing [project-settings opt-out](/no-mistakes/reference/repo-config/#disable_project_settings) can refuse an adapter before catalog inspection. Identical selections share a check only within that admission. Recovery and each model invocation perform a fresh check with their effective working directory and environment. See [Concurrent push handling](/no-mistakes/concepts/daemon/#concurrent-push-handling) and [Crash recovery](/no-mistakes/concepts/daemon/#crash-recovery) for run retention.
 
-Model IDs are opaque strings, including any bracketed parameters. A complete, valid catalog supports an explicit model only when the full ID matches exactly. A complete catalog missing that ID is unsupported. Authentication failure, unavailable or incompatible dependencies, missing capability, empty or malformed metadata, timeout and excessive output make the result indeterminate. Both refusals stop dependent work and identify the requested ID and configuration field to correct. Admission refusals retain the previous run and clean up only the refused candidate. Select an exact ACP-advertised ID in the named `agent_config` or `review_agents` field, or correct the installed dependency or existing authentication in the daemon's launch context before retrying.
+Model IDs are opaque strings, including any bracketed parameters. A complete, valid catalog supports an explicit model only when the full ID matches exactly. A complete catalog missing that ID is unsupported. Authentication failure, unavailable or incompatible dependencies, missing capability, empty or malformed metadata, timeout and excessive output make the result indeterminate. Both refusals stop dependent work and identify the requested ID and configuration field to correct. Neither refusal triggers automatic retry or fallback to another model or backend. Select an exact ACP-advertised ID in the named `agent_config` or `review_agents` field, or correct the installed dependency or existing authentication in the daemon's launch context before retrying.
 
-Discovery has a 15-second deadline and bounded cleanup. Bridge output and returned model-ID metadata are bounded. It initializes an ACP session through acpx's non-generating inspection API, sends no prompt and grants no filesystem, terminal or permission callbacks. The backend may retain native session history. An omitted effective model retains the backend's default behavior without catalog verification or an invented model pin; an omitted role model still inherits any configured model. Catalog acceptance establishes model availability at discovery time, not inference success. Other backends keep their existing model-selection behavior.
+ACP model inspection has a 15-second timeout, with a 17-second outer probe deadline and bounded child cleanup. Bridge output and returned model-ID metadata are bounded. Discovery initializes an ACP session through acpx's non-generating inspection API, sends no prompt and grants no filesystem, terminal or permission callbacks. The backend may retain native session history. An omitted effective model retains the backend's default behavior without catalog verification or an invented model pin; an omitted role model still inherits any configured model. Catalog acceptance establishes model availability at discovery time, not inference success. Other backends keep their existing model-selection behavior.
 
 ### Per-run reviewer profiles
 
@@ -459,8 +459,10 @@ The role keys are `reviewer`, `fixer`, and their optional later-round overlays
 explicit `agent` (the same harness names as `agent_config`; no `auto` or lists).
 Model and effort are optional and inherit `agent_config` for that harness when
 empty. Nonempty role values override that profile, but native
-`agent_args_override` flags still win. Model availability, credentials, and
-supported effort levels remain the harness/provider's responsibility.
+`agent_args_override` flags still win. Credentials and supported effort levels
+remain the harness/provider's responsibility. Model availability follows
+[Cursor model preflight](#cursor-model-preflight) for Cursor selections;
+other harnesses validate their own model selections.
 
 Reviewer roles (`reviewer` and `reviewer_after_round`) also accept an ordered,
 explicit `fallback` list. Each entry requires `agent` and accepts `model` and
