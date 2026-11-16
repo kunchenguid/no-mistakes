@@ -116,6 +116,11 @@ type pipelineUpdateGroup struct {
 func (s *PRStep) Name() types.StepName { return types.StepPR }
 
 func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.Run.Integration != nil {
+		if _, err := sctx.Run.Integration.RuntimeURL(sctx.Ctx, sctx.Repo.WorkingPath); err != nil {
+			return nil, err
+		}
+	}
 	step := *s
 	s = &step
 	sctx.PublicIntentBrief = ""
@@ -728,6 +733,7 @@ Final diff paths and statuses:
 		schema = prContentBriefSchema
 	}
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+		Purpose:    "pr-draft",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: schema,
@@ -811,6 +817,7 @@ Final diff paths and statuses:
 		schema = prTitleBriefSchema
 	}
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{
+		Purpose:    "pr-draft",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: schema,

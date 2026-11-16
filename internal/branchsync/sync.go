@@ -294,13 +294,19 @@ func (s *Service) Refresh(ctx context.Context) State {
 	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
 	if runErr != nil || repoErr != nil || freshRun == nil || freshRepo == nil || freshRun.PushActive ||
 		value(freshRun.PushGeneration) != state.Pipeline.PushGeneration || ptr(freshRun.LastPushedSHA) != state.Pipeline.PushedHead ||
-		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(freshRepo.PushURL()) || ptr(freshRun.PushTargetKind) != targetKind(freshRepo) || ptr(freshRun.PushRef) != state.Target.Ref {
+		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(runPushURL(freshRepo, freshRun)) || ptr(freshRun.PushTargetKind) != targetKind(freshRepo) || ptr(freshRun.PushRef) != state.Target.Ref {
 		if state.PRState == "merged" || state.PRState == "closed" {
 			return state
 		}
 		return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the push binding or configured target changed before refresh; no files or refs were changed")
 	}
 	pushURL := freshRepo.PushURL()
+	if freshRun.Integration != nil {
+		pushURL = s.resolvedPushURL(ctx, freshRepo, freshRun)
+		if pushURL == "" {
+			return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before refresh; no files or refs were changed")
+		}
+	}
 
 	// Each remote operation below gets its own bounded deadline derived from
 	// ctx, rather than sharing one context across both calls: a slow-but-
@@ -450,7 +456,7 @@ func (s *Service) Apply(ctx context.Context) State {
 	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
 	if err != nil || repoErr != nil || freshRepo == nil || freshRun == nil || freshRun.PushActive || ptr(freshRun.LastPushedSHA) != plan.Pipeline.PushedHead ||
 		value(freshRun.PushGeneration) != plan.Pipeline.PushGeneration || ptr(freshRun.PushRef) != plan.Target.Ref ||
-		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(freshRepo.PushURL()) || ptr(freshRun.PushTargetKind) != targetKind(freshRepo) {
+		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(runPushURL(freshRepo, freshRun)) || ptr(freshRun.PushTargetKind) != targetKind(freshRepo) {
 		return blockedPlan(plan, "pipeline_owned", "blocked_generation_changed", "the pipeline push binding changed before synchronization; no files or refs were changed")
 	}
 
@@ -462,16 +468,23 @@ func (s *Service) Apply(ctx context.Context) State {
 		return recheck
 	}
 
+	pushURL := s.Repo.PushURL()
+	if freshRun.Integration != nil {
+		pushURL = s.resolvedPushURL(ctx, freshRepo, freshRun)
+		if pushURL == "" {
+			return blockedPlan(plan, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before synchronization; no files or refs were changed")
+		}
+	}
 	checkCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer cancel()
-	live, err := s.runLsRemote(checkCtx, s.workDir(), s.Repo.PushURL(), plan.Target.Ref)
+	live, err := s.runLsRemote(checkCtx, s.workDir(), pushURL, plan.Target.Ref)
 	if err != nil || live != plan.Pipeline.PushedHead {
 		return blockedPlan(plan, StateRemoteRewritten, "blocked_remote_changed_before_apply", "the live remote changed before synchronization; no files or refs were changed")
 	}
 	finalPrecondition, finalRun, finalOK := s.inspect(ctx)
 	finalRepo, finalRepoErr := s.DB.GetRepo(s.Repo.ID)
 	if !finalOK || finalRun == nil || finalRepoErr != nil || finalRepo == nil || finalRun.PushActive ||
-		value(finalRun.PushGeneration) != plan.Pipeline.PushGeneration || ptr(finalRun.PushTargetFingerprint) != TargetFingerprint(finalRepo.PushURL()) || ptr(finalRun.PushTargetKind) != targetKind(finalRepo) ||
+		value(finalRun.PushGeneration) != plan.Pipeline.PushGeneration || ptr(finalRun.PushTargetFingerprint) != TargetFingerprint(runPushURL(finalRepo, finalRun)) || ptr(finalRun.PushTargetKind) != targetKind(finalRepo) ||
 		finalPrecondition.Local.Branch != plan.Local.Branch || finalPrecondition.Local.Head != plan.Local.Head || !finalPrecondition.Local.Clean {
 		return blockedPlan(finalPrecondition, StateAmbiguousContext, "blocked_assumptions_changed", "the push binding, branch, HEAD, or worktree changed immediately before synchronization; no files or refs were changed")
 	}
@@ -1581,9 +1594,16 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	if repoErr != nil || repo == nil {
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the repository record could not be re-read before rebinding; the push binding was not changed"), true
 	}
+	pushURL := repo.PushURL()
+	if run.Integration != nil {
+		pushURL = s.resolvedPushURL(ctx, repo, run)
+		if pushURL == "" {
+			return blockedPlan(fresh, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before rebinding; the push binding was not changed"), true
+		}
+	}
 	lsCtx, lsCancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer lsCancel()
-	again, err := s.runLsRemote(lsCtx, s.workDir(), repo.PushURL(), fresh.Target.Ref)
+	again, err := s.runLsRemote(lsCtx, s.workDir(), pushURL, fresh.Target.Ref)
 	if err != nil || again != live {
 		blocked := blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_remote_changed", fmt.Sprintf("the live remote changed again before the push binding could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef))
 		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
@@ -1597,7 +1617,7 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		Status: run.Status, ExpectedPushed: superseded, ExpectedGeneration: generation,
 		ExpectedHead: run.HeadSHA, PRState: run.PRState, CustodyReturned: run.CustodyReturnedAt != nil,
 		UpstreamURL: repo.UpstreamURL, ForkURL: repo.ForkURL, TargetKind: targetKind(repo),
-		TargetFingerprint: TargetFingerprint(repo.PushURL()), Ref: fresh.Target.Ref, Head: live,
+		TargetFingerprint: TargetFingerprint(runPushURL(repo, run)), Ref: fresh.Target.Ref, Head: live,
 	})
 	if err != nil || !rebound {
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", fmt.Sprintf("the run or its push binding changed before it could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef)), true
@@ -1802,8 +1822,8 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 	if err != nil || repo == nil {
 		return blockedPlan(state, lane, "blocked_adopt_published_target_unavailable", "the configured push target is unavailable; no files or gate refs were changed")
 	}
-	pushTargetFingerprint := TargetFingerprint(repo.PushURL())
-	pushURL := s.resolvedPushURL(ctx, repo)
+	pushTargetFingerprint := TargetFingerprint(runPushURL(repo, run))
+	pushURL := s.resolvedPushURL(ctx, repo, run)
 	if strings.TrimSpace(pushURL) == "" {
 		return blockedPlan(state, lane, "blocked_adopt_published_target_unavailable", "the configured push target is unavailable; no files or gate refs were changed")
 	}
@@ -1852,7 +1872,7 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 		return blockedPlan(state, lane, "blocked_adopt_published_preserve_failed", "the superseded gate head could not be preserved before lane adoption; no files or gate refs were changed")
 	}
 	currentRepo, err := s.DB.GetRepo(s.Repo.ID)
-	if err != nil || currentRepo == nil || TargetFingerprint(currentRepo.PushURL()) != pushTargetFingerprint {
+	if err != nil || currentRepo == nil || TargetFingerprint(runPushURL(currentRepo, recheckRun)) != pushTargetFingerprint {
 		return blockedPlan(state, lane, "blocked_adopt_published_target_changed", "the configured push target changed while the published head was being verified; no files or gate refs were changed")
 	}
 	if _, err := git.Run(ctx, s.GateDir, "update-ref", branchRef, state.Local.Head, gateHead); err != nil {
@@ -1903,8 +1923,8 @@ func (s *Service) preserveSupersededLaneHead(ctx context.Context, lane, runID, b
 }
 
 // resolvedPushURL answers with the same authoritative push target the rest of
-// this service verifies against: Repo.PushURL(), the configured fork or the
-// registered upstream. Adoption's whole safety argument is that the head it
+// this service verifies against: the configured fork or the run's integration
+// destination. Adoption's whole safety argument is that the head it
 // admits is already published on THAT target, so a worktree remote may stand in
 // for it only to recover a credential the redacted database copy cannot hold,
 // and only when credential-free TargetFingerprint identity proves that the
@@ -1912,8 +1932,17 @@ func (s *Service) preserveSupersededLaneHead(ctx context.Context, lane, runID, b
 // somewhere else therefore never decides the adoption; the registered target
 // does, and an unusable credential fails the live check closed rather than
 // verifying against a remote the pipeline does not publish to.
-func (s *Service) resolvedPushURL(ctx context.Context, repo *db.Repo) string {
-	target := repo.PushURL()
+func (s *Service) resolvedPushURL(ctx context.Context, repo *db.Repo, run *db.Run) string {
+	if strings.TrimSpace(repo.ForkURL) == "" && run != nil && run.Integration != nil {
+		// The pin is identity evidence, never a credential source. Only the
+		// same named remote may supply this run's current transport URL.
+		remote, err := run.Integration.RuntimeURL(ctx, s.workDir())
+		if err != nil {
+			return ""
+		}
+		return remote
+	}
+	target := runPushURL(repo, run)
 	if strings.TrimSpace(target) == "" {
 		return ""
 	}
@@ -2025,8 +2054,8 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		PushedHead: ptr(run.LastPushedSHA), PushedAt: value(run.LastPushedAt), PushGeneration: value(run.PushGeneration),
 	}
 	state.PRState = normalizePRState(run.PRState)
-	state.Target = TargetState{Kind: ptr(run.PushTargetKind), URL: displayTarget(s.Repo.PushURL()), Ref: ptr(run.PushRef)}
-	state.Target.Remote = s.remoteName(ctx)
+	state.Target = TargetState{Kind: ptr(run.PushTargetKind), URL: displayTarget(runPushURL(s.Repo, run)), Ref: ptr(run.PushRef)}
+	state.Target.Remote = s.remoteName(ctx, run)
 	state.Remote = RemoteState{ObservedHead: ptr(run.LastPushedSHA), Freshness: "pipeline_push", ObservedAt: value(run.LastPushedAt)}
 
 	if run.PushActive || pushStepRunning(s.DB, run.ID) {
@@ -2090,7 +2119,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		state.Safety = "blocked_closed"
 		return state, run, true
 	}
-	if ptr(run.PushRef) != "refs/heads/"+branch || ptr(run.PushTargetFingerprint) != TargetFingerprint(s.Repo.PushURL()) || ptr(run.PushTargetKind) != targetKind(s.Repo) {
+	if ptr(run.PushRef) != "refs/heads/"+branch || ptr(run.PushTargetFingerprint) != TargetFingerprint(runPushURL(s.Repo, run)) || ptr(run.PushTargetKind) != targetKind(s.Repo) {
 		state.State = StateTargetChanged
 		state.Safety = "blocked_target_changed"
 		state.Error = "the configured push target or branch ref changed after the pipeline push"
@@ -2225,18 +2254,21 @@ func mergeTreePreservesFinalHead(ctx context.Context, dir, base, local, pushed s
 	return mergedTree == pushedTree
 }
 
-func (s *Service) remoteName(ctx context.Context) string {
+func (s *Service) remoteName(ctx context.Context, run *db.Run) string {
 	out, err := git.Run(ctx, s.workDir(), "remote")
 	if err == nil {
 		for _, name := range strings.Fields(out) {
 			remoteURL, err := git.GetConfiguredRemoteURL(ctx, s.workDir(), name)
-			if err == nil && TargetFingerprint(remoteURL) == TargetFingerprint(s.Repo.PushURL()) {
+			if err == nil && TargetFingerprint(remoteURL) == TargetFingerprint(runPushURL(s.Repo, run)) {
 				return name
 			}
 		}
 	}
 	if strings.TrimSpace(s.Repo.ForkURL) != "" {
 		return "fork"
+	}
+	if run.Integration != nil {
+		return run.Integration.Remote
 	}
 	return "origin"
 }
@@ -2327,7 +2359,7 @@ func exactPushedBinding(repo *db.Repo, run *db.Run, branch string) bool {
 	return repo != nil && run != nil && run.Branch == branch && !run.PushActive && run.HeadSHA != "" &&
 		run.LastPushedSHA != nil && run.HeadSHA == ptr(run.LastPushedSHA) &&
 		run.PushTargetKind != nil && ptr(run.PushTargetKind) == targetKind(repo) &&
-		run.PushTargetFingerprint != nil && ptr(run.PushTargetFingerprint) == TargetFingerprint(repo.PushURL()) &&
+		run.PushTargetFingerprint != nil && ptr(run.PushTargetFingerprint) == TargetFingerprint(runPushURL(repo, run)) &&
 		run.PushRef != nil && ptr(run.PushRef) == "refs/heads/"+branch &&
 		run.PushGeneration != nil
 }
@@ -2984,6 +3016,16 @@ func samePath(a, b string) bool {
 	}
 	infoB, err := os.Stat(b)
 	return err == nil && os.SameFile(infoA, infoB)
+}
+
+func runPushURL(repo *db.Repo, run *db.Run) string {
+	if repo != nil && strings.TrimSpace(repo.ForkURL) != "" {
+		return repo.ForkURL
+	}
+	if run != nil && run.Integration != nil {
+		return run.Integration.TransportURL
+	}
+	return repo.PushURL()
 }
 
 func targetKind(repo *db.Repo) string {
