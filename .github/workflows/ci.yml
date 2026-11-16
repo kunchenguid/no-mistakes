@@ -63,7 +63,17 @@ jobs:
           - os: windows-latest
             name: test (windows-git)
             shard: git
-          # pipeline/steps, daemon, and gate are each split by test name. The
+          # CLI's serial fixtures exceeded 15m on Windows; the observed passing
+          # tests split to 456s for TestA and 443s for the complement.
+          - os: windows-latest
+            name: test (windows-cli-1)
+            shard: cli
+            cli_run: '^TestA'
+          - os: windows-latest
+            name: test (windows-cli-2)
+            shard: cli
+            cli_skip: '^TestA'
+          # pipeline/steps, daemon, gate, and cli are split by test name. The
           # last row of a group skips the union of the other rows' patterns, so
           # a new test always lands in exactly one shard; rebalance the ranges
           # against the shards' -v timings (issue #1580, #1682).
@@ -114,7 +124,7 @@ jobs:
     # and then ran those packages sequentially, so total wall could exceed
     # timeout-minutes with no package hitting go test -timeout - an
     # evidence-free cancellation. Git-heavy packages are split from the core
-    # remainder; pipeline/steps, daemon, and gate are their own shards, each
+    # remainder; pipeline/steps, daemon, gate, and cli are their own shards, each
     # also split by test name, so a 15m per-package hang still dumps
     # goroutines instead of cancelling the job. 40 is a runaway guard, not a
     # target - Unix test shards finish inside it, and it still keeps a
@@ -172,10 +182,10 @@ jobs:
         run: go test -race "-run=$NM_CI_UNIX_RUN" "-skip=$NM_CI_UNIX_SKIP" ./...
 
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
-      # on the core shard is the union of the git, steps, daemon, and gate
+      # on the core shard is the union of the git, steps, daemon, gate, and cli
       # shards; the workflow tests resolve every shard through `go list` and
-      # fail if they drift or overlap. pipeline/steps, daemon, and gate are
-      # their own shards (daemon and gate also split by test name) so they run
+      # fail if they drift or overlap. pipeline/steps, daemon, gate, and cli are
+      # their own shards (each also split by test name) so they run
       # in parallel with the remaining git-heavy packages instead of setting a
       # serial floor that hits go test -timeout (issue #1682).
       - name: Test on Windows (git-heavy)
@@ -206,11 +216,19 @@ jobs:
           NM_CI_WINDOWS_GATE_SKIP: ${{ matrix.gate_skip }}
         run: go test -v -timeout=15m "-run=$env:NM_CI_WINDOWS_GATE_RUN" "-skip=$env:NM_CI_WINDOWS_GATE_SKIP" ./internal/gate
 
+      - name: Test on Windows (cli)
+        if: runner.os == 'Windows' && matrix.shard == 'cli'
+        shell: pwsh
+        env:
+          NM_CI_WINDOWS_CLI_RUN: ${{ matrix.cli_run }}
+          NM_CI_WINDOWS_CLI_SKIP: ${{ matrix.cli_skip }}
+        run: go test -v -timeout=15m "-run=$env:NM_CI_WINDOWS_CLI_RUN" "-skip=$env:NM_CI_WINDOWS_CLI_SKIP" ./internal/cli
+
       - name: Test on Windows (core)
         if: runner.os == 'Windows' && matrix.shard == 'core'
         shell: pwsh
         env:
-          NM_CI_WINDOWS_GIT_EXCLUDE: '/internal/(git|branchsync|gate|evidence|pipeline/steps(/.*)?|daemon|eval)$'
+          NM_CI_WINDOWS_GIT_EXCLUDE: '/internal/(git|branchsync|gate|evidence|pipeline/steps(/.*)?|daemon|eval|cli)$'
         run: |
           $pkgs = go list ./... | Where-Object { $_ -notmatch $env:NM_CI_WINDOWS_GIT_EXCLUDE }
           go test -v -timeout=15m @pkgs
