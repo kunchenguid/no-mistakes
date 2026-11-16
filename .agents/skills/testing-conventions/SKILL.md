@@ -25,4 +25,4 @@ metadata:
 **Pipeline step tests (CI latency)**
 
 - Fake `gh`/`glab`/`git` on PATH must be the tiny helper at `internal/pipeline/fakecli`, compiled once per test process without `-race` (`stepstest.Init` / `LinkFakeCLI`). Tests that need the underlying Git binary use `internal/testgit.RealGit`, which resolves fixed absolute locations without consulting PATH. Do not re-exec the race-instrumented test binary as those names: that was ~0.8-1.1s per spawn and pushed `internal/pipeline/steps` into the 10-minute package timeout.
-- CI-monitor tests live in `internal/pipeline/steps/citest` so no child of `internal/pipeline/steps` sits near that cap. Both packages run under `go test ./...`; do not move them behind the `e2e` tag.
+- CI-monitor tests live in `internal/pipeline/steps/citest` to reduce the parent package's test load. Both packages run under `go test ./...`; do not move them behind the `e2e` tag.
