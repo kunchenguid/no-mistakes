@@ -157,7 +157,12 @@ func runHumanSync(cmd *cobra.Command, check, yes bool) error {
 	}
 	defer closeFn()
 
-	state := service.Refresh(cmd.Context())
+	var state branchsync.State
+	if check {
+		state = service.Refresh(cmd.Context())
+	} else {
+		state = service.RefreshTarget(cmd.Context())
+	}
 	observed = state
 	printHumanSyncState(cmd, state)
 	if check {

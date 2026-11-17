@@ -297,6 +297,13 @@ func (s *Service) Refresh(ctx context.Context) State {
 	return state
 }
 
+// RefreshTarget is Refresh without the private-mirror planner, so a plain
+// sync never stages objects or queries the upstream; only an explicit check
+// does.
+func (s *Service) RefreshTarget(ctx context.Context) State {
+	return s.refreshPushTarget(ctx)
+}
+
 func (s *Service) refreshPushTarget(ctx context.Context) State {
 	state, run, ok := s.inspect(ctx)
 	if !ok || !refreshable(state) {
