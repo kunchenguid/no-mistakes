@@ -317,6 +317,8 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Nothing to recover; cancellation already released this branch to you.")
 		} else if recovered.Recovery != nil && recovered.Recovery.Source == "remote_rewritten" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Push binding rebound to the verified live remote head; the superseded pipeline head stays anchored.")
+		} else if recovered.Safety == branchsync.SafetyPrivateMirrorCheckRequired {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; run `no-mistakes sync --check` to learn whether a fresh run will be admitted.")
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
 		}
@@ -422,6 +424,12 @@ func humanSyncSummary(state branchsync.State) string {
 		}
 		if state.Safety == "gate_ready" {
 			return "the published rebased head is present in this gate lane; start a fresh run when ready"
+		}
+		if state.Safety == branchsync.SafetyPrivateMirrorCheckRequired {
+			return "custody returned, but the gate lane holds an older head; run `no-mistakes sync --check` to learn whether a fresh run will be admitted"
+		}
+		if state.Safety == branchsync.SafetyBlockedPrivateMirror {
+			return "custody returned, but a fresh run would be refused at private mirror reconciliation"
 		}
 		return "custody returned; the branch is yours - start a fresh run when ready"
 	case branchsync.StateUserOwned:
@@ -578,7 +586,7 @@ func syncStateSuccessful(state branchsync.State, check bool) bool {
 	// A recovered branch has no pending synchronization: custody is with the
 	// operator and the next step is a fresh run, not a blocked exit code.
 	if state.State == branchsync.StateCustodyReturned {
-		return true
+		return state.Safety != branchsync.SafetyBlockedPrivateMirror
 	}
 	// A branch released by cancellation is the operator's with nothing to
 	// synchronize or recover; it must never surface as a blocked exit.

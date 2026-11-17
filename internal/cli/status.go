@@ -55,7 +55,7 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("check active run: %w", err)
 			}
-			if syncState := (&branchsync.Service{DB: d, Repo: repo, WorkDir: "."}).InspectCached(cmd.Context()); relevantCachedSyncState(syncState) {
+			if syncState := (&branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID)}).InspectCached(cmd.Context()); relevantCachedSyncState(syncState) {
 				fmt.Fprintf(w, "\n  %s  %s\n", sDim.Render("local branch:"), humanSyncSummary(syncState))
 			}
 			if activeRun != nil {

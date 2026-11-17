@@ -46,6 +46,7 @@ type StaleBranchPlan struct {
 	// at-risk set on that basis. Keyed by full commit ID. Empty when no commit
 	// needed the recovery-anchor credit.
 	PreservedByRecovery map[string]string
+	NeedsProof          bool
 }
 
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
@@ -71,7 +72,12 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // including selected-base deletions, is owned by
 // docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, resolveUpstream ReconciliationUpstreamResolver) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, resolveUpstream, false, runOwnedHead)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, resolveUpstream, false, false, runOwnedHead)
+}
+
+func FreshSubmissionNeedsProof(ctx context.Context, gateDir, workDir, branch, submissionHead string) (bool, error) {
+	plan, err := planStaleBranchReconciliation(ctx, gateDir, workDir, branch, submissionHead, nil, false, true)
+	return plan.NeedsProof, err
 }
 
 // PlanMirrorPublicationReconciliation is the pipeline-publication variant of
@@ -83,10 +89,10 @@ func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 // mirror head still needs the full preservation proof or the recovery-anchor
 // preservation credit.
 func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, resolveUpstream ReconciliationUpstreamResolver, runOwnedHeads ...string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, resolveUpstream, true, runOwnedHeads...)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, resolveUpstream, true, false, runOwnedHeads...)
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, resolveUpstream ReconciliationUpstreamResolver, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, resolveUpstream ReconciliationUpstreamResolver, preserveDescendants, readOnly bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
@@ -128,6 +134,10 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 	}
 	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
 		return plan, fmt.Errorf("private mirror ref %s does not point at a commit", branchRef)
+	}
+	if readOnly {
+		plan.NeedsProof = !ancestorInEitherRepo(ctx, gateHead, liveHead, gateDir, workDir)
+		return plan, nil
 	}
 	if err := git.FetchRemoteRef(ctx, gateDir, workDir, liveHead, liveHead); err != nil {
 		return plan, fmt.Errorf("stage live head for private mirror reconciliation: %w", err)
@@ -205,6 +215,15 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		ArchiveTag:           archiveTag,
 		PreservedByRecovery:  plan.PreservedByRecovery,
 	}, nil
+}
+
+func ancestorInEitherRepo(ctx context.Context, ancestor, descendant string, repos ...string) bool {
+	for _, repo := range repos {
+		if _, err := git.Run(ctx, repo, "merge-base", "--is-ancestor", ancestor, descendant); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // isRunOwnedHead reports whether the private mirror head is exactly one of the

@@ -65,7 +65,14 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		case branchsync.StateTargetChanged:
 			message = "The configured push target changed after the pipeline push. Synchronization is blocked."
 		case branchsync.StateCustodyReturned:
-			message = "Custody returned; the branch is yours. Start a fresh run when ready."
+			switch state.Safety {
+			case branchsync.SafetyPrivateMirrorCheckRequired:
+				message = "Custody returned, but the gate lane holds an older head. Run `no-mistakes sync --check` to learn whether a fresh run will be admitted."
+			case branchsync.SafetyBlockedPrivateMirror:
+				message = "Custody returned, but a fresh run would be refused at private mirror reconciliation."
+			default:
+				message = "Custody returned; the branch is yours. Start a fresh run when ready."
+			}
 		case branchsync.StateUserOwned:
 			message = "Run ended before the pipeline changed anything; the branch and head are yours and immediately usable."
 		default:

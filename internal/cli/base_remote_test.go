@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
 )
@@ -41,8 +41,7 @@ func TestBaseRemoteSubmissionReconciliationUsesSelectedDestination(t *testing.T)
 			originRefs := cliGit(t, work, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/")
 			t.Chdir(work)
 			ctx := integration.WithRemote(context.Background(), "custom")
-			env := &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}
-			got := submissionReconciliationUpstream(ctx, env, head, requested)
+			got := gate.SubmissionUpstream(ctx, ".", "main", head, requested, 0)
 			wantBase := requested
 			if wantBase == "" {
 				wantBase = "customer-main"
