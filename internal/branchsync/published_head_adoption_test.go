@@ -328,6 +328,97 @@ func TestAdoptPushedHeadRefusesWithTheRealSafetyCode(t *testing.T) {
 	})
 }
 
+func TestAdoptPushedHeadRefusesATrackedEditAfterTheCleanlinessCheck(t *testing.T) {
+	t.Parallel()
+
+	f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+	if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+		t.Fatalf("refresh = %#v", state)
+	}
+	branchRef := "refs/heads/feature/sync"
+	before := mustRun(t, f.local, "rev-parse", branchRef)
+	const edited = "operator edit after the cleanliness check\n"
+	f.service.beforeAdoptPushedHeadMove = func() {
+		mustWrite(t, filepath.Join(f.local, "file.txt"), edited)
+	}
+
+	refused := f.service.AdoptPushedHead(f.ctx)
+	if refused.Changed || refused.Safety != "blocked_adopt_pushed_head_worktree_busy" {
+		t.Fatalf("adoption = %#v", refused)
+	}
+	if got := mustRun(t, f.local, "rev-parse", branchRef); got != before {
+		t.Fatalf("branch = %s, want %s", got, before)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("HEAD = %s, want %s", got, before)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "file.txt")); got != edited {
+		t.Fatalf("tracked edit = %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", syncAnchorRef(f.run.ID)); got != before {
+		t.Fatalf("anchor = %s, want pre-move %s", got, before)
+	}
+}
+
+func TestAdoptPushedHeadRollsBackAfterACheckoutDuringTheMove(t *testing.T) {
+	t.Parallel()
+
+	f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+	if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+		t.Fatalf("refresh = %#v", state)
+	}
+	before := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.local, "branch", "other-clean-branch", before)
+	f.service.afterAdoptPushedHeadBranchMove = func() {
+		mustRun(t, f.local, "checkout", "other-clean-branch")
+	}
+
+	refused := f.service.AdoptPushedHead(f.ctx)
+	if refused.Changed || refused.Safety != "blocked_adopt_pushed_head_changed" {
+		t.Fatalf("adoption = %#v", refused)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/sync"); got != before {
+		t.Fatalf("feature branch = %s, want %s", got, before)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/other-clean-branch"); got != before {
+		t.Fatalf("other branch = %s, want %s", got, before)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "file.txt")); got != "feature\n" {
+		t.Fatalf("worktree file = %q", got)
+	}
+}
+
+func TestAdoptPushedHeadRefusesWhenTheBranchMovesDuringTheUpdate(t *testing.T) {
+	t.Parallel()
+
+	f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+	if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+		t.Fatalf("refresh = %#v", state)
+	}
+	before := mustRun(t, f.local, "rev-parse", "HEAD")
+	var moved string
+	f.service.beforeAdoptPushedHeadMove = func() {
+		mustWrite(t, filepath.Join(f.local, "race.txt"), "race\n")
+		mustRun(t, f.local, "add", "race.txt")
+		mustRun(t, f.local, "commit", "-m", "race after cleanliness check")
+		moved = mustRun(t, f.local, "rev-parse", "HEAD")
+	}
+
+	refused := f.service.AdoptPushedHead(f.ctx)
+	if refused.Changed || refused.Safety != "blocked_adopt_pushed_head_branch_moved" {
+		t.Fatalf("adoption = %#v", refused)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/sync"); got != moved {
+		t.Fatalf("branch = %s, want raced commit %s", got, moved)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "race.txt")); got != "race\n" {
+		t.Fatalf("raced commit file = %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", syncAnchorRef(f.run.ID)); got != before {
+		t.Fatalf("anchor = %s, want pre-move %s", got, before)
+	}
+}
+
 func newPublishedDivergenceFixture(t *testing.T, commits []pipelineCommit) *syncFixture {
 	t.Helper()
 	f := newSyncFixture(t)

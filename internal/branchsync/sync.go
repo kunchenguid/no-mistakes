@@ -173,6 +173,8 @@ type Service struct {
 
 	beforeApply                       func()
 	beforeAdoptPushedHead             func()
+	beforeAdoptPushedHeadMove         func()
+	afterAdoptPushedHeadBranchMove    func()
 	beforeGateReset                   func()
 	beforeRecoverTerminalHeadPreserve func()
 	beforeRecoverWorktreeMove         func()
@@ -1879,6 +1881,12 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 // The live remote must equal the persisted pushed head, that commit must be
 // present locally, and both are read again immediately before the anchor and
 // the move. The pre-move head is anchored at refs/no-mistakes/sync-anchor/<run>.
+//
+// The move is the same fail-closed pair as recoverAdoptPreserved. An
+// expected-old update-ref refuses when the branch moved. read-tree -m -u
+// refuses a dirty entry the checkout would overwrite, and that refusal rolls
+// the branch ref back. reset --hard is not used: it would destroy a tracked
+// edit that landed after the last cleanliness check.
 func (s *Service) AdoptPushedHead(ctx context.Context) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -1942,7 +1950,40 @@ func (s *Service) AdoptPushedHead(ctx context.Context) State {
 	if anchored, err := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preMove {
 		return blockedPlan(state, StateAmbiguousContext, "blocked_preserve_failed", "the pre-move local head could not be verified after anchoring; no files or worktree refs were changed")
 	}
-	_, applyErr := git.Run(ctx, wd, "reset", "--hard", pushed)
+	if s.beforeAdoptPushedHeadMove != nil {
+		s.beforeAdoptPushedHeadMove()
+	}
+	branchRef := "refs/heads/" + state.Local.Branch
+	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
+	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
+		return blockedPlan(state, StateDiverged, "blocked_adopt_pushed_head_changed", "the checked-out branch changed while the published head was being adopted; the branch ref was not moved")
+	}
+	if _, err := git.Run(ctx, wd, "update-ref", branchRef, pushed, preMove); err != nil {
+		return blockedPlan(state, StateDiverged, "blocked_adopt_pushed_head_branch_moved", "the local branch moved while the published head was being adopted; no files were changed and the branch ref was left untouched")
+	}
+	if s.afterAdoptPushedHeadBranchMove != nil {
+		s.afterAdoptPushedHeadBranchMove()
+	}
+	// Same bounded window as recoverAdoptPreserved: this identity check and
+	// the read-tree are two commands, and no lock git checkout honors can be
+	// held across them.
+	boundaryBranch, boundaryErr = git.CurrentBranch(ctx, wd)
+	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
+		rollbackDetail := ""
+		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, preMove, pushed); rollbackErr != nil {
+			rollbackDetail = fmt.Sprintf("; the branch could not be restored to %s and still requires manual reconciliation", preMove)
+		}
+		return blockedPlan(state, StateDiverged, "blocked_adopt_pushed_head_changed", fmt.Sprintf("the checked-out branch changed while the published head was being adopted%s", rollbackDetail))
+	}
+	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", preMove, pushed); err != nil {
+		rolledBack := ""
+		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, preMove, pushed); rollbackErr != nil {
+			rolledBack = fmt.Sprintf("; the branch could not be restored to %s and now points at %s", preMove, pushed)
+		}
+		blocked := blockedPlan(state, StateDirty, "blocked_adopt_pushed_head_worktree_busy", fmt.Sprintf("the working tree changed while the published head was being adopted, so no file was overwritten%s", rolledBack))
+		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return blocked
+	}
 	finalHead, _ := git.HeadSHA(ctx, wd)
 	finalClean, finalReason := worktreeClean(ctx, wd)
 	state.Local.Head = finalHead
@@ -1951,7 +1992,7 @@ func (s *Service) AdoptPushedHead(ctx context.Context) State {
 	state.Changed = finalHead == pushed && finalHead != preMove
 	state.Remote.ObservedHead = live
 	state.Remote.Freshness = "live"
-	if applyErr != nil || finalHead != pushed {
+	if finalHead != pushed {
 		state.State = StateAmbiguousContext
 		state.Safety = "blocked_adopt_pushed_head_apply_failed"
 		state.Error = fmt.Sprintf("adopting the published head failed; final HEAD is %s and the pre-move head is anchored at %s", finalHead, anchorRef)

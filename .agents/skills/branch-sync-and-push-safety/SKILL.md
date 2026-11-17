@@ -23,6 +23,7 @@ metadata:
   When the operator keeps a behind or diverged local head instead of taking the preserved head, `--keep-local` never touches the worktree and CAS-moves the gate branch to the kept head, staging objects via gate-side fetch - never a push, which would fire the receive hook and start a run.
   The full relation matrix and fail-safe rules live in the `Recover` doc comment in `internal/branchsync/sync.go`.
 - Public guidance is owned by `internal/skill/skill.go` plus live AXI strings, then regenerated with `make skill`. Core regressions live in `internal/branchsync` (incl. `recover_test.go`), `internal/cli/sync_test.go`, `internal/tui/branch_sync_test.go`, and e2e `TestAxiBranchSyncJourney` / `TestAxiCustodyRecoveryJourney` / `TestAxiCustodyRecoveryAfterRebaseJourney` / `TestAxiPrePushAbortUnmovedHeadCustodyJourney`.
+- `AdoptPushedHead` uses that same fail-closed pair, not `reset --hard`: expected-old `update-ref` of the branch, then `read-tree -m -u`. A tracked edit the checkout would overwrite, or a branch move after the last cleanliness check, refuses and leaves that edit and the branch ref untouched. The pre-move head stays at `refs/no-mistakes/sync-anchor/<run>`. Regressions: `TestAdoptPushedHeadRefusesATrackedEditAfterTheCleanlinessCheck`, `TestAdoptPushedHeadRefusesWhenTheBranchMovesDuringTheUpdate`, `TestAdoptPushedHeadRollsBackAfterACheckoutDuringTheMove`.
 
 **Post-Review Head Continuity and Push Binding**
 
