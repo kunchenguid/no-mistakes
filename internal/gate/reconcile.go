@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
 )
@@ -21,8 +22,9 @@ type StaleBranchReconciliation struct {
 // ReconciliationUpstream binds the upstream URL and integration branch selected
 // by the caller. An empty field gives no base-deletion credit.
 type ReconciliationUpstream struct {
-	URL        string
-	BaseBranch string
+	URL           string
+	BaseBranch    string
+	RemoteTimeout time.Duration
 }
 
 // ReconciliationUpstreamResolver supplies one caller-owned upstream identity.
@@ -552,11 +554,22 @@ func privateTreeSurvivesBaseDeletion(ctx context.Context, repoDir, liveHead, pri
 		return false, err
 	}
 	upstreamRef := "refs/heads/" + selectedBase
-	upstreamHead, err := git.LsRemote(ctx, repoDir, upstreamURL, upstreamRef)
+	remoteCtx := func() (context.Context, context.CancelFunc) {
+		if upstream.RemoteTimeout > 0 {
+			return context.WithTimeout(ctx, upstream.RemoteTimeout)
+		}
+		return ctx, func() {}
+	}
+	lsCtx, lsCancel := remoteCtx()
+	upstreamHead, err := git.LsRemote(lsCtx, repoDir, upstreamURL, upstreamRef)
+	lsCancel()
 	if err != nil || upstreamHead == "" {
 		return false, err
 	}
-	if err := git.FetchRemoteRef(ctx, repoDir, upstreamURL, upstreamRef, upstreamHead); err != nil {
+	fetchCtx, fetchCancel := remoteCtx()
+	err = git.FetchRemoteRef(fetchCtx, repoDir, upstreamURL, upstreamRef, upstreamHead)
+	fetchCancel()
+	if err != nil {
 		return false, err
 	}
 	base, err := git.Run(ctx, repoDir, "merge-base", "--all", liveHead, upstreamHead)

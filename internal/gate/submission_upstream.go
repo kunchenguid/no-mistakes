@@ -10,7 +10,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/integration"
 )
 
-func SubmissionUpstream(ctx context.Context, workDir, defaultBranch, head, requested string, remoteTimeout time.Duration) ReconciliationUpstream {
+func SubmissionUpstream(ctx context.Context, workDir, defaultBranch, head, requested string, remoteTimeout time.Duration) (upstream ReconciliationUpstream) {
+	defer func() { upstream.RemoteTimeout = remoteTimeout }()
 	remoteCtx := func() (context.Context, context.CancelFunc) {
 		if remoteTimeout > 0 {
 			return context.WithTimeout(ctx, remoteTimeout)
