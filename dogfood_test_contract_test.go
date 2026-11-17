@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -71,15 +72,18 @@ func TestRepoConfigDocs_CommandsTestIsTargetedContract(t *testing.T) {
 // Remote CI must keep the complete race-enabled Go suite as the broad
 // regression owner after local Test stops duplicating it.
 func TestCIWorkflow_RetainsFullRaceSuiteAsBroadRegressionOwner(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(".github", "workflows", "ci.yml"))
-	if err != nil {
-		t.Fatalf("read ci.yml: %v", err)
+	job := ciTestJob(t)
+	commands := workflowCommandsMatching(job.Steps, func(step wfStep) bool {
+		return exactRunnerOSCondition(step.If, "!=", "Windows")
+	})
+	for _, command := range commands {
+		if command.name != "go" || len(command.args) == 0 || command.args[0] != "test" {
+			continue
+		}
+		if slices.Contains(command.args, "-race") && slices.Contains(command.args, "-timeout=15m") &&
+			command.args[len(command.args)-1] == "./..." {
+			return
+		}
 	}
-	content := string(data)
-	if !strings.Contains(content, "run: go test -race -timeout=15m ./...") {
-		t.Fatal("CI workflow must still run go test -race -timeout=15m ./... as the broad regression owner")
-	}
-	if !strings.Contains(content, "if: runner.os != 'Windows'") {
-		t.Fatal("CI workflow must keep the Unix race-test branch")
-	}
+	t.Fatalf("CI workflow must run go test -race -timeout=15m ./... on a non-Windows step as the broad regression owner; normalized commands: %#v", commands)
 }
