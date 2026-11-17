@@ -1924,9 +1924,12 @@ func (s *Service) AdoptPushedHead(ctx context.Context) State {
 	if err != nil || repo == nil {
 		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "the configured push target is unavailable; no files or refs were changed")
 	}
-	pushURL := s.resolvedPushURL(ctx, repo)
+	pushURL := s.resolvedPushURL(ctx, repo, run)
+	if pushURL == "" {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "the configured push target is unavailable; no files or refs were changed")
+	}
 	ref := ptr(run.PushRef)
-	fingerprint := TargetFingerprint(repo.PushURL())
+	fingerprint := TargetFingerprint(runPushURL(repo, run))
 	generation := value(run.PushGeneration)
 	live, liveErr := s.readLiveRemote(ctx, pushURL, ref)
 	if liveErr != nil {
@@ -2033,7 +2036,15 @@ func (s *Service) pushedHeadAdoptionStillBound(ctx context.Context, runID, submi
 	if repoErr != nil || freshRepo == nil {
 		return false
 	}
-	live, liveErr := s.readLiveRemote(ctx, s.resolvedPushURL(ctx, freshRepo), ref)
+	preRun, runErr := s.DB.GetRun(runID)
+	if runErr != nil || preRun == nil {
+		return false
+	}
+	pushURL := s.resolvedPushURL(ctx, freshRepo, preRun)
+	if pushURL == "" {
+		return false
+	}
+	live, liveErr := s.readLiveRemote(ctx, pushURL, ref)
 	if liveErr != nil || live != pushed {
 		return false
 	}
@@ -2045,7 +2056,7 @@ func (s *Service) pushedHeadAdoptionStillBound(ctx context.Context, runID, submi
 	if err != nil || freshRun == nil || freshRun.PushActive || freshRun.CustodyReturnedAt != nil ||
 		!terminalRunStatus(freshRun.Status) || ptr(freshRun.LastPushedSHA) != pushed || ptr(freshRun.SubmittedHeadSHA) != submitted ||
 		value(freshRun.PushGeneration) != generation || ptr(freshRun.PushRef) != ref ||
-		ptr(freshRun.PushTargetFingerprint) != fingerprint || TargetFingerprint(targetRepo.PushURL()) != fingerprint || ptr(freshRun.PushTargetKind) != targetKind(targetRepo) {
+		ptr(freshRun.PushTargetFingerprint) != fingerprint || TargetFingerprint(runPushURL(targetRepo, freshRun)) != fingerprint || ptr(freshRun.PushTargetKind) != targetKind(targetRepo) {
 		return false
 	}
 	recheck, recheckRun, ok := s.inspect(ctx)
