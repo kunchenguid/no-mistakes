@@ -83,7 +83,7 @@ func TestPRTemplateAzureRestampRefusesOverflowBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts.before += padding + "\n"
-	content, err = composeOwnedPRContent(parts, "", appendix, 4000, "", "")
+	content, err = composeOwnedPRContent(parts, scm.ProviderAzureDevOps, "", appendix, 4000, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

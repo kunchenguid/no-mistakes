@@ -201,7 +201,7 @@ func TestPRTemplate_ClosesRendersOnceAcrossCreateAndAuthorEditedUpdate(t *testin
 func TestPROwnershipUpdateRecomputesIssuesFromLatestAuthorText(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
-	content, err := composeOwnedPRContent(prOwnedBody{before: "## Summary\n\nFixes #95"}, "", appendix, 0, "", "")
+	content, err := composeOwnedPRContent(prOwnedBody{before: "## Summary\n\nFixes #95"}, scm.ProviderGitHub, "", appendix, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
