@@ -35,7 +35,7 @@ func TestCIWorkflowUsesRaceTestsOnUnixRunners(t *testing.T) {
 
 	var raceTests []workflowCommand
 	for _, command := range commands {
-		if command.name == "go" && slices.Equal(command.args, []string{"test", "-race", "./..."}) {
+		if command.name == "go" && slices.Equal(command.args, []string{"test", "-race", "-timeout=15m", "./..."}) {
 			raceTests = append(raceTests, command)
 		}
 	}
