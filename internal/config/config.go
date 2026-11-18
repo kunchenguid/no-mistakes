@@ -559,6 +559,10 @@ type ReviewRaw struct {
 	// MaxFixRounds bounds all Review fix rounds, automatic and explicit.
 	// Zero preserves the unbounded default. Trusted repository config only.
 	MaxFixRounds reviewFixRoundLimit `yaml:"max_fix_rounds"`
+	// Prepare runs commands.prepare before the first Review fix turn so the
+	// fixer can verify its edits against installed dependencies. Trusted
+	// repository config only, like test.prepare.
+	Prepare bool `yaml:"prepare"`
 	// Conversation turns the review conversation on: the reviewer may emit the
 	// larger questions it cannot settle itself, keep reviewing while they are
 	// open, and be resumed with the answers. Off (the default), the review step
@@ -1178,6 +1182,9 @@ type Document struct {
 type Review struct {
 	// MaxFixRounds is the opt-in total Review fix-round budget (0 = unlimited).
 	MaxFixRounds int
+	// Prepare is true when commands.prepare runs before the first Review fix
+	// turn.
+	Prepare bool
 	// Conversation is true when the reviewer may ask the operator questions
 	// mid-pass. It gates the whole protocol: the prompt section, the
 	// conversation files, the question findings that park the gate, the
@@ -4454,6 +4461,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// replace or remove the repository's.
 		Review: Review{
 			MaxFixRounds:           int(repo.Review.MaxFixRounds),
+			Prepare:                repo.Review.Prepare,
 			Conversation:           repo.Review.Conversation,
 			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
 			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),
