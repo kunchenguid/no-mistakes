@@ -35,7 +35,7 @@ func (p *retryProbe) install(t *testing.T) {
 	t.Helper()
 	oldOutput := shellCommandOutput
 	oldSleep := shellRetrySleep
-	shellCommandOutput = func(shell string, _ ...string) ([]byte, error) {
+	shellCommandOutput = func(shell string, _ []string, _ ...string) ([]byte, error) {
 		p.calls++
 		if p.calls <= p.failures {
 			return nil, missingShellError(shell)
@@ -76,7 +76,7 @@ func TestResolveWithShellRetry_WaitsForAMissingLoginShellBinary(t *testing.T) {
 		t.Fatalf("retry sleeps = %v, want %v", probe.sleeps, want)
 	}
 	// The recovered result is the cached one: later calls must not re-probe.
-	shellCommandOutput = func(string, ...string) ([]byte, error) {
+	shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 		t.Fatal("unexpected re-probe after a successful retry")
 		return nil, nil
 	}
@@ -136,7 +136,7 @@ func TestResolveWithShellRetry_DoesNotWaitForAShellThatExistsButFails(t *testing
 			resetForTests()
 			probe := &retryProbe{t: t}
 			probe.install(t)
-			shellCommandOutput = func(string, ...string) ([]byte, error) {
+			shellCommandOutput = func(string, []string, ...string) ([]byte, error) {
 				probe.calls++
 				return nil, probeErr
 			}
@@ -169,7 +169,7 @@ func TestDefaultShellCommandOutput_InteractiveShellFromForegroundTerminal(t *tes
 	const marker = "SHELLENV_PTY_PROBE_OK"
 	if os.Getenv("NM_SHELLENV_PTY_CHILD") == "1" {
 		shellCommandTimeout = 10 * time.Second
-		out, err := defaultShellCommandOutput(zsh, "-l", "-i", "-c", "env -0")
+		out, err := defaultShellCommandOutput(zsh, nil, "-l", "-i", "-c", "env -0")
 		if err != nil {
 			fmt.Printf("probe failed: %v\n", err)
 			return
