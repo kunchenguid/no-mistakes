@@ -384,6 +384,9 @@ VALUES (?, 'session', 'case-old', ?, 1, 1, 2, 'completed', 2, 2, 0, 0, 0, ?, ?, 
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
+	for _, id := range []string{"session", "new"} {
+		writeSessionPlan(t, store, Session{ID: id, Repeats: 1, CaseIDs: []string{"case-old"}})
+	}
 	c := Case{Manifest: Manifest{ID: "case-old"}, Dir: filepath.Join(root, "cases", "case-old")}
 	for _, evaluation := range []Evaluation{
 		{ID: "normalized", SessionID: "new", CaseID: c.ID, Candidate: "claude,model=normalized", Repeat: 1,
@@ -539,9 +542,10 @@ func reportsForEvaluations(t *testing.T, evaluations []Evaluation) []CandidateRe
 			t.Fatal(err)
 		}
 		evaluation.ID = "evaluation-" + evaluation.Candidate
-		evaluation.SessionID = "session"
+		evaluation.SessionID = "session-" + evaluation.Candidate
 		evaluation.CaseID = c.ID
 		evaluation.Repeat = 1
+		writeSessionPlan(t, store, Session{ID: evaluation.SessionID, Candidate: evaluation.Candidate, Repeats: 1, CaseIDs: []string{c.ID}})
 		if err := store.persistEvaluation(c, evaluation); err != nil {
 			t.Fatal(err)
 		}

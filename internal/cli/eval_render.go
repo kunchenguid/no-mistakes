@@ -235,7 +235,7 @@ func renderEvalRunSummary(session eval.Session, evaluations []eval.Evaluation, c
 	var lines []string
 	lines = append(lines, "")
 	lines = append(lines, metricStatsLine("Candidate", "", session.Candidate))
-	lines = append(lines, metricStatsLine("Case set", "", fmt.Sprintf("%s · cohort %s", session.Set, session.Cohort)))
+	lines = append(lines, metricStatsLine("Case set", "", fmt.Sprintf("%s · cohort %s · build %s", session.Set, session.Cohort, session.Build)))
 	lines = append(lines, metricStatsLine("Replays", strconv.Itoa(s.Total), fmt.Sprintf("%d case(s) x %d repeat(s) · %d failure(s)", caseCount, session.Repeats, s.Failures)))
 	lines = append(lines, metricStatsLine("Labeled", strconv.Itoa(s.Labeled), "replay(s) of cases with finding-level gold"))
 	lines = append(lines, "")

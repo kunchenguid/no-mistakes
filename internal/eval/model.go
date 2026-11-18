@@ -302,6 +302,11 @@ type Evaluation struct {
 	TokensReported   bool   `json:"tokens_reported"`
 	DurationMS       int64  `json:"duration_ms"`
 	Model            string `json:"model,omitempty"`
+	// PromptFingerprint digests the rendered review prompt and effective
+	// config this replay ran under (see promptFingerprint). It is empty when
+	// the replay failed before the candidate was prompted, and on evaluations
+	// recorded before it existed.
+	PromptFingerprint string `json:"prompt_fingerprint,omitempty"`
 }
 
 // EvaluationSummary aggregates finding-level scores. A case with no gold is
