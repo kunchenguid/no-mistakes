@@ -381,6 +381,8 @@ Submission identity capture honors `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_C
 
 Pipeline-owned Git calls set those four variables to the run's saved identity and remove inherited `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`. New commit dates are not pinned. These calls retain inherited command-scope Git configuration, as do provider CLI and plugin calls.
 
+When looking up `commit.gpgsign` for a fix commit rewrite, no-mistakes removes `GIT_CONFIG` from the lookup environment. This variable redirects `git config` to a separate file. Removing it lets the lookup use the same configuration sources as `git commit`. The rewrite sets `SSH_ASKPASS_REQUIRE=never`, which disables SSH askpass helpers. For SSH signing with an encrypted key, load the key into an SSH agent that the daemon can access.
+
 Agent and configured-command environments exclude inherited author and committer name, email and date variables, plus all command-scope Git configuration supplied through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, and `GIT_CONFIG_PARAMETERS`. Filtering happens after step, forge, and adapter overlays, so those overlays cannot restore the excluded variables. This removes non-identity command-scope settings too, such as proxy, credential-helper, and URL-rewrite settings. These subprocesses use normal Git repository and worktree configuration, where the run's identity is stored. Nested repositories retain their own configured identities.
 
 ## Environment the daemon sees
