@@ -276,7 +276,7 @@ func (s *Store) registerCase(c Case) error {
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO cases
 (id, source_run_id, source_round_id, captured_at, repo_fingerprint, branch, language, size_bucket, severity, gold_count, path)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.SourceRunID, c.SourceRoundID, c.CapturedAt, c.RepoFingerprint, c.Branch, language, size, severity, len(c.Labels.Findings), c.Dir)
+		c.ID, c.SourceRunID, c.SourceRoundID, c.CapturedAt, c.RepoFingerprint, c.Branch, language, size, severity, len(c.Labels.ActiveFindings()), c.Dir)
 	if err != nil {
 		return fmt.Errorf("register eval case: %w", err)
 	}
@@ -290,9 +290,15 @@ func (s *Store) appendFindingGold(c Case, added []FindingGold) (Case, int, error
 	if strings.TrimSpace(c.Dir) == "" {
 		return Case{}, 0, fmt.Errorf("case %q has no directory", c.ID)
 	}
-	labels := c.Labels
-	if labels.Version == 0 {
-		labels.Version = labelsVersion
+	// The caller holds the corpus lock, but its target may have been selected
+	// before locking (miss ingest does this after Capture). Reload so an
+	// adjudication committed in between cannot be overwritten by a stale case.
+	var labels Labels
+	if err := readJSON(filepath.Join(c.Dir, "labels.json"), &labels); err != nil {
+		return Case{}, 0, fmt.Errorf("read current case labels: %w", err)
+	}
+	if err := validateLabels(labels); err != nil {
+		return Case{}, 0, err
 	}
 	seen := make(map[string]bool, len(labels.Findings)+len(added))
 	for _, gold := range labels.Findings {
@@ -322,7 +328,7 @@ func (s *Store) appendFindingGold(c Case, added []FindingGold) (Case, int, error
 		return Case{}, 0, fmt.Errorf("write case labels: %w", err)
 	}
 	c.Labels = labels
-	if _, err := s.db.Exec(`UPDATE cases SET gold_count = ? WHERE id = ?`, len(labels.Findings), c.ID); err != nil {
+	if _, err := s.db.Exec(`UPDATE cases SET gold_count = ? WHERE id = ?`, len(labels.ActiveFindings()), c.ID); err != nil {
 		return Case{}, 0, fmt.Errorf("update eval case gold count: %w", err)
 	}
 	return c, n, nil
@@ -502,33 +508,38 @@ func (s *Store) updateCaseGoldCount(id string, n int) error {
 	return nil
 }
 
-// pendingFindingCounts sums the queued unmatched candidate findings per case
-// from the recorded completed replays. The evaluations table is the single
-// owner of that count: deriving it here (instead of incrementing a stored
-// counter inside labels.json on every replay) keeps replay from ever rewriting
-// a case's labels, so re-running the same eval run cannot double-append corpus
-// state. Legacy stored counters carry the same information - every historical
-// increment corresponded to one persisted evaluation row - so they are ignored.
-func (s *Store) pendingFindingCounts() (map[string]int, error) {
-	if s == nil || s.db == nil {
-		return nil, fmt.Errorf("eval registry is closed")
+func (s *Store) pendingFindingCounts(cases []Case) (map[string]int, error) {
+	adjudicated := map[string]Labels{}
+	for _, c := range cases {
+		if c.Labels.HasAdjudication() {
+			adjudicated[c.ID] = c.Labels
+		}
 	}
-	rows, err := s.db.Query(`SELECT case_id, COALESCE(SUM(pending), 0) FROM evaluations WHERE status = 'completed' GROUP BY case_id`)
+	rows, err := s.db.Query(`SELECT case_id, path, pending FROM evaluations WHERE status = 'completed'`)
 	if err != nil {
-		return nil, fmt.Errorf("sum queued candidate findings: %w", err)
+		return nil, fmt.Errorf("list queued eval findings: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]int{}
 	for rows.Next() {
-		var caseID string
+		var caseID, path string
 		var pending int
-		if err := rows.Scan(&caseID, &pending); err != nil {
-			return nil, fmt.Errorf("scan queued candidate findings: %w", err)
+		if err := rows.Scan(&caseID, &path, &pending); err != nil {
+			return nil, fmt.Errorf("scan queued eval findings: %w", err)
 		}
-		out[caseID] = pending
+		// Unchanged gold retains its registry count even if historical output
+		// is unavailable. Only an explicit decision requires rescoring it.
+		if labels, ok := adjudicated[caseID]; ok {
+			var evaluation Evaluation
+			if err := readJSON(path, &evaluation); err != nil {
+				return nil, fmt.Errorf("read eval result: %w", err)
+			}
+			pending = ScoreCandidate(labels, evaluation.FindingsJSON).Pending
+		}
+		out[caseID] += pending
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sum queued candidate findings: %w", err)
+		return nil, fmt.Errorf("list queued eval findings: %w", err)
 	}
 	return out, nil
 }
@@ -674,8 +685,8 @@ func loadCase(dir string) (Case, error) {
 	if err := readJSON(filepath.Join(dir, "labels.json"), &labels); err != nil {
 		return Case{}, err
 	}
-	if labels.Version != labelsVersion {
-		return Case{}, fmt.Errorf("unsupported case labels version %d (finding-level gold replaced the park/pass verdict; remove the eval directory to start a fresh corpus)", labels.Version)
+	if err := validateLabels(labels); err != nil {
+		return Case{}, err
 	}
 	var decision Decision
 	if err := readJSON(filepath.Join(dir, "original", "decision.json"), &decision); err != nil {

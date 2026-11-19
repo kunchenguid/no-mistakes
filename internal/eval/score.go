@@ -29,14 +29,9 @@ type Score struct {
 	Pending           int
 }
 
-// ScoreCandidate matches a candidate finding list against recorded gold.
-//
-//   - TP: the candidate raises the same underlying issue as a true-issue gold
-//     (human-accepted Fix, auto-fix that landed in a merged PR, a
-//     human-added miss, or a confirmed post-PR miss)
-//   - FN: the candidate misses a true-issue gold
-//   - FP: only an explicit false-positive gold that the candidate still raised
-//   - Pending: unmatched candidate findings, never inferred as invalid
+// ScoreCandidate matches a candidate finding list against active gold,
+// applying adjudications and excluding labels without discarding evidence.
+// Scoring semantics are owned by docs/src/content/docs/reference/eval.md.
 //
 // Matching is a documented cascade of strengths: exact-id, exact-text,
 // nearby-line Jaccard, then gated containment. Assignment is one globally
@@ -46,10 +41,11 @@ type Score struct {
 // reported separately so a threshold change is visible.
 func ScoreCandidate(labels Labels, findingsJSON string) Score {
 	candidate := parseFindingItems(findingsJSON)
-	assigned := assignMatches(labels.Findings, candidate)
+	goldFindings := labels.ActiveFindings()
+	assigned := assignMatches(goldFindings, candidate)
 	used := make([]bool, len(candidate))
 	var score Score
-	for i, gold := range labels.Findings {
+	for i, gold := range goldFindings {
 		if gold.Kind == GoldFalsePositive {
 			score.FalsePositiveGold++
 		}

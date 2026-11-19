@@ -65,7 +65,7 @@ Capture writes gold from the **recorded gate decision** for a review round - wha
 - A finding the human selected for Fix (`selected_finding_ids` with a user source) is **true-positive** gold: that finding is a true issue. Merge is not required.
 - A finding the human added (`user_findings_json`, source `user`) is **false-negative** gold: the original review missed a real issue.
 - A finding the pipeline selected for auto-fix on a run whose PR **merged** is **true-positive** gold (`recorded-auto-fix-merged`): the decision to fix it is the evidence, so a fix a later round re-raised or rewrote is still labeled. Closed-not-merged and still-open runs stay unlabeled until the merge is observed.
-- A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`), **not selected for fix**, and then **shipped in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). This is a deliberate operator judgement: a finding you approve and ship without fixing is a false positive in your own corpus. It needs both halves - a recorded gate decision for the round and the merge - and informational `no-op` findings are never labeled this way.
+- A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`), **not selected for fix**, and then **shipped in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). This is an **inferred** label: shipping can also reflect accepted risk, scope, or a later fix. Default scoring continues to count it as false-positive gold until you explicitly adjudicate or exclude it. It needs both halves - a recorded gate decision for the round and the merge - and informational `no-op` findings are never labeled this way.
 - A confirmed post-PR miss ingested with `eval miss ingest` is also **false-negative** gold (`recorded-post-pr-miss`): review passed green, and a later vetted finding showed a real defect.
 - A CI finding (`ci-check` or `ci-review-bot`) that a green Review missed, auto-fix or the user selected, the following fix round published, and post-repair checks cleared is **false-negative** gold (`recorded-ci-false-negative`), ingested automatically when the run finishes. `ci-transient`/provider-infra failures, merge conflicts, and dismissed findings are excluded.
 - Skip, approve-with-findings, and abort **without a merge** stay **unlabeled / pending** until later adjudication, and so does any legacy or unresolved round whose gate decision was never recorded, merged or not. Absence of a decision is never read as a judgement.
@@ -75,6 +75,34 @@ If a PR merges after the first capture, already-captured cases are relabeled. Th
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
+## Inspect and adjudicate gold labels
+
+```sh
+no-mistakes eval labels                 # discover case IDs and label positions
+no-mistakes eval labels <case-id>
+no-mistakes eval labels <case-id> --json
+no-mistakes eval adjudicate <case-id> --finding <finding-id> \
+  --kind true-positive --reason "Real defect shipped as accepted risk"
+no-mistakes eval adjudicate <case-id> --finding <finding-id> \
+  --exclude --reason "Disputed label; leave out of scoring"
+```
+
+`labels` shows each label's effective kind and provenance alongside its captured kind, source, location, and description. JSON includes the original gold, optional adjudication, effective kind, and one-based index. Provenance distinguishes:
+
+- **inferred**: shipped-unfixed, auto-fix-merged, and automatically ingested CI misses; reports count shipped-unfixed labels separately
+- **recorded-human**: a recorded user Fix, user-added finding, or confirmed post-PR miss supplied by a curator; these are evidence of a human decision rather than an explicit eval adjudication
+- **adjudicated**: an explicit `eval adjudicate --kind` decision
+- **excluded**: an explicit `eval adjudicate --exclude` decision
+- **unknown**: an older or external source with no recognized provenance; it is never assumed to be adjudicated
+
+An adjudication requires exactly one `--finding` ID or `--index` position, exactly one `--kind` or `--exclude`, and a nonempty `--reason`. Kinds are `true-positive`, `false-positive`, and `false-negative`. Use the one-based `--index` from `eval labels` for an ID-less label or a duplicate ID; ambiguous IDs are refused. Inspect the current labels before selecting a position.
+
+The command stores the latest decision, reason, and timestamp separately from the original kind and source. Repeating the same decision and reason is a no-op. You can confirm a label by assigning its existing kind, correct it by assigning another kind, or re-include an excluded label with `--kind`. Captured cases, source decisions, and candidate outputs stay intact. Capture, merge relabeling (`eval relabel [run-id]`), miss ingestion, and diversified refresh preserve explicit decisions, including exclusions.
+
+Exclusion removes a label from gold matching, denominators, and gold-only set eligibility; a case with every label excluded remains in `all`. A candidate finding that no longer matches active gold becomes pending, as with any unmatched candidate finding. It is not automatically deemed invalid.
+
+Reports continue to use recorded scores by default. Once you explicitly adjudicate any label in a case, `eval report` scores that case's **saved candidate outputs against its current active labels**, including corrections and exclusions, without invoking an agent or modifying saved replay measurements. It identifies how many cases use this view. `eval sets` uses the same view for queued candidate counts, so exclusions and corrections affect both commands without rewriting saved measurements. New replays and the sets' self-score also use active labels. Other cases' stored scores remain unchanged. Provenance counts in reports describe current labels once per distinct evaluated case, not once per repeat; missing historical label files are marked as unavailable, with their stored scores retained.
+
 ## Disk use and retention
 
 Cases from the same repository share one local Git object pool under `<NM_HOME>/eval/pools/`. The first case from a repository stores its history once; every later case adds only the objects its own commits introduced, which is normally a few kilobytes.
@@ -83,7 +111,7 @@ Cases from the same repository share one local Git object pool under `<NM_HOME>/
 
 Because the objects live in the pool rather than inside each case, a case directory is not a portable archive: copying it elsewhere does not carry the code it replays.
 
-Finding-level gold uses `labels.json` schema version 2. There is no migration from labels that store a park/pass verdict, and manifest version 1 cases are also incompatible. If an eval command reports an unsupported case or labels version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
+Finding-level gold uses `labels.json` schema version 2. Optional adjudication metadata is additive; existing version-2 labels without it keep their source provenance and default scoring. Use a binary with adjudication support for a curated store: older binaries do not understand the override metadata. There is no migration from labels that store a park/pass verdict, and manifest version 1 cases are also incompatible. If an eval command reports an unsupported case or labels version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
 
 ## Inspect case sets before spending tokens
 
@@ -127,14 +155,14 @@ The replay restores each case into a fresh temporary bare gate and worktree, the
 
 Replay scores each candidate finding against that gold:
 
-- **true-positive**: the candidate raises the same underlying issue as a true-issue gold finding (user Fix, auto-fix-merged, human-added miss, a confirmed post-PR miss, or an automatically ingested CI miss)
+- **true-positive**: the candidate raises the same underlying issue as an active true-positive or false-negative gold label (see [Finding-level gold](#finding-level-gold) and [adjudication](#inspect-and-adjudicate-gold-labels))
 - **false-negative**: the candidate misses a true-issue gold finding
-- **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
+- **false-positive**: only when a candidate finding matches an active false-positive gold label. Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
 
 Matching is a documented cascade of strengths: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is one globally optimal matching over every gold and candidate finding at once, ranked so an exact match outweighs any number of fuzzy ones, so neither gold-label order nor a tier boundary can undercount recall. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match on the text, location, or containment strengths.
 
-The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
+The report prints recall, precision bounds (gold-scored vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
 `--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent whose model no-mistakes can actually pin. ACP targets such as `cursor`, `devin`, and `acp:<target>` are pinned through `acpx --model`, but they cannot take `effort`; `rovodev` and `antigravity` expose no mechanism at all and are rejected outright. `opencode` needs the `provider/model` form. The per-harness mapping table lives in [`agent_config`](/no-mistakes/reference/global-config/#agent_config).
 
@@ -152,7 +180,7 @@ no-mistakes eval report
 
 The report groups local replays by candidate and cohort. A cohort pins the selected case IDs and repeat count, so frontier comparisons only compare candidates run over the same corpus and repeat plan. It shows:
 
-- finding-level true-positive, false-negative, false-positive, and pending counts
+- current gold provenance (including inferred shipped-unfixed labels), explicit exclusions, and finding-level true-positive, false-negative, false-positive, and pending counts
 - recall over gold issues, or unlabeled / pending when a case has no finding-level gold
 - precision bounds, and F1 only when false-positive gold exists
 - queued unmatched candidate findings, which are not scored as false positives
@@ -166,8 +194,8 @@ Eval records cache-read and cache-write counts in each evaluation payload and in
 
 Opening an older registry automatically backfills available cache counts from saved evaluation payloads and corrects its legacy input and fresh-input counters for the provider's accounting. Missing, unreadable, or malformed historical payloads are skipped with a warning on stderr naming each evaluation and its path; the registry still opens, and skipped rows retain unset cache counts (unknown, not zero). Reports use those corrected registry counters; captured labels, manifests, and historical payloads stay unchanged. Cache writes that were never recorded cannot be recovered.
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations produce identical text output.
+The report is deliberately cautious. It never treats an unmatched candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations and labels produce identical text output.
 
 ## Current boundary
 
-Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence, confirmed post-PR misses ingested through `eval miss ingest`, and confirmed CI misses ingested automatically after a repaired run finishes green. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.
+Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence, confirmed post-PR misses ingested through `eval miss ingest`, and confirmed CI misses ingested automatically after a repaired run finishes green. Existing gold can be inspected, explicitly adjudicated, corrected, or excluded through `eval labels` and `eval adjudicate`. PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.
