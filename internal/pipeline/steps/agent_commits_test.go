@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -442,5 +443,79 @@ func TestCIStep_CommitRepair_UnfinishedMergeAfterAnAgentCommitIsRefused(t *testi
 	}
 	if got := gitCmd(t, dir, "rev-parse", "--verify", "MERGE_HEAD"); got != side {
 		t.Fatalf("MERGE_HEAD = %s, want the unfinished merge %s kept", got, side)
+	}
+}
+
+// enableSSHSigning turns on commit.gpgsign in dir with a throwaway ssh key.
+func enableSSHSigning(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available")
+	}
+	key := filepath.Join(t.TempDir(), "signing_key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v: %s", err, out)
+	}
+	gitCmd(t, dir, "config", "gpg.format", "ssh")
+	gitCmd(t, dir, "config", "user.signingkey", key+".pub")
+	gitCmd(t, dir, "config", "commit.gpgsign", "true")
+}
+
+func hasSignature(t *testing.T, dir, rev string) bool {
+	t.Helper()
+	return strings.Contains(gitCmd(t, dir, "cat-file", "commit", rev), "\ngpgsig ")
+}
+
+func TestCommitAgentFixes_SigningRepositoryGetsSignedRewrittenCommits(t *testing.T) {
+	t.Parallel()
+	sctx, dir, headSHA := agentCommitContext(t, nil)
+	enableSSHSigning(t, dir)
+	agentCommit(t, dir, "one.txt", "first")
+	agentCommit(t, dir, "two.txt", "second")
+
+	if _, err := commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil); err != nil {
+		t.Fatal(err)
+	}
+	revs := strings.Fields(gitCmd(t, dir, "rev-list", headSHA+"..HEAD"))
+	if len(revs) != 2 {
+		t.Fatalf("rewritten commits = %d, want 2", len(revs))
+	}
+	for _, rev := range revs {
+		if got, want := strings.TrimSpace(fullMessage(t, dir, rev)), "no-mistakes(review): repair"; got != want {
+			t.Fatalf("commit %s message = %q, want %q", rev, got, want)
+		}
+		if !hasSignature(t, dir, rev) {
+			t.Fatalf("rewritten commit %s is unsigned", rev)
+		}
+	}
+}
+
+func TestCommitAgentFixes_SignerFailureLeavesAgentCommitsUntouched(t *testing.T) {
+	t.Parallel()
+	sctx, dir, _ := agentCommitContext(t, nil)
+	agentCommit(t, dir, "one.txt", "first")
+	agentHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	enableSSHSigning(t, dir)
+	gitCmd(t, dir, "config", "gpg.ssh.program", filepath.Join(t.TempDir(), "missing-signer"))
+
+	_, err := commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil)
+	if err == nil {
+		t.Fatal("expected an error when the signer fails")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != agentHead {
+		t.Fatalf("HEAD = %s, want the agent's commit %s untouched", got, agentHead)
+	}
+}
+
+func TestCommitAgentFixes_UnsignedRepositoryStaysUnsigned(t *testing.T) {
+	t.Parallel()
+	sctx, dir, _ := agentCommitContext(t, nil)
+	agentCommit(t, dir, "one.txt", "first")
+
+	if _, err := commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil); err != nil {
+		t.Fatal(err)
+	}
+	if hasSignature(t, dir, "HEAD") {
+		t.Fatal("commit is signed in a repository that does not sign")
 	}
 }

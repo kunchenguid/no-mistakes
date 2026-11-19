@@ -71,6 +71,7 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 
 	parent, changed := anchor, false
 	published, resolvedPublished := -1, false
+	sign, resolvedSigning := false, false
 	for i, sha := range chain {
 		info, err := stepGitRun(sctx, "show", "-s", "--date=raw", "--format=%T%x1f%an%x1f%ae%x1f%ad%x1f%B", sha)
 		if err != nil {
@@ -98,8 +99,21 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 			continue
 		}
 		changed = true
+		if !resolvedSigning {
+			if sign, err = commitSigningEnabled(sctx); err != nil {
+				return fmt.Errorf("read commit signing setting for %s agent commits: %w", stepName, err)
+			}
+			resolvedSigning = true
+		}
 		env := []string{"GIT_AUTHOR_NAME=" + fields[1], "GIT_AUTHOR_EMAIL=" + fields[2], "GIT_AUTHOR_DATE=" + fields[3]}
-		parent, err = stepGitRunEnv(sctx, env, "commit-tree", fields[0], "-p", parent, "-m", message)
+		// commit-tree ignores commit.gpgsign, so signing is requested explicitly;
+		// a signer failure aborts the rewrite rather than publishing unsigned.
+		args := []string{"commit-tree"}
+		if sign {
+			args = append(args, "-S")
+		}
+		args = append(args, fields[0], "-p", parent, "-m", message)
+		parent, err = stepGitRunEnv(sctx, env, args...)
 		if err != nil {
 			return fmt.Errorf("rewrite %s agent commit %s: %w", stepName, sha, err)
 		}
@@ -112,6 +126,21 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 	}
 	sctx.Log(fmt.Sprintf("applied commit settings to %d agent commit(s)", len(chain)))
 	return nil
+}
+
+// commitSigningEnabled reports the repository's effective commit.gpgsign.
+// Exit status 1 means the key is unset, which is not signing; any other
+// failure (such as an unparseable value) is an error.
+func commitSigningEnabled(sctx *pipeline.StepContext) (bool, error) {
+	out, err := stepGitRun(sctx, "config", "--type=bool", "--get", "commit.gpgsign")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return out == "true", nil
 }
 
 // publishedChainIndex returns the index in chain of the commit the remote
