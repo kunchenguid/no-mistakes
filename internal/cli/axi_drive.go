@@ -985,6 +985,13 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		if !run.PiProfile.Matches(profile) {
 			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
 		}
+		claudeConfigDir, err := runenv.CallerClaudeConfigDir()
+		if err != nil {
+			return "", err
+		}
+		if err := conflictingActiveRunClaudeConfigDir(run, claudeConfigDir); err != nil {
+			return "", err
+		}
 		if planID != "" && (run.VerificationPlan == nil || run.VerificationPlan.ID != planID) {
 			return "", fmt.Errorf("triggered run has a conflicting verification plan")
 		}
