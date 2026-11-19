@@ -26,7 +26,7 @@ After refusal, run `no-mistakes axi sync --recover` from the registered working 
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch**, never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved. The trusted default branch belongs to the run's [integration remote](/no-mistakes/reference/cli/#other-run-options), which defaults to `origin`. A stale cached ref cannot serve a value the live default branch removed.
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `review.prepare`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -428,8 +428,8 @@ Optional dependency-preparation command for isolated run worktrees. Run via the 
 | Default | Empty (no preparation command) |
 
 When set, no-mistakes runs this command before the first configured Test, Lint, or Format command that the pipeline reaches, including machine-local additional Test or Lint checks.
-By default, it is a lazy command hook rather than an additional pipeline step: when no configured command needs it and [`test.prepare`](#testprepare) is false, `commands.prepare` alone does nothing.
-Trusted `test.prepare: true` instead triggers it eagerly before agent-only Test while leaving `commands.test` unset.
+By default, it is a lazy command hook rather than an additional pipeline step: when no configured command needs it and both [`test.prepare`](#testprepare) and [`review.prepare`](#reviewprepare) are false, `commands.prepare` alone does nothing.
+Trusted `test.prepare: true` instead triggers it eagerly before agent-only Test while leaving `commands.test` unset, and trusted `review.prepare: true` triggers it before the first Review fix turn.
 A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery.
 The dependent step log records the preparation command, output, and elapsed preparation time.
 A non-zero exit or launch failure fails that step before its command runs.
@@ -542,6 +542,21 @@ When the final allowed rereview leaves findings, Review **parks** with every rem
 The limit is pinned before Review starts and survives daemon recovery and validation restarts in that run. Editing config does not extend or reduce an active run's budget. A new run gets a fresh budget; a run already in Review before this feature remains unbounded. The pushed branch cannot set, change, or remove the limit, even with `allow_repo_commands: true`. Negative and non-integer values fail configuration loading.
 
 This is a round-count budget, not a cumulative time or token budget, a change to rereview scope, or a cancellation/custody mechanism. Other steps are unaffected.
+
+### review.prepare
+
+**Type:** boolean. **Default:** `false`. Repository-only, trusted-default-branch-only, even with `allow_repo_commands: true`.
+
+```yaml
+commands:
+  prepare: "pnpm install --frozen-lockfile"
+review:
+  prepare: true
+```
+
+Opts the Review fixer into running `commands.prepare` before its first fix turn, so the focused verification the fix prompt asks for can start in a run worktree that otherwise holds tracked files only. It is lazy: a clean review, or one that parks without a fix, never prepares. Uses the same successful-worktree receipt, cleanup/restoration, failure reporting, and recovery behavior as `test.prepare` and configured Test/Lint/Format; later fix turns and later configured commands do not install again. An empty `commands.prepare` remains a no-op. A preparation failure stops the Review step before the fixer launches and never records successful preparation.
+
+The trigger always comes from the trusted default branch; pushed-branch text cannot enable it. The executable `commands.prepare` value separately follows the existing `allow_repo_commands` policy.
 
 ### review.agent_timeout
 
