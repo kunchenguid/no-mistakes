@@ -237,7 +237,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.reviewer != nil {
 		profiles = append(profiles, opts.reviewer)
 	}
-	source, err := d.InsertRunWithClaudeConfigDir(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, nil, opts.claudeDir, profiles...)
+	source, err := d.InsertRunWithClaudeConfigDir(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, nil, opts.claudeDir, nil, nil, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
