@@ -22,6 +22,7 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 		advance     bool
 		unlimited   bool
 		lookupFails bool
+		readError   bool
 		budget      int
 		wantRepairs int
 	}{
@@ -30,6 +31,11 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 		{name: "base_lookup_failed_during_repair", advance: true, lookupFails: true, budget: 2, wantRepairs: 1},
 		{name: "same_base", budget: 2, wantRepairs: 1},
 		{name: "budget_exhausted", advance: true, budget: 1, wantRepairs: 1},
+		{name: "new_base_unreadable_checks", advance: true, readError: true, budget: 2, wantRepairs: 2},
+		{name: "new_base_unreadable_checks_unlimited_timeout", advance: true, readError: true, unlimited: true, budget: 2, wantRepairs: 2},
+		{name: "same_base_unreadable_checks", readError: true, budget: 2, wantRepairs: 1},
+		{name: "unknown_base_unreadable_checks", advance: true, lookupFails: true, readError: true, budget: 2, wantRepairs: 1},
+		{name: "unreadable_checks_budget_exhausted", advance: true, readError: true, budget: 1, wantRepairs: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			upstream := t.TempDir()
@@ -85,6 +91,9 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 			sctx.EvalReplay = false
 			if tc.advance {
 				tip = advanceBase("second base advance")
+			}
+			if tc.readError {
+				sctx.Env = stepstest.FakeCIGHChecksError(t, "OPEN", "CONFLICTING", "checks unavailable")
 			}
 			sctx.Fixing = false
 			sctx.PreviousFindings = ""

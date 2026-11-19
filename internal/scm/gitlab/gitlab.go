@@ -1123,6 +1123,7 @@ type gitlabJob struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Stage      string `json:"stage"`
+	StartedAt  string `json:"started_at"`
 	FinishedAt string `json:"finished_at"`
 	WebURL     string `json:"web_url"`
 	// AllowFailure marks a job GitLab lets fail without failing the pipeline
@@ -1172,10 +1173,20 @@ func (j gitlabJob) awaitingManualJob() bool {
 // when it is absent or unparseable. GitLab emits RFC3339 (often with
 // fractional seconds and a 'Z' offset), which time.RFC3339 handles.
 func (j gitlabJob) completedAt() time.Time {
-	if strings.TrimSpace(j.FinishedAt) == "" {
+	return parseGitlabTime(j.FinishedAt)
+}
+
+// startedAt parses the job's started_at timestamp. Queued and running jobs share
+// the pending bucket, so this is the signal that a queued job began running.
+func (j gitlabJob) startedAt() time.Time {
+	return parseGitlabTime(j.StartedAt)
+}
+
+func parseGitlabTime(raw string) time.Time {
+	if strings.TrimSpace(raw) == "" {
 		return time.Time{}
 	}
-	if parsed, err := time.Parse(time.RFC3339, j.FinishedAt); err == nil {
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 		return parsed
 	}
 	return time.Time{}
@@ -1409,6 +1420,7 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 			CompletedAt:       job.completedAt(),
 			Link:              strings.TrimSpace(job.WebURL),
 			AwaitingManualJob: job.awaitingManualJob(),
+			StartedAt:         job.startedAt(),
 		})
 	}
 	return checks

@@ -240,7 +240,7 @@ func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
 	}
 }
 
-func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.T) {
+func TestCIStep_ConflictWithFailureAndPendingCheckEscalatesImmediately(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
@@ -260,15 +260,15 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 	step := (&steps.CIStep{}).SetNow(func() time.Time {
 		return now
 	}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
-		now = now.Add(interval)
+		t.Fatal("known conflict must not consume idle polls")
 		return nil
 	})
 
-	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.NeedsApproval {
+	if !outcome.NeedsApproval || !outcome.AutoFixable {
 		t.Fatal("expected NeedsApproval when known CI issues remain at timeout")
 	}
 
@@ -293,7 +293,7 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 	}
 }
 
-func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *testing.T) {
+func TestCIStep_ConflictWithCheckLookupErrorEscalatesImmediately(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
@@ -311,15 +311,15 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 	step := (&steps.CIStep{}).SetNow(func() time.Time {
 		return now
 	}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
-		now = now.Add(interval)
+		t.Fatal("known conflict must not consume idle polls")
 		return nil
 	})
 
-	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.NeedsApproval {
+	if !outcome.NeedsApproval || !outcome.AutoFixable {
 		t.Fatal("expected NeedsApproval when merge conflict remains known but checks lookup fails")
 	}
 
@@ -560,5 +560,25 @@ func TestCIStep_GitHubHeadObservationAcrossLookupFailures(t *testing.T) {
 				t.Fatalf("head lookups = %s, want %s", data, wantLookups)
 			}
 		})
+	}
+}
+
+func TestCIStep_ConflictWithEmptyChecksEscalatesImmediately(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	sctx := stepstest.NewTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = stepstest.FakeCIGHMergeable(t, "OPEN", "[]", "CONFLICTING")
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		t.Fatal("known conflict must not wait for checks to register")
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval || !outcome.AutoFixable || !strings.Contains(outcome.Findings, "merge conflict") {
+		t.Fatalf("expected repairable merge conflict: %+v", outcome)
 	}
 }

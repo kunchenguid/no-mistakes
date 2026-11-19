@@ -144,7 +144,11 @@ jobs:
 
       - name: Test on Unix
         if: runner.os != 'Windows'
-        run: go test -race ./...
+        # Keep the process-heavy CI tests out of the same package timeout
+        # budget as the remaining step tests. Every test runs exactly once.
+        run: |
+          go test -race -run='^TestCI' ./...
+          go test -race -skip='^TestCI' ./...
 
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
       # on the core shard is the union of the git, steps, daemon, and gate
