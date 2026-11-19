@@ -1,10 +1,12 @@
 package steps
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -17,6 +19,9 @@ import (
 // single-parent commits on the recorded head, so their messages cannot be
 // rewritten without restructuring history.
 var errAgentCommitsNotLinear = errors.New("agent commits are not a linear chain from the recorded head")
+
+var agentCommitSigningTimeout = 60 * time.Second
+var errAgentCommitSigningTimeout = errors.New("signing timed out")
 
 // conformAgentCommits applies the repository's commit settings to commits a fix
 // agent made itself. When the agent runs `git commit`, the worktree is clean and
@@ -111,11 +116,20 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 		// commit-tree ignores commit.gpgsign, so signing is requested explicitly;
 		// a signer failure aborts the rewrite rather than publishing unsigned.
 		args := []string{"commit-tree"}
+		rewrite := *sctx
+		var cancelSigning context.CancelFunc
 		if sign {
 			args = append(args, "-S")
+			rewrite.Ctx, cancelSigning = context.WithTimeoutCause(sctx.Ctx, agentCommitSigningTimeout, errAgentCommitSigningTimeout)
 		}
 		args = append(args, fields[0], "-p", parent, "-m", message)
-		parent, err = stepGitRunTreeWithEnv(sctx, shellenv.ConfigureDetachedShellCommand, env, args...)
+		parent, err = stepGitRunTreeWithEnv(&rewrite, shellenv.ConfigureDetachedShellCommand, env, args...)
+		if cancelSigning != nil {
+			if err != nil && context.Cause(rewrite.Ctx) == errAgentCommitSigningTimeout {
+				err = fmt.Errorf("%w after %s: %w", errAgentCommitSigningTimeout, agentCommitSigningTimeout, err)
+			}
+			cancelSigning()
+		}
 		if err != nil {
 			return fmt.Errorf("rewrite %s agent commit %s: %w", stepName, sha, err)
 		}

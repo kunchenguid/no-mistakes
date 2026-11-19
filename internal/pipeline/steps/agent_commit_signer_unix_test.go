@@ -4,6 +4,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,38 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestCommitAgentFixes_BlockedSignerTimesOut(t *testing.T) {
+	original := agentCommitSigningTimeout
+	agentCommitSigningTimeout = 2 * time.Second
+	t.Cleanup(func() { agentCommitSigningTimeout = original })
+
+	sctx, dir, _ := agentCommitContext(t, nil)
+	agentCommit(t, dir, "one.txt", "first")
+	agentHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	signer := filepath.Join(t.TempDir(), "signer")
+	script := "#!/bin/sh\n: > \"$0.started\"\nexec sleep 30\n"
+	if err := os.WriteFile(signer, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "config", "gpg.format", "openpgp")
+	gitCmd(t, dir, "config", "gpg.program", signer)
+	gitCmd(t, dir, "config", "commit.gpgsign", "true")
+	ctx, cancel := context.WithTimeout(sctx.Ctx, 12*time.Second)
+	defer cancel()
+	sctx.Ctx = ctx
+
+	_, err := commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil)
+	if _, statErr := os.Stat(signer + ".started"); statErr != nil {
+		t.Fatalf("blocking signer did not start: %v", statErr)
+	}
+	if !errors.Is(err, errAgentCommitSigningTimeout) || !strings.Contains(err.Error(), "signing timed out") || ctx.Err() != nil {
+		t.Fatalf("rewrite error = %v, run context error = %v, want a signing timeout before the run deadline", err, ctx.Err())
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != agentHead {
+		t.Fatalf("HEAD = %s, want the agent's commit %s untouched", got, agentHead)
+	}
+}
 
 func TestCommitAgentFixes_EncryptedSSHKeyFailsWithoutPrompt(t *testing.T) {
 	t.Parallel()
