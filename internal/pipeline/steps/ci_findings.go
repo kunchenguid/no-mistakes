@@ -72,8 +72,9 @@ type ciIssues struct {
 // per issue, each carrying the action the executor's shared findings
 // machinery acts on:
 //
-//   - a failing check the provider attributes to the job itself is an
-//     auto-fix error: the repair half fetches its logs by provider identity and the fix
+//   - a proven persistent infrastructure failure is an ask-user error;
+//   - an ordinary failing job check is an auto-fix error: the repair half
+//     fetches its logs by provider identity and the fix
 //     agent, not this classifier, decides whether the code caused it (its
 //     no-code-change conclusion parks for a decision);
 //   - a merge conflict is an auto-fix error whose repair always revalidates;
@@ -90,17 +91,28 @@ type ciIssues struct {
 //     warning, exactly as before findings existed: nothing a fix agent does
 //     can clear it.
 //
-// The classification reads provider structure only - bucket, state, the
-// check suite's app identity - never check names or log text, so it is as
-// trustworthy as the status API behind it. An empty app identity is never a
-// review bot.
+// The classification reads provider evidence: bucket, state, the check suite's
+// app identity and sanitized infrastructure diagnosis. It never reads check
+// names or log text and is as trustworthy as the provider APIs behind it.
+// An empty app identity is never a review bot.
 func ciObservationFindings(issues ciIssues) Findings {
 	var items []Finding
 	codeChecks := 0
+	infrastructureChecks := 0
 	externalReviews := 0
 	var botChecks []reviewBotCheck
 	bots := scm.ReviewBotsFor(issues.requiredReviews)
 	for _, check := range selectedFailingChecks(issues.checks, issues.failing) {
+		if check.InfrastructureFailure != "" {
+			infrastructureChecks++
+			items = append(items, Finding{
+				Severity: types.FindingSeverityError, Action: types.ActionAskUser,
+				Category: types.FindingCategoryCIInfrastructure,
+				Check:    check.Name, CheckID: check.ProviderID,
+				Description: fmt.Sprintf("CI infrastructure failure: %s. %s Resolve the account billing/spending limit, or request an explicit per-PR local-validation / CI-override exception from the operator. CI remains failing.", ciCheckDescription(check), check.InfrastructureFailure),
+			})
+			continue
+		}
 		bot, known := scm.ReviewBotForCheck(bots, check)
 		if check.ExternalReview != "" && !known {
 			externalReviews++
@@ -150,6 +162,9 @@ func ciObservationFindings(issues ciIssues) Findings {
 	items = append(items, transient...)
 
 	var parts []string
+	if infrastructureChecks > 0 {
+		parts = append(parts, fmt.Sprintf("%d CI infrastructure failures require an operator decision", infrastructureChecks))
+	}
 	if externalReviews > 0 {
 		parts = append(parts, fmt.Sprintf("%d required external reviews incomplete", externalReviews))
 	}

@@ -638,7 +638,7 @@ func transientReason(check scm.Check) string {
 // setup/action-resolution outage is not a verdict on the code, so it earns the
 // same rerun-then-park treatment as a provider cancellation rather than a fix
 // round. It is gated on the transient rerun budget being enabled, so a repo that
-// has not opted in pays no extra provider calls and keeps the prior behavior.
+// has not opted in pays no setup-classification calls.
 //
 // It re-buckets a flagged check to the cancel bucket (leaving its provider State
 // untouched) so the entire cancel-shaped monitor path - kept out of the fix
@@ -655,7 +655,7 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 	}
 	var failedIdx []int
 	for i := range checks {
-		if checks[i].Failing() {
+		if checks[i].Failing() && checks[i].InfrastructureFailure == "" {
 			failedIdx = append(failedIdx, i)
 		}
 	}

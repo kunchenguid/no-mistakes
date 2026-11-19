@@ -203,6 +203,10 @@ type Check struct {
 	// it can never be true for a genuine test or lint failure, whose job cleared
 	// setup and failed a later step.
 	PreRunFailure bool
+	// InfrastructureFailure is a sanitized provider diagnosis for a persistent
+	// failure that cannot be repaired by changing code or rerunning a job.
+	// It leaves Bucket and State red and requires an operator decision.
+	InfrastructureFailure string
 	// AwaitingApproval marks a check the provider is holding until a human
 	// approves it - GitHub holds a first-time contributor's workflows that
 	// way, concluding the run action_required without running a single job.
