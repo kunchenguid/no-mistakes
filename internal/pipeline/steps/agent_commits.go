@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -132,7 +134,10 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 // Exit status 1 means the key is unset, which is not signing; any other
 // failure (such as an unparseable value) is an error.
 func commitSigningEnabled(sctx *pipeline.StepContext) (bool, error) {
-	out, err := stepGitRun(sctx, "config", "--type=bool", "--get", "commit.gpgsign")
+	cmd := stepCmd(sctx, "git", "config", "--type=bool", "--get", "commit.gpgsign")
+	env := (runenv.Overlay{Unset: []string{"GIT_CONFIG"}}).Apply(cmd.Env)
+	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, env), sctx.WorkDir)
+	out, err := stepGitOutput(cmd, false)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return false, nil
@@ -140,7 +145,7 @@ func commitSigningEnabled(sctx *pipeline.StepContext) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return out == "true", nil
+	return strings.TrimSpace(out) == "true", nil
 }
 
 // publishedChainIndex returns the index in chain of the commit the remote

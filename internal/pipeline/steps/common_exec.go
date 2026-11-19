@@ -208,6 +208,10 @@ func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 func stepGitRunCapturing(sctx *pipeline.StepContext, withStdoutInError bool, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
+	return stepGitOutput(cmd, withStdoutInError)
+}
+
+func stepGitOutput(cmd *exec.Cmd, withStdoutInError bool) (string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -217,7 +221,7 @@ func stepGitRunCapturing(sctx *pipeline.StepContext, withStdoutInError bool, arg
 		if stdout := strings.TrimSpace(string(out)); withStdoutInError && stdout != "" {
 			stderr = stdout + "\n" + stderr
 		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr)))
+		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(cmd.Args[1:], " ")), err, safeurl.RedactText(strings.TrimSpace(stderr)))
 	}
 	return string(out), nil
 }

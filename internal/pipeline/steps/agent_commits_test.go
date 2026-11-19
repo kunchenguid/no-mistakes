@@ -466,27 +466,51 @@ func hasSignature(t *testing.T, dir, rev string) bool {
 	return strings.Contains(gitCmd(t, dir, "cat-file", "commit", rev), "\ngpgsig ")
 }
 
-func TestCommitAgentFixes_SigningRepositoryGetsSignedRewrittenCommits(t *testing.T) {
-	t.Parallel()
-	sctx, dir, headSHA := agentCommitContext(t, nil)
-	enableSSHSigning(t, dir)
-	agentCommit(t, dir, "one.txt", "first")
-	agentCommit(t, dir, "two.txt", "second")
+func TestCommitAgentFixes_RewritesFollowEffectiveSigningConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		localValue string
+		envValue   string
+		wantSigned bool
+	}{
+		{name: "repository enables signing", localValue: "true", wantSigned: true},
+		{name: "environment enables signing", localValue: "false", envValue: "true", wantSigned: true},
+		{name: "environment disables signing", localValue: "true", envValue: "false", wantSigned: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sctx, dir, headSHA := agentCommitContext(t, nil)
+			agentCommit(t, dir, "one.txt", "first")
+			agentCommit(t, dir, "two.txt", "second")
+			enableSSHSigning(t, dir)
+			gitCmd(t, dir, "config", "commit.gpgsign", tt.localValue)
 
-	if _, err := commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil); err != nil {
-		t.Fatal(err)
-	}
-	revs := strings.Fields(gitCmd(t, dir, "rev-list", headSHA+"..HEAD"))
-	if len(revs) != 2 {
-		t.Fatalf("rewritten commits = %d, want 2", len(revs))
-	}
-	for _, rev := range revs {
-		if got, want := strings.TrimSpace(fullMessage(t, dir, rev)), "no-mistakes(review): repair"; got != want {
-			t.Fatalf("commit %s message = %q, want %q", rev, got, want)
-		}
-		if !hasSignature(t, dir, rev) {
-			t.Fatalf("rewritten commit %s is unsigned", rev)
-		}
+			alternateConfig := filepath.Join(t.TempDir(), "gitconfig")
+			if err := os.WriteFile(alternateConfig, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GIT_CONFIG", alternateConfig)
+			if tt.envValue != "" {
+				t.Setenv("GIT_CONFIG_COUNT", "1")
+				t.Setenv("GIT_CONFIG_KEY_0", "commit.gpgsign")
+				t.Setenv("GIT_CONFIG_VALUE_0", tt.envValue)
+			}
+
+			if _, err := commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil); err != nil {
+				t.Fatal(err)
+			}
+			revs := strings.Fields(gitCmd(t, dir, "rev-list", headSHA+"..HEAD"))
+			if len(revs) != 2 {
+				t.Fatalf("rewritten commits = %d, want 2", len(revs))
+			}
+			for _, rev := range revs {
+				if got, want := strings.TrimSpace(fullMessage(t, dir, rev)), "no-mistakes(review): repair"; got != want {
+					t.Fatalf("commit %s message = %q, want %q", rev, got, want)
+				}
+				if got := hasSignature(t, dir, rev); got != tt.wantSigned {
+					t.Fatalf("rewritten commit %s signed = %t, want %t", rev, got, tt.wantSigned)
+				}
+			}
+		})
 	}
 }
 
