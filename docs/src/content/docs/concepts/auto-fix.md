@@ -102,9 +102,9 @@ The [global config reference](/no-mistakes/reference/global-config/#commitfix_me
 Any [`commit.trailers`](/no-mistakes/reference/global-config/#committrailers) follow the subject, rendered for the agent and model that produced that commit's changes.
 A commit the agent makes itself with `git commit` is held to the same settings: the pipeline rewrites the message of each agent commit since the recorded head to the rendered subject and trailers, keeping its tree and author, and records the new head. A chain that is not linear (for example a merge commit) fails the step instead of publishing the agent's own message. A CI repair that rebases rewrites history instead of extending the recorded head, so its commits are kept as they are and the repair revalidates from Review. With [`ci.carry_review_on_replay`](/no-mistakes/reference/repo-config/#cicarry_review_on_replay) enabled and `ci.revalidate_repairs` disabled, a rebase proven to replay the reviewed commits unchanged restarts from Test instead.
 
-When a fix or CI repair rewrites an agent commit, Git signs the replacement with the configured signer if `commit.gpgsign` is true in the run worktree.
-On Unix, the rewrite runs without a controlling terminal. Each signed rewrite has a 60-second deadline.
-If signing fails or times out, the fix attempt reports the error and leaves the original commits in place. It stops before publishing the repair.
+When a fix or CI repair rewrites an agent commit, Git uses the effective `commit.gpgsign` setting in the run worktree. If it is true, Git signs each replacement with the configured signer. If it is false or unset, Git creates unsigned replacements.
+On Unix, the rewrite runs without a controlling terminal. Each signed replacement has its own 60-second deadline.
+If the signing setting is invalid or the signer fails or times out, the fix attempt reports the error and stops before publication. The rewrite moves `HEAD` only after every replacement succeeds.
 See the [Git commit environment](/no-mistakes/reference/environment/#git-commit-environment) for the signing configuration and SSH prompt behavior.
 
 The pipeline validates the template, agent summary, predicted output size, final rendered subject, and trailers before `git add -A`, so a rejected value does not leave changes staged.
