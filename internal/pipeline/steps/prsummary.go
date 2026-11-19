@@ -236,22 +236,30 @@ func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.Step
 	return attestation
 }
 
-// attestationStatusUnreported is the published status of a step that had not
-// reached a terminal state when the attestation was written. Every writer runs
-// mid-run (the PR step snapshots while it is itself running, before CI starts)
-// and nothing rewrites the body when the run ends, so the published block
-// outlives the run. A copied "running" or "pending" would keep claiming work is
-// in progress long after the run finished. "unreported" says only what the
-// snapshot knows: the step had not reported. It is never "completed", so a
-// consumer cannot read it as a pass. Live views (axi, TUI, status) read the
-// database and still show the real running state.
+// attestationStatusUnreported is the published status of a step that was still
+// in flight when the attestation was written. Every writer runs mid-run (the PR
+// step snapshots while it is itself running, before CI starts) and nothing
+// rewrites the body when the run ends, so the published block outlives the
+// run. A copied "running" or "pending" would keep claiming work is in progress
+// long after the run finished. "unreported" says only what the snapshot knows:
+// the step had not reported. It is never "completed", so a consumer cannot read
+// it as a pass. Live views (axi, TUI, status) read the database and still show
+// the real running state.
 const attestationStatusUnreported types.StepStatus = "unreported"
 
-// publishedAttestationStatus keeps terminal statuses and records every
-// in-progress one as unreported.
+// publishedAttestationStatus keeps terminal statuses and the parked statuses,
+// and records every in-flight one as unreported.
+//
+// A step parked for a person (awaiting_approval, fix_review) keeps its own
+// state: it is not work in progress but a request for someone to act, and it
+// stays true until that person responds, so publishing it as unreported would
+// hide the ask. Only the in-flight statuses (pending, running, fixing) - and
+// any status this build does not know - become unreported.
 func publishedAttestationStatus(status types.StepStatus) types.StepStatus {
 	switch status {
-	case types.StepStatusCompleted, types.StepStatusSkipped, types.StepStatusFailed, attestationStatusUnreported:
+	case types.StepStatusCompleted, types.StepStatusSkipped, types.StepStatusFailed,
+		types.StepStatusAwaitingApproval, types.StepStatusFixReview,
+		attestationStatusUnreported:
 		return status
 	}
 	return attestationStatusUnreported

@@ -214,7 +214,7 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 		{types.StepReview, types.StepStatusCompleted},
 		{types.StepTest, types.StepStatusFailed},
 		{types.StepDocument, types.StepStatusSkipped},
-		{types.StepLint, attestationStatusUnreported},
+		{types.StepLint, types.StepStatusAwaitingApproval},
 		{types.StepPush, types.StepStatusCompleted},
 		{types.StepPR, attestationStatusUnreported},
 		{types.StepCI, attestationStatusUnreported},

@@ -325,6 +325,12 @@ func TestRequireActionEnforcesTheGate(t *testing.T) {
 			want:    "failure",
 			wantOut: []string{"test", "status=unreported"},
 		},
+		{
+			name:    "review parked for a person keeps its state and fails",
+			run:     actionRun{body: pipelineSummaryWithStatuses(t, types.StepStatusAwaitingApproval, types.StepStatusCompleted, types.StepStatusCompleted), headSHA: requiredWorkflowTestHeadSHA},
+			want:    "failure",
+			wantOut: []string{"review", "status=awaiting_approval"},
+		},
 	}
 
 	for _, tc := range tests {

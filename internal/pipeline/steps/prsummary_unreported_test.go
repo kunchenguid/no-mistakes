@@ -46,15 +46,14 @@ func prWritePointSteps() []*db.StepResult {
 }
 
 // The published block outlives the run, so it never says a step is still
-// running or waiting: that would stay true-looking after the run finished.
-func TestPipelineAttestation_NeverPublishesAnInProgressStatus(t *testing.T) {
+// in flight: that would stay true-looking after the run finished.
+func TestPipelineAttestation_NeverPublishesAnInFlightStatus(t *testing.T) {
 	t.Parallel()
 	for _, status := range []types.StepStatus{
 		types.StepStatusPending,
 		types.StepStatusRunning,
-		types.StepStatusAwaitingApproval,
 		types.StepStatusFixing,
-		types.StepStatusFixReview,
+		types.StepStatus("some_future_status"),
 	} {
 		steps := prWritePointSteps()
 		steps[len(steps)-1].Status = status
@@ -66,6 +65,54 @@ func TestPipelineAttestation_NeverPublishesAnInProgressStatus(t *testing.T) {
 				t.Errorf("source status %q: step %q published as %q, want a terminal status or %q", status, item.Step, item.Status, attestationStatusUnreported)
 			}
 		}
+	}
+}
+
+// A step parked for a person is a request for someone to act, not work in
+// progress, so it keeps its own state in the published block.
+func TestPipelineAttestation_ParkedStepKeepsItsState(t *testing.T) {
+	t.Parallel()
+	for _, status := range []types.StepStatus{
+		types.StepStatusAwaitingApproval,
+		types.StepStatusFixReview,
+	} {
+		steps := prWritePointSteps()
+		steps[len(steps)-1].Status = status
+		body, _ := BuildPipelineSummary(steps, nil, testPipelineHeadSHA)
+		published := parsePublishedAttestation(t, body).Steps
+		if got := published[len(published)-1].Status; got != status {
+			t.Errorf("parked ci step published as %q, want %q", got, status)
+		}
+	}
+}
+
+// One published block must tell a step waiting on a person apart from one
+// that was still in flight when the snapshot was taken.
+func TestPipelineAttestation_ParkedAndInFlightAreDistinguishable(t *testing.T) {
+	t.Parallel()
+	steps := prWritePointSteps()
+	steps[5].Status = types.StepStatusAwaitingApproval // lint parked for a person
+	steps[6].Status = types.StepStatusFixReview        // push parked after a fix
+	steps[4].Status = types.StepStatusFixing           // document in flight
+	body, _ := BuildPipelineSummary(steps, nil, testPipelineHeadSHA)
+	got := map[types.StepName]types.StepStatus{}
+	for _, item := range parsePublishedAttestation(t, body).Steps {
+		got[item.Step] = item.Status
+	}
+	want := map[types.StepName]types.StepStatus{
+		types.StepDocument: attestationStatusUnreported,
+		types.StepLint:     types.StepStatusAwaitingApproval,
+		types.StepPush:     types.StepStatusFixReview,
+		types.StepPR:       attestationStatusUnreported,
+		types.StepCI:       attestationStatusUnreported,
+	}
+	for step, status := range want {
+		if got[step] != status {
+			t.Errorf("%s published as %q, want %q", step, got[step], status)
+		}
+	}
+	if got[types.StepLint] == got[types.StepPR] {
+		t.Fatalf("parked lint and in-flight pr both published as %q", got[types.StepLint])
 	}
 }
 
