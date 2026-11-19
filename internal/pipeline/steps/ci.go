@@ -237,7 +237,13 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	// must never be recorded from another commit's checks. Review-bot identity
 	// comes from that same head read, exactly as the polling loop names it.
 	pr.HeadSHA = sctx.Run.HeadSHA
-	checks, _, _, err := getCIChecks(ctx, host, pr)
+	checks, observedHead, moved, err := getCIChecks(ctx, host, pr)
+	if err == nil && moved && requiresExternalReview(sctx) {
+		// The adapter answered for the head it observed. A required review
+		// of that commit, however complete, is not evidence for the one this
+		// run delivered, so approval stays blocked until they agree.
+		return fmt.Sprintf("required reviews for %s were read at %s, not at the commit being delivered (%s)", prURL, shortSHA(observedHead), shortSHA(sctx.Run.HeadSHA)), nil
+	}
 	if err == nil {
 		checks, err = requiredReviewChecks(sctx, host, pr, checks)
 	}

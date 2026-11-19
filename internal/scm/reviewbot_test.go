@@ -86,3 +86,43 @@ func TestCodeRabbitRegistryRequiresImmutableGitHubIdentity(t *testing.T) {
 		t.Fatal("GraphQL login must resolve to the immutable CodeRabbit identity")
 	}
 }
+
+// Copilot publishes no check, so only its GitHub.com required-review adapter's
+// synthesized check names it; a raw check that looks like Copilot never does.
+func TestCopilotRegistryRequiresTheRequiredReviewMarker(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		check Check
+		want  bool
+	}{
+		{Check{ExternalReview: "copilot", AppHost: "github.com", HeadSHA: "head"}, true},
+		{Check{ExternalReview: "copilot", AppHost: "github.com"}, false},
+		{Check{ExternalReview: "copilot", AppHost: "ghe.example.com", HeadSHA: "head"}, false},
+		{Check{ExternalReview: "copilot", HeadSHA: "head"}, false},
+		{Check{ExternalReview: "coderabbit", AppHost: "github.com", HeadSHA: "head"}, false},
+		{Check{Name: "Copilot", App: "copilot-pull-request-reviewer", AppHost: "github.com", HeadSHA: "head"}, false},
+		{Check{Name: "Copilot", App: "copilot-swe-agent", AppID: 1143301, AppHost: "github.com"}, false},
+	} {
+		bot, ok := ReviewBotForCheck(ReviewBotsFor([]string{"copilot"}), tc.check)
+		if ok != tc.want || ok && bot.RequiredReview != "copilot" {
+			t.Fatalf("check=%+v matched=%+v/%v want=%v", tc.check, bot, ok, tc.want)
+		}
+	}
+	if _, ok := ReviewBotForCheck(ReviewBotsFor(nil), Check{ExternalReview: "copilot", AppHost: "github.com", HeadSHA: "head"}); ok {
+		t.Fatal("Copilot must not be a review bot unless ci.required_reviews opts in")
+	}
+	for _, login := range []string{"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"} {
+		bot, ok := ReviewBotForLogin(ProviderGitHub, login)
+		if !ok || bot.RequiredReview != "copilot" || bot.AuthorID != CopilotAuthorID || bot.Identity() == "" || bot.Identity() == "coderabbitai" {
+			t.Fatalf("Copilot login %q = %+v, %v", login, bot, ok)
+		}
+	}
+	for _, login := range []string{"Copilot", "copilot"} {
+		if bot, ok := ReviewBotForLogin(ProviderGitHub, login); ok {
+			t.Fatalf("the coding agent account %q resolved to %+v", login, bot)
+		}
+	}
+	if _, ok := ReviewBotForLogin(ProviderGitLab, "copilot-pull-request-reviewer"); ok {
+		t.Fatal("Copilot has no GitLab identity")
+	}
+}

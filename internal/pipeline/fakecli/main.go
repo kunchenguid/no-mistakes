@@ -949,6 +949,17 @@ func fakeCIGHHandler(args []string) {
 			printFakeReviewThreads(os.Getenv("FAKE_CLI_REVIEW_COMMENTS"))
 			os.Exit(0)
 		}
+		if strings.Contains(joined, "reviewRequests") {
+			// The Copilot required-review read. It fails unless a test
+			// supplied the response, so an opted-out run proves it made no
+			// such request.
+			if payload := os.Getenv("FAKE_CLI_COPILOT_REVIEWS"); payload != "" {
+				fmt.Println(payload)
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "unexpected Copilot review read")
+			os.Exit(1)
+		}
 		if checksErr != "" {
 			fmt.Fprintln(os.Stderr, checksErr)
 			os.Exit(1)
@@ -1548,9 +1559,10 @@ func printFakeCommitChecks(raw string, args []string) {
 }
 
 // printFakeReviewThreads renders FAKE_CLI_REVIEW_COMMENTS - a JSON array of
-// {author, path, line, body} - as the reviewThreads GraphQL response the
-// GitHub backend's GetReviewComments parses, one unresolved thread per
-// comment. An empty or invalid value renders a pull request with no threads.
+// {author, author_id, path, line, body, id, resolved} - as the reviewThreads
+// GraphQL response the GitHub backend's GetReviewComments parses, one thread
+// per comment (unresolved unless resolved is set; id defaults to the comment's
+// position). An empty or invalid value renders a pull request with no threads.
 func printFakeReviewThreads(raw string) {
 	var comments []struct {
 		Author   string `json:"author"`
@@ -1558,6 +1570,8 @@ func printFakeReviewThreads(raw string) {
 		Path     string `json:"path"`
 		Line     int    `json:"line"`
 		Body     string `json:"body"`
+		ID       int64  `json:"id"`
+		Resolved bool   `json:"resolved"`
 	}
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &comments); err != nil {
@@ -1567,15 +1581,20 @@ func printFakeReviewThreads(raw string) {
 	}
 	threads := make([]map[string]any, 0, len(comments))
 	for i, comment := range comments {
+		id := comment.ID
+		if id == 0 {
+			id = int64(i + 1)
+		}
 		threads = append(threads, map[string]any{
-			"isResolved": false,
+			"id":         fmt.Sprintf("T%d", i+1),
+			"isResolved": comment.Resolved,
 			"comments": map[string]any{
 				"nodes": []map[string]any{{
-					"databaseId": i + 1,
+					"databaseId": id,
 					"body":       comment.Body,
 					"path":       comment.Path,
 					"line":       comment.Line,
-					"url":        fmt.Sprintf("https://github.com/test/repo/pull/42#discussion_r%d", i+1),
+					"url":        fmt.Sprintf("https://github.com/test/repo/pull/42#discussion_r%d", id),
 					"createdAt":  "2026-09-07T00:00:00Z",
 					"author":     map[string]any{"login": comment.Author, "databaseId": comment.AuthorID},
 				}},

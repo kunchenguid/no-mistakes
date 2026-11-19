@@ -25,8 +25,8 @@ func validateRequiredReviewAppID(appID *int64) error {
 func validateRequiredReviews(reviewers []string) error {
 	seen := map[string]bool{}
 	for _, reviewer := range reviewers {
-		if reviewer != "coderabbit" {
-			return fmt.Errorf("ci.required_reviews: unsupported reviewer %q (supported: coderabbit)", reviewer)
+		if reviewer != "coderabbit" && reviewer != "copilot" {
+			return fmt.Errorf("ci.required_reviews: unsupported reviewer %q (supported: coderabbit, copilot)", reviewer)
 		}
 		if seen[reviewer] {
 			return fmt.Errorf("ci.required_reviews: duplicate reviewer %q", reviewer)
