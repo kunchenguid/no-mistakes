@@ -9,6 +9,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -106,7 +107,7 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 			}
 			changed = true
 		}
-		env := []string{"GIT_AUTHOR_NAME=" + fields[1], "GIT_AUTHOR_EMAIL=" + fields[2], "GIT_AUTHOR_DATE=" + fields[3]}
+		env := []string{"GIT_AUTHOR_NAME=" + fields[1], "GIT_AUTHOR_EMAIL=" + fields[2], "GIT_AUTHOR_DATE=" + fields[3], "SSH_ASKPASS_REQUIRE=never"}
 		// commit-tree ignores commit.gpgsign, so signing is requested explicitly;
 		// a signer failure aborts the rewrite rather than publishing unsigned.
 		args := []string{"commit-tree"}
@@ -114,7 +115,7 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 			args = append(args, "-S")
 		}
 		args = append(args, fields[0], "-p", parent, "-m", message)
-		parent, err = stepGitRunTreeWithEnv(sctx, env, args...)
+		parent, err = stepGitRunTreeWithEnv(sctx, shellenv.ConfigureDetachedShellCommand, env, args...)
 		if err != nil {
 			return fmt.Errorf("rewrite %s agent commit %s: %w", stepName, sha, err)
 		}

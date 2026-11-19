@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -159,7 +160,7 @@ func TestCommandScopeGitConfigIsLimitedToPipelineOperations(t *testing.T) {
 				case "git tree":
 					got, err = stepGitRunTree(sctx, "config", "--get", key)
 				case "git tree with env":
-					got, err = stepGitRunTreeWithEnv(sctx, []string{"GIT_AUTHOR_NAME=Contributor"}, "config", "--get", key)
+					got, err = stepGitRunTreeWithEnv(sctx, shellenv.ConfigureDetachedShellCommand, []string{"GIT_AUTHOR_NAME=Contributor"}, "config", "--get", key)
 				case "provider":
 					out, runErr := stepCmd(sctx, "gh", "config", "--get", key).CombinedOutput()
 					got, err = strings.TrimSpace(string(out)), runErr
