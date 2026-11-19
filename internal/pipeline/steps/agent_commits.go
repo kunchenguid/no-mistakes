@@ -73,7 +73,7 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 
 	parent, changed := anchor, false
 	published, resolvedPublished := -1, false
-	sign, resolvedSigning := false, false
+	sign := false
 	for i, sha := range chain {
 		info, err := stepGitRun(sctx, "show", "-s", "--date=raw", "--format=%T%x1f%an%x1f%ae%x1f%ad%x1f%B", sha)
 		if err != nil {
@@ -100,12 +100,11 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 			parent = sha
 			continue
 		}
-		changed = true
-		if !resolvedSigning {
+		if !changed {
 			if sign, err = commitSigningEnabled(sctx); err != nil {
 				return fmt.Errorf("read commit signing setting for %s agent commits: %w", stepName, err)
 			}
-			resolvedSigning = true
+			changed = true
 		}
 		env := []string{"GIT_AUTHOR_NAME=" + fields[1], "GIT_AUTHOR_EMAIL=" + fields[2], "GIT_AUTHOR_DATE=" + fields[3]}
 		// commit-tree ignores commit.gpgsign, so signing is requested explicitly;

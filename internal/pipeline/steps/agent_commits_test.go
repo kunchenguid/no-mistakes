@@ -463,7 +463,8 @@ func enableSSHSigning(t *testing.T, dir string) {
 
 func hasSignature(t *testing.T, dir, rev string) bool {
 	t.Helper()
-	return strings.Contains(gitCmd(t, dir, "cat-file", "commit", rev), "\ngpgsig ")
+	header, _, _ := strings.Cut(gitCmd(t, dir, "cat-file", "commit", rev), "\n\n")
+	return strings.Contains(header, "\ngpgsig ") || strings.Contains(header, "\ngpgsig-sha256 ")
 }
 
 func TestCommitAgentFixes_RewritesFollowEffectiveSigningConfig(t *testing.T) {
