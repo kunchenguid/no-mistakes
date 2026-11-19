@@ -233,8 +233,12 @@ func stepGitOutput(cmd *exec.Cmd, withStdoutInError bool) (string, error) {
 // real git.exe behind the cmd\git.exe launcher on Windows) keeps the pipes open
 // and the read hangs. shellenv ends the whole process tree on cancellation.
 func stepGitRunTree(sctx *pipeline.StepContext, args ...string) (string, error) {
+	return stepGitRunTreeWithEnv(sctx, nil, args...)
+}
+
+func stepGitRunTreeWithEnv(sctx *pipeline.StepContext, extraEnv []string, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
+	cmd.Env = append(git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir), extraEnv...)
 	// OutputShellCommand never fills ExitError.Stderr, so capture it here.
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -242,22 +246,6 @@ func stepGitRunTree(sctx *pipeline.StepContext, args ...string) (string, error) 
 	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// stepGitRunEnv is stepGitRun with extra environment variables appended after
-// the step environment, for commands that read identity from GIT_* variables.
-func stepGitRunEnv(sctx *pipeline.StepContext, extraEnv []string, args ...string) (string, error) {
-	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = append(git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir), extraEnv...)
-	out, err := cmd.Output()
-	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = strings.TrimSpace(string(ee.Stderr))
-		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return strings.TrimSpace(string(out)), nil
 }

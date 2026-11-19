@@ -115,7 +115,7 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 			args = append(args, "-S")
 		}
 		args = append(args, fields[0], "-p", parent, "-m", message)
-		parent, err = stepGitRunEnv(sctx, env, args...)
+		parent, err = stepGitRunTreeWithEnv(sctx, env, args...)
 		if err != nil {
 			return fmt.Errorf("rewrite %s agent commit %s: %w", stepName, sha, err)
 		}

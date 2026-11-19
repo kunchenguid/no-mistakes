@@ -145,7 +145,7 @@ func TestCommandScopeGitConfigIsLimitedToPipelineOperations(t *testing.T) {
 	sctx.ForgeContext = &forgecontext.Context{Environment: runenv.Overlay{Set: map[string]string{
 		"GIT_CONFIG_KEY_99": "http.extraHeader", "GIT_CONFIG_VALUE_99": "Orphan Forge",
 	}}}
-	for _, entry := range []string{"git", "git tree", "git env", "provider"} {
+	for _, entry := range []string{"git", "git tree", "git tree with env", "provider"} {
 		t.Run(entry, func(t *testing.T) {
 			for key, want := range map[string]string{
 				"http.extraHeader": "X-Synthetic: operator",
@@ -158,8 +158,8 @@ func TestCommandScopeGitConfigIsLimitedToPipelineOperations(t *testing.T) {
 					got, err = stepGitRun(sctx, "config", "--get", key)
 				case "git tree":
 					got, err = stepGitRunTree(sctx, "config", "--get", key)
-				case "git env":
-					got, err = stepGitRunEnv(sctx, []string{"GIT_AUTHOR_NAME=Contributor"}, "config", "--get", key)
+				case "git tree with env":
+					got, err = stepGitRunTreeWithEnv(sctx, []string{"GIT_AUTHOR_NAME=Contributor"}, "config", "--get", key)
 				case "provider":
 					out, runErr := stepCmd(sctx, "gh", "config", "--get", key).CombinedOutput()
 					got, err = strings.TrimSpace(string(out)), runErr

@@ -1,57 +1,63 @@
-//go:build !windows
+//go:build unix
 
 package steps
 
 import (
+	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// A transport helper (ssh, git-remote-https) outlives a killed git and keeps its
-// inherited stderr pipe open, so a read that only kills git never returns. The
-// script answers git's `ssh -G` variant probe, records that it was reached, then
-// never speaks again.
-func TestCIStep_CommitRepair_StalledTransportHelperFailsClosedWithinItsDeadline(t *testing.T) {
-	original := publishedHeadResolveWindow
-	publishedHeadResolveWindow = time.Second
-	t.Cleanup(func() { publishedHeadResolveWindow = original })
-
-	tmp := t.TempDir()
-	reached := filepath.Join(tmp, "reached")
-	helper := filepath.Join(tmp, "stalled-ssh.sh")
-	script := "#!/bin/sh\n[ \"$1\" = -G ] && exit 0\n: > '" + reached + "'\nexec sleep 30\n"
-	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+func TestCommitAgentFixes_CancelStopsWaitingForSigner(t *testing.T) {
+	t.Parallel()
+	sctx, dir, _ := agentCommitContext(t, nil)
+	agentCommit(t, dir, "one.txt", "first")
+	agentHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	signer := filepath.Join(t.TempDir(), "signer")
+	script := "#!/bin/sh\nprintf '1\\n' > \"$0.ready\"\nwhile [ ! -e \"$0.release\" ]; do sleep 0.05; done\nexit 1\n"
+	if err := os.WriteFile(signer, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sctx, dir, _ := agentCommitContext(t, nil)
-	sctx.Config.CI.RevalidateRepairs = true
-	sctx.Repo.ForkURL = "ssh://stalled.invalid/repo.git"
-	sctx.Env = []string{"GIT_SSH_COMMAND=" + helper}
-	agentCommit(t, dir, "stalled.txt", "fix(tests): agent subject")
-	agentHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "gpg.format", "ssh")
+	gitCmd(t, dir, "config", "user.signingkey", signer)
+	gitCmd(t, dir, "config", "gpg.ssh.program", signer)
+	gitCmd(t, dir, "config", "commit.gpgsign", "true")
 
-	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(sctx.Ctx)
+	sctx.Ctx = ctx
+	done := make(chan struct{})
+	var rewriteErr error
 	go func() {
-		_, err := (&CIStep{}).commitRepair(sctx, "repair", nil)
-		done <- err
+		defer close(done)
+		_, rewriteErr = commitAgentFixesWithResult(sctx, types.StepReview, "repair", "fallback", nil)
 	}()
-	var err error
-	select {
-	case err = <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("commitRepair is still blocked on the transport helper, the deadline did not end it")
-	}
+	t.Cleanup(func() {
+		cancel()
+		if err := os.WriteFile(signer+".release", nil, 0o600); err != nil {
+			t.Error(err)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("rewrite did not return after releasing the signer")
+		}
+	})
 
-	if _, statErr := os.Stat(reached); statErr != nil {
-		t.Fatalf("the stalled transport was never reached, so the test proved nothing: %v", statErr)
-	}
-	if err == nil || !strings.Contains(err.Error(), "already published") {
-		t.Fatalf("err = %v, want a refusal because the published state could not be read", err)
+	waitForIntFile(t, signer+".ready", 5*time.Second)
+	cancel()
+	select {
+	case <-done:
+		if rewriteErr == nil {
+			t.Fatal("cancelled rewrite succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled rewrite is still waiting for the signer")
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != agentHead {
-		t.Fatalf("HEAD = %s, want the agent's commit %s left untouched", got, agentHead)
+		t.Fatalf("HEAD = %s, want the agent's commit %s untouched", got, agentHead)
 	}
 }
