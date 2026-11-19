@@ -53,7 +53,7 @@ func rewrittenByGH(r rune) bool {
 	return r >= 0x80 && r <= 0x9f
 }
 
-// maxCaretRecoveryPairs bounds the subset search in appendixDigestMatches. Each
+// maxCaretRecoveryPairs bounds the subset search in caretRestoredDigestMatches. Each
 // extra caret pair doubles the candidates hashed (2^12 candidates of at most one
 // PR body is a fraction of a second).
 const maxCaretRecoveryPairs = 12
@@ -104,15 +104,18 @@ func restoreCaretControls(s string) string {
 func restoreAll(int) bool { return true }
 
 // appendixDigestMatches reports whether appendix carries the stamped digest,
-// either byte for byte or after undoing gh's caret rewriting of control bytes
-// that an earlier version embedded. A caret pair may be a rewritten control
-// byte or text that was always there (`grep '^ERROR'`), so the digest decides
-// which ones to restore: every subset is tried, never a guess.
+// either byte for byte or after undoing a forge's rewriting of bytes that an
+// earlier version embedded: gh's caret notation for control bytes, or GitLab's
+// CRLF to LF (crlfRestoredDigestMatches).
 func appendixDigestMatches(appendix, digest string) bool {
 	matches := func(s string) bool { return fmt.Sprintf("%x", sha256.Sum256([]byte(s))) == digest }
-	if matches(appendix) {
-		return true
-	}
+	return matches(appendix) || caretRestoredDigestMatches(appendix, matches) || crlfRestoredDigestMatches(appendix, digest)
+}
+
+// A caret pair may be a rewritten control byte or text that was always there
+// (`grep '^ERROR'`), so the digest decides which ones to restore: every subset
+// is tried, never a guess.
+func caretRestoredDigestMatches(appendix string, matches func(string) bool) bool {
 	at := caretControlPositions(appendix)
 	if len(at) == 0 {
 		return false

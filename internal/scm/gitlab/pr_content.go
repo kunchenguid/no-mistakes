@@ -10,6 +10,10 @@ import (
 
 // GetPRContent reads glab's single-MR JSON description, never rendered HTML.
 // A missing/null description is unproven, not an empty author narrative.
+// GitLab returns a description written with CRLF line endings with LF ones
+// (`glab mr create` sends it unchanged), so the PR step publishes LF only
+// (normalizePRNewlines in internal/pipeline/steps) or the created-body check
+// and the appendix digest fail as if the body was edited (#1795).
 func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, error) {
 	if pr == nil {
 		return scm.PRContent{}, fmt.Errorf("missing merge request identity")

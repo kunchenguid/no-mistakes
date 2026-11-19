@@ -701,8 +701,10 @@ func fakeGlabHandler(args []string) {
 // description in FAKE_CLI_MR_STATE_FILE, so a later `glab mr view` - which the
 // PR step uses to verify the body it published - reads back what was published.
 // A flag the update omits keeps the recorded value, mirroring GitLab's
-// partial-update semantics. State is only kept when the variable is set;
-// without it the handler answers statically from FAKE_CLI_MR_VIEW_JSON.
+// partial-update semantics. The description is stored as GitLab stores it:
+// every CRLF in it reads back as LF (#1795). State is only kept when the
+// variable is set; without it the handler answers statically from
+// FAKE_CLI_MR_VIEW_JSON.
 func fakeGlabRecordMR(args []string, iid int) {
 	path := os.Getenv("FAKE_CLI_MR_STATE_FILE")
 	if path == "" {
@@ -716,7 +718,7 @@ func fakeGlabRecordMR(args []string, iid int) {
 		record["title"] = value
 	}
 	if value, ok := fakeCLIFlagValue(args, "--description"); ok {
-		record["description"] = value
+		record["description"] = strings.ReplaceAll(value, "\r\n", "\n")
 	}
 	if iid != 0 {
 		record["iid"] = iid

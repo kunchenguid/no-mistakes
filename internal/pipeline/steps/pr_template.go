@@ -232,5 +232,5 @@ func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, provider scm.Provi
 	}
 	narrative = neutralizeAttestationMarkers(resolvedProviderForBody(sctx), stripGeneratedSections(narrative))
 	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
-	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
+	return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }

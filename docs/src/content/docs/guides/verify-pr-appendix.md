@@ -16,7 +16,7 @@ The TOON result contains `pr`, `verdict`, and `reason`. Inspect `verdict` to dec
 | Verdict | Meaning |
 | --- | --- |
 | `match` | Publication accepts the appendix, including its digest and attestation shape. |
-| `mismatch` | The appendix digest does not match, including after existing legacy caret recovery. |
+| `mismatch` | The appendix digest does not match, including after supported legacy recovery. |
 | `malformed` | Ownership markers, Markdown fences, or attestation structure prevent publication from accepting the appendix. |
 | `absent` | No owned appendix exists. An unmarked legacy attestation also returns `absent`, with publication's refusal reason. |
 
@@ -24,4 +24,4 @@ All four verdicts exit 0 because the read and verification completed. Invalid ar
 
 The command reads the live body once and runs the same parser used by publication. It never re-signs or edits the PR, starts a daemon, opens the local run database, or changes local refs. A later edit can change the result, so publication still verifies the body when it writes.
 
-Legacy appendices stamped over control bytes remain accepted when the parser can recover the recorded digest from `gh`'s caret rewriting. It tries every subset of up to 12 caret pairs. Above that limit it tries restoring every pair. No re-sign operation is needed for the accepted legacy cases.
+For supported legacy recovery after GitHub control-character rewriting or GitLab line-ending normalization, see the [PR publication rules](/no-mistakes/reference/pipeline-steps/#pull-request). No re-sign operation is needed for accepted legacy cases.
