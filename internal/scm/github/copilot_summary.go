@@ -66,6 +66,7 @@ var (
 	copilotDiscussionLink   = regexp.MustCompile(`(?i)(?:https://github\.com/([a-z0-9_.-]+/[a-z0-9_.-]+)/pull/(\d+))?#discussion_r(\d+)`)
 	copilotIssueLabel       = regexp.MustCompile(`^(\d+)\s+(?:previously\s+missed|open|new|unresolved|outstanding|remaining)\s+issues?\b`)
 	copilotSuppressedLabel  = regexp.MustCompile(`^comments?\s+suppressed\s+due\s+to\s+low\s+confidence\s*\(?(\d+)\)?`)
+	copilotCoverageLine     = regexp.MustCompile(`^copilot reviewed (\d+) out of (\d+) (?:changed )?files?\b`)
 	copilotFailurePatterns  = []*regexp.Regexp{
 		regexp.MustCompile(`copilot\b[^.\n]{0,80}\b(?:was\s+unable|wasn't\s+able|was\s+not\s+able|is\s+unable|could\s*n[o']t|couldn't|failed|encountered\s+an\s+error)\b`),
 		regexp.MustCompile(`\b(?:unable|not\s+able|failed)\s+to\s+(?:complete\s+(?:the|this|a)\s+)?review\b`),
@@ -150,6 +151,7 @@ func parseCopilotSummary(body string) copilotSummary {
 	walker := copilotWalker{}
 	walker.walk(root, copilotSectionSubstantive, "")
 	result.Items = append(result.Items, walker.items...)
+	result.Incomplete = result.Incomplete || walker.incomplete
 	if walker.concernVerdict != "" && len(walker.items) == 0 && !result.Incomplete {
 		result.Items = append(result.Items, copilotSummaryItem{
 			Section: "review assessment", Title: walker.concernVerdict,
@@ -229,6 +231,7 @@ func buildCopilotTree(body string) (*copilotNode, bool) {
 type copilotWalker struct {
 	items          []copilotSummaryItem
 	concernVerdict string
+	incomplete     bool
 }
 
 // walk classifies a node's content line by line. kind is the classification
@@ -266,6 +269,19 @@ func (w *copilotWalker) walk(node *copilotNode, kind copilotSectionKind, heading
 				heading = copilotCleanTitle(m[2])
 				if kind == copilotSectionConcernVerdict && w.concernVerdict == "" {
 					w.concernVerdict = heading
+				}
+				continue
+			}
+			if m := copilotCoverageLine.FindStringSubmatch(copilotLabel(line)); m != nil {
+				reviewed, err1 := strconv.Atoi(m[1])
+				total, err2 := strconv.Atoi(m[2])
+				if err1 != nil || err2 != nil || reviewed < total {
+					flush()
+					w.incomplete = true
+					w.items = append(w.items, copilotSummaryItem{
+						Section: "review status", Title: "Review covered only part of the change",
+						Text: fmt.Sprintf("Copilot reviewed %s out of %s changed files, so the review does not cover the whole change.", m[1], m[2]),
+					})
 				}
 				continue
 			}
@@ -309,10 +325,8 @@ func (w *copilotWalker) walkDetails(node *copilotNode, kind copilotSectionKind, 
 	if title == "" {
 		title = heading
 	}
-	if kind == copilotSectionInformational {
-		w.walk(node, copilotSectionInformational, title)
-		return
-	}
+	// An unknown block is substantive even inside an overview: only the
+	// recognized inventory labels above are exempt.
 	w.walk(node, copilotSectionSubstantive, title)
 }
 
