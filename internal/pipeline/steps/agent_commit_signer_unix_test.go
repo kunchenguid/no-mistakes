@@ -55,7 +55,9 @@ func TestCommitAgentFixes_EncryptedSSHKeyFailsWithoutPrompt(t *testing.T) {
 		t.Skip("ssh-keygen not available")
 	}
 	session, err := exec.Command("ps", "-o", "sess=", "-p", strconv.Itoa(os.Getpid())).Output()
-	if err != nil || strings.TrimSpace(string(session)) == "" {
+	// macOS ps reports session 0 for every process, so it cannot tell a new
+	// session from the parent's.
+	if err != nil || strings.TrimSpace(string(session)) == "" || strings.TrimSpace(string(session)) == "0" {
 		t.Skipf("ps cannot report the parent session: %v", err)
 	}
 	sctx, dir, _ := agentCommitContext(t, nil)
