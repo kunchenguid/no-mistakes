@@ -617,7 +617,7 @@ func candidatePathPart(candidate string) string {
 func cohortID(caseIDs []string, repeats int) string {
 	ids := append([]string(nil), caseIDs...)
 	sort.Strings(ids)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", repeats, strings.Join(ids, "\x00"))))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s", matcherVersion, repeats, strings.Join(ids, "\x00"))))
 	return hex.EncodeToString(sum[:8])
 }
 
