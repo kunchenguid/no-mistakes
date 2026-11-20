@@ -487,4 +487,8 @@ COMMIT;`,
 	// and never reverts later edits on the live PR.
 	`ALTER TABLE runs ADD COLUMN pr_text_applied_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN integration_destination TEXT`,
+	// The reason an operator gave for skipping a step explicitly. NULL is
+	// every other skip and every row from before the column; see
+	// StepResult.OperatorSkipReason.
+	`ALTER TABLE step_results ADD COLUMN operator_skip_reason TEXT`,
 }

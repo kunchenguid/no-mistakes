@@ -440,7 +440,7 @@ func TestAxiRunRejectsClosesWithSkipPR(t *testing.T) {
 	launched := olderDaemonFixture(t, nil)
 	writeGlobalConfig(t, "")
 	cmd := newAxiRunCmd()
-	cmd.SetArgs([]string{"--intent", "goal", "--closes", "42", "--skip", "review,pr"})
+	cmd.SetArgs([]string{"--intent", "goal", "--closes", "42", "--skip", "review,pr", "--skip-reason", "no PR for this run"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)

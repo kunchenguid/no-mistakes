@@ -72,7 +72,7 @@ func TestSuppliedPRTextExistingPRJourney(t *testing.T) {
 	wt := h.AddWorktree(branch)
 
 	// 0. A PR already exists with drafted text (no supplied flags).
-	if out, err := h.RunInDir(wt, "axi", "run", "--intent", "existing pr text", "--skip", "ci"); err != nil {
+	if out, err := h.RunInDir(wt, "axi", "run", "--intent", "existing pr text", "--skip", "ci", "--skip-reason", "synthetic e2e run"); err != nil {
 		t.Fatalf("axi run (create): %v\n%s", err, out)
 	}
 	prev := waitPublished(t, h, branch, "", "create drafted")

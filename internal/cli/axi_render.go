@@ -264,6 +264,16 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 
 // awaitingStep returns the step currently blocking on a human decision, if any.
 // At most one step awaits at a time, so the first match is the active gate.
+// step returns the named step's view, or the zero view when the run has none.
+func (rv runView) step(name types.StepName) stepView {
+	for _, s := range rv.Steps {
+		if s.Name == string(name) {
+			return s
+		}
+	}
+	return stepView{}
+}
+
 func (rv runView) awaitingStep() (stepView, bool) {
 	for _, s := range rv.Steps {
 		if s.Status == string(types.StepStatusAwaitingApproval) || s.Status == string(types.StepStatusFixReview) {
@@ -671,8 +681,12 @@ func gateFields(gate stepView) []toon.Field {
 func gateFieldsForRun(gate stepView, runID string) []toon.Field {
 	respond := "no-mistakes axi respond" + runFlag(runID)
 	coverageHelp := "Run `" + respond + " --action complete-coverage` to review only the remaining paths using stored coverage for this source"
+	approve := "Run `" + respond + " --action approve` to accept this step and continue"
+	if types.StepName(gate.Name) == types.StepTest && testApprovalIsException(gate.FindingsJSON) {
+		approve = "Run `" + respond + " --action approve --reason \"<why>\"` to accept this step as a Test exception and continue; the operator's reason is required and recorded"
+	}
 	help := []string{
-		"Run `" + respond + " --action approve` to accept this step and continue",
+		approve,
 		"Run `" + respond + " --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",
 	}
 	if pipeline.HasReviewFixRoundLimit(gate.FindingsJSON) {
@@ -708,7 +722,7 @@ func gateFieldsForRun(gate stepView, runID string) []toon.Field {
 		}
 		help = []string{"Protected-path refusals require an explicit operator response; Approve is rejected.", next}
 	}
-	skip := "Run `" + respond + " --action skip` to skip this step"
+	skip := "Run `" + respond + " --action skip --reason \"<why>\"` to skip this step; the reason is required and recorded"
 	if pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
 		help = []string{
 			"Approve is rejected: the run worktree holds work a timed-out Test agent left that no Test turn validated, and approval would publish it. The findings name that work and how to inspect it.",

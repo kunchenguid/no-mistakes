@@ -43,6 +43,12 @@ type StepResult struct {
 	// SkipReason records an automatic PR/CI skip, distinct from an explicit
 	// per-run skip. Legacy rows have no recorded reason.
 	SkipReason *string
+	// OperatorSkipReason is non-nil exactly when an operator skipped the step
+	// explicitly (`--skip` at run start, or a skip response at its gate), and
+	// holds the reason they gave. An empty string is an operator skip recorded
+	// without one; NULL is every other skip and every row that predates the
+	// column. See OperatorSkip.
+	OperatorSkipReason *string
 	// ResponseOrigin records the caller of the latest gate response stored on
 	// the step. Fix selections store their origin on the answered round.
 	ResponseOrigin types.ResponseOrigin
@@ -59,7 +65,7 @@ type StepResult struct {
 // agent-process failure - rather than because of what the step judged.
 const StepFailureCauseAgentInvocation = "agent_invocation"
 
-const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit, round_started_at, override_reason, skip_reason, approval_reason, failure_cause, carried_from, review_max_fix_rounds, response_origin`
+const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit, round_started_at, override_reason, skip_reason, approval_reason, failure_cause, carried_from, review_max_fix_rounds, response_origin, operator_skip_reason`
 
 // readableStepResultColumns tolerates databases that predate the optional
 // columns. The ci_fix_attempts column is no longer read: the CI step's fix
@@ -71,7 +77,7 @@ func (d *DB) readableStepResultColumns() (string, error) {
 }
 
 func stepScanTargets(s *StepResult) []any {
-	return []any{&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin}
+	return []any{&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin, &s.OperatorSkipReason}
 }
 
 func scanStepResult(row interface{ Scan(...any) error }, s *StepResult) error {
@@ -128,10 +134,12 @@ func (d *DB) InsertCarriedStepResult(runID string, source *StepResult) (*StepRes
 		ApprovalReason: source.ApprovalReason,
 		SkipReason:     source.SkipReason,
 		CarriedFrom:    &origin,
+		// A carried operator skip keeps the operator's reason.
+		OperatorSkipReason: source.OperatorSkipReason,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO step_results (id, run_id, step_name, step_order, status, exit_code, duration_ms, started_at, completed_at, auto_fix_limit, override_reason, approval_reason, skip_reason, carried_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.RunID, s.StepName, s.StepOrder, s.Status, s.ExitCode, s.DurationMS, s.StartedAt, s.CompletedAt, s.AutoFixLimit, s.OverrideReason, s.ApprovalReason, s.SkipReason, s.CarriedFrom,
+		`INSERT INTO step_results (id, run_id, step_name, step_order, status, exit_code, duration_ms, started_at, completed_at, auto_fix_limit, override_reason, approval_reason, skip_reason, carried_from, operator_skip_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.RunID, s.StepName, s.StepOrder, s.Status, s.ExitCode, s.DurationMS, s.StartedAt, s.CompletedAt, s.AutoFixLimit, s.OverrideReason, s.ApprovalReason, s.SkipReason, s.CarriedFrom, s.OperatorSkipReason,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert carried step result: %w", err)
@@ -353,6 +361,13 @@ func (d *DB) SetTestApprovalReason(id, reason string) error {
 	return nil
 }
 
+// NoOperatorReasonSupplied stands in for the reason of an operator decision
+// recorded without one. `axi respond` and `axi run --skip` refuse to record a
+// Test exception approval or a skip without a reason, so this reads records
+// written before they did, and decisions from surfaces that take no reason:
+// the TUI's approve and skip keys, `--yes`, and the root command's --skip.
+const NoOperatorReasonSupplied = "no operator reason supplied"
+
 // TestOverrideReason qualifies completed Test exceptions on both snapshot and
 // event paths. Only an approval past a failing configured command, a no-go
 // or inconclusive verdict, or a Test-agent invocation-budget cut is an
@@ -360,21 +375,71 @@ func (d *DB) SetTestApprovalReason(id, reason string) error {
 // completes normally. Older command overrides still qualify without a
 // recorded reason.
 func (s *StepResult) TestOverrideReason() string {
-	if s.StepName != types.StepTest || s.Status != types.StepStatusCompleted {
-		return ""
-	}
-	condition := s.testExceptionCondition()
-	if condition == "" {
-		return ""
-	}
-	if s.ApprovalReason == nil {
+	condition, reason := s.TestException()
+	if condition == "" || s.ApprovalReason == nil {
 		return condition
 	}
-	reason := *s.ApprovalReason
-	if strings.TrimSpace(reason) == "" {
-		reason = "no operator reason supplied"
-	}
 	return strings.TrimSpace(condition + "\nTest exception approved: " + reason)
+}
+
+// TestException reports a completed Test step an operator approved past an
+// unresolved condition: that condition and the operator's recorded reason,
+// or NoOperatorReasonSupplied when none was recorded. condition is "" when
+// the step is not a Test exception.
+func (s *StepResult) TestException() (condition, reason string) {
+	if s.StepName != types.StepTest || s.Status != types.StepStatusCompleted {
+		return "", ""
+	}
+	condition = s.testExceptionCondition()
+	if condition == "" {
+		return "", ""
+	}
+	if s.ApprovalReason != nil {
+		if recorded := strings.TrimSpace(*s.ApprovalReason); recorded != "" {
+			return condition, recorded
+		}
+	}
+	return condition, NoOperatorReasonSupplied
+}
+
+// WithCarriedTestEvidence returns steps with each carried Test row's
+// findings read from the row it was carried from. A carried row keeps none of
+// its source's findings (InsertCarriedStepResult), so without them a retry
+// cannot tell that its carried Test completion was an approved exception.
+// The returned rows are copies; nothing is written back, so statistics still
+// count the source's findings once.
+func (d *DB) WithCarriedTestEvidence(steps []*StepResult) ([]*StepResult, error) {
+	out := make([]*StepResult, len(steps))
+	for i, s := range steps {
+		out[i] = s
+		if s == nil || s.StepName != types.StepTest || s.CarriedFrom == nil || s.FindingsJSON != nil {
+			continue
+		}
+		origin, err := d.GetStepResult(*s.CarriedFrom)
+		if err != nil {
+			return nil, fmt.Errorf("read carried Test evidence: %w", err)
+		}
+		if origin == nil {
+			return nil, fmt.Errorf("read carried Test evidence: step %s is not recorded", *s.CarriedFrom)
+		}
+		carried := *s
+		carried.FindingsJSON = origin.FindingsJSON
+		out[i] = &carried
+	}
+	return out, nil
+}
+
+// OperatorSkip reports a step an operator skipped explicitly, with the reason
+// recorded for it or NoOperatorReasonSupplied when none was. A step skipped
+// automatically, or skipped before the reason was recorded, is not one.
+func (s *StepResult) OperatorSkip() (reason string, ok bool) {
+	if s.Status != types.StepStatusSkipped || s.OperatorSkipReason == nil {
+		return "", false
+	}
+	if recorded := strings.TrimSpace(*s.OperatorSkipReason); recorded != "" {
+		return recorded, true
+	}
+	return NoOperatorReasonSupplied, true
 }
 
 func (s *StepResult) testExceptionCondition() string {
@@ -391,16 +456,7 @@ func (s *StepResult) testExceptionCondition() string {
 		}
 		return ""
 	}
-	switch findings.Verdict {
-	case types.TestVerdictNoGo, types.TestVerdictInconclusive:
-		return "live validation verdict: " + findings.Verdict
-	}
-	for _, item := range findings.Items {
-		if item.ID == types.FindingIDTestAgentTimeout {
-			return "test agent invocation budget exhausted"
-		}
-	}
-	return ""
+	return types.TestApprovalException(findings)
 }
 
 func autoFixLimitDBValue(autoFixLimit int) any {
@@ -425,10 +481,21 @@ func (d *DB) CompleteSkippedStep(id string, exitCode int, durationMS int64, logP
 	return d.completeStep(id, types.StepStatusSkipped, exitCode, durationMS, logPath, reason)
 }
 
+// CompleteOperatorSkippedStep marks a step skipped on an operator's explicit
+// decision and records their reason with it; an empty reason still records
+// the skip as the operator's.
+func (d *DB) CompleteOperatorSkippedStep(id string, exitCode int, durationMS int64, logPath, reason string) error {
+	return d.completeStepWithOperatorSkip(id, types.StepStatusSkipped, exitCode, durationMS, logPath, "", &reason)
+}
+
 func (d *DB) completeStep(id string, status types.StepStatus, exitCode int, durationMS int64, logPath, skipReason string) error {
+	return d.completeStepWithOperatorSkip(id, status, exitCode, durationMS, logPath, skipReason, nil)
+}
+
+func (d *DB) completeStepWithOperatorSkip(id string, status types.StepStatus, exitCode int, durationMS int64, logPath, skipReason string, operatorSkipReason *string) error {
 	_, err := d.sql.Exec(
-		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, ''), override_reason = CASE WHEN ? THEN NULL ELSE override_reason END, approval_reason = CASE WHEN ? THEN NULL ELSE approval_reason END WHERE id = ?`,
-		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), skipReason, status == types.StepStatusSkipped, status == types.StepStatusSkipped, id,
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, ''), operator_skip_reason = ?, override_reason = CASE WHEN ? THEN NULL ELSE override_reason END, approval_reason = CASE WHEN ? THEN NULL ELSE approval_reason END WHERE id = ?`,
+		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), skipReason, operatorSkipReason, status == types.StepStatusSkipped, status == types.StepStatusSkipped, id,
 	)
 	if err != nil {
 		return fmt.Errorf("complete step: %w", err)

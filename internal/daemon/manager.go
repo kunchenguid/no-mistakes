@@ -1023,6 +1023,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 	ctx = callerrestrictions.WithLaunchRecord(ctx, params.CallerRestrictions)
 	ctx = integration.WithRemote(ctx, params.BaseRemote)
+	ctx = withOperatorSkipReason(ctx, params.SkipReason)
 	var identityErr error
 	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
 	if identityErr != nil {
@@ -1097,6 +1098,7 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartF
 	}
 	ctx = callerrestrictions.WithLaunchRecord(ctx, params.CallerRestrictions)
 	ctx = integration.WithRemote(ctx, params.BaseRemote)
+	ctx = withOperatorSkipReason(ctx, params.SkipReason)
 	var identityErr error
 	ctx, identityErr = submittedIdentityContext(ctx, params.CommitIdentity)
 	if identityErr != nil {
@@ -2315,7 +2317,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetCommitIdentity(identity)
-	executor.SetSkippedSteps(skipSteps)
+	executor.SetSkippedSteps(skipSteps, operatorSkipReason(ctx))
 	if retry != nil {
 		executor.SetRetrySource(retry.source.ID)
 	}

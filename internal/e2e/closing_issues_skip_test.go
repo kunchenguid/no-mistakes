@@ -28,7 +28,7 @@ func TestClosingIssueRefsSkippedPRIsRefused(t *testing.T) {
 	const cliBranch = "feature/closes-skip-cli"
 	h.CommitChange(cliBranch, "c.txt", "c\n", "add cli skip fixture")
 	wt := h.AddWorktree(cliBranch)
-	out, err := h.RunInDir(wt, "axi", "run", "--intent", "skip", "--skip", "ci,pr", "--closes", "95")
+	out, err := h.RunInDir(wt, "axi", "run", "--intent", "skip", "--skip", "ci,pr", "--skip-reason", "synthetic e2e run", "--closes", "95")
 	saveEvidence(t, "15-skip-pr-cli-rejected.txt", "$ no-mistakes axi run --skip ci,pr --closes 95\n"+out+"\nerr: "+errString(err)+"\n")
 	if err == nil || !strings.Contains(out, "cannot be combined with --skip pr") {
 		t.Fatalf("--closes with --skip pr should be refused, err=%v out:\n%s", err, out)
@@ -66,7 +66,7 @@ func TestClosingIssueRefsSkippedPRIsRefused(t *testing.T) {
 		t.Fatalf("push main: %v\n%s", err, out)
 	}
 	ewt := h.AddWorktree(emptyBranch)
-	out, _ = h.RunInDir(ewt, "axi", "run", "--intent", "already merged", "--skip", "ci", "--closes", "96")
+	out, _ = h.RunInDir(ewt, "axi", "run", "--intent", "already merged", "--skip", "ci", "--skip-reason", "synthetic e2e run", "--closes", "96")
 	run = h.WaitForRun(emptyBranch, 3*time.Minute)
 	pr, _ = findStep(run.Steps, types.StepPR)
 	evidence = "$ no-mistakes axi run --skip ci --closes 96   # branch change already on main\n" + out +

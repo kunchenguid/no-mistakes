@@ -71,7 +71,7 @@ func TestNormalizeNotifyGatePathResolvesLegacyDotGate(t *testing.T) {
 }
 
 func TestFormatSkipPushOptions(t *testing.T) {
-	got := formatSkipPushOptions([]types.StepName{types.StepTest, types.StepLint})
+	got := formatSkipPushOptions([]types.StepName{types.StepTest, types.StepLint}, "")
 	want := []string{"no-mistakes.skip=test,lint"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("formatSkipPushOptions() = %v, want %v", got, want)

@@ -21,6 +21,7 @@ const (
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodResolveReviewerProfile    = "resolve_reviewer_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
+	MethodProbeSkipReason           = "probe_skip_reason"
 	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodProbeTranscriptHomes      = "probe_transcript_homes"
 	MethodProbeCallerRestrictions   = "probe_caller_restrictions"
@@ -100,16 +101,19 @@ type PushReceivedParams struct {
 	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
-	Gate                 string           `json:"gate"`
-	Ref                  string           `json:"ref"`
-	Old                  string           `json:"old"`
-	New                  string           `json:"new"`
-	SkipSteps            []types.StepName `json:"skip_steps,omitempty"`
-	Intent               string           `json:"intent,omitempty"`
-	LaunchNonce          string           `json:"launch_nonce,omitempty"`
-	ValidationGeneration string           `json:"validation_generation,omitempty"`
-	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
-	BaseRemote           string           `json:"base_remote,omitempty"`
+	Gate      string           `json:"gate"`
+	Ref       string           `json:"ref"`
+	Old       string           `json:"old"`
+	New       string           `json:"new"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	// SkipReason is the operator's reason for SkipSteps (axi run
+	// --skip-reason), recorded on every step the run skips.
+	SkipReason           string `json:"skip_reason,omitempty"`
+	Intent               string `json:"intent,omitempty"`
+	LaunchNonce          string `json:"launch_nonce,omitempty"`
+	ValidationGeneration string `json:"validation_generation,omitempty"`
+	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
+	BaseRemote           string `json:"base_remote,omitempty"`
 	// OmitIntent carries the caller-side, tighten-only request to keep the
 	// generated Intent section out of the PR body. It never publishes intent
 	// a repository's trusted config disabled.
@@ -144,6 +148,7 @@ type StartFreshRunParams struct {
 	Branch               string           `json:"branch"`
 	HeadSHA              string           `json:"head_sha"`
 	SkipSteps            []types.StepName `json:"skip_steps,omitempty"`
+	SkipReason           string           `json:"skip_reason,omitempty"`
 	Intent               string           `json:"intent"`
 	LaunchNonce          string           `json:"launch_nonce"`
 	ValidationGeneration string           `json:"validation_generation"`
@@ -182,6 +187,14 @@ type ProbeOmitIntentParams struct{}
 // is refused by such a daemon (method not found) instead of succeeding
 // silently, so a client that reaches OK=true knows omit_intent is honored.
 type ProbeOmitIntentResult struct {
+	OK bool `json:"ok"`
+}
+
+// ProbeSkipReasonResult answers MethodProbeSkipReason, the capability check
+// for axi run --skip-reason. Like ProbeOmitIntentResult, it exists because an
+// older daemon decodes launch requests permissively and would drop the
+// unknown skip_reason field, skipping the steps without the operator's reason.
+type ProbeSkipReasonResult struct {
 	OK bool `json:"ok"`
 }
 
@@ -290,6 +303,7 @@ type RerunParams struct {
 	Branch        string           `json:"branch"`
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
+	SkipReason    string           `json:"skip_reason,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
 	BaseRemote    string           `json:"base_remote,omitempty"`

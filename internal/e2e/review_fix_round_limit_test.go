@@ -572,7 +572,7 @@ func TestReviewFixRoundLimit_ProtectedPathRefusalOnTheLastRoundOffersOnlySkipOrA
 	// Skipping Review then fails Push closed (pipeline-steps.md: "Pre-skipping
 	// or later skipping Review leaves no approval binding, so Push fails closed
 	// unless Push is also skipped"), which is unchanged by the budget.
-	skipped, err := h.Run("axi", "respond", "--action", "skip")
+	skipped, err := h.Run("axi", "respond", "--action", "skip", "--reason", "synthetic skip of an exhausted review")
 	t.Logf("EVIDENCE skip on protected+exhausted gate: err=%v\n%s", err, skipped)
 	if strings.Contains(skipped, "fix_rounds_exhausted") || strings.Contains(skipped, "cannot skip") {
 		t.Fatalf("skip was refused: %v\n%s", err, skipped)

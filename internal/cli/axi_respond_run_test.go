@@ -168,7 +168,7 @@ func TestAxiRespond_RunFlagGateHelpCarriesTheRunID(t *testing.T) {
 	}
 	for _, want := range []string{
 		"`no-mistakes axi respond --run run-timeout --action approve`",
-		"`no-mistakes axi respond --run run-timeout --action skip`",
+		"`no-mistakes axi respond --run run-timeout --action skip --reason",
 		"axi logs --run run-timeout --step",
 	} {
 		if !strings.Contains(out, want) {

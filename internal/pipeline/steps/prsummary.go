@@ -61,6 +61,28 @@ type pipelineAttestation struct {
 	// has not opted in. Additive: older attestations without the field are
 	// read as not opted in.
 	AllowTestCommandOverride string `json:"allow_test_command_override,omitempty"`
+	// Exceptions lists each step an operator let through on their own
+	// decision instead of its evidence - a Test exception approval or an
+	// explicit skip - with the reason they recorded, in step order. Omitted
+	// when there is none. Additive: older attestations without the field
+	// carry no such record, and verify.py does not read it.
+	Exceptions []pipelineAttestationException `json:"exceptions,omitempty"`
+}
+
+// Attestation exception kinds.
+const (
+	attestationExceptionTest         = "test-exception"
+	attestationExceptionOperatorSkip = "operator-skip"
+)
+
+type pipelineAttestationException struct {
+	Step types.StepName `json:"step"`
+	Kind string         `json:"kind"`
+	// Condition is what a Test exception approved past; omitted for a skip.
+	Condition string `json:"condition,omitempty"`
+	// Reason is the operator's recorded reason, or
+	// db.NoOperatorReasonSupplied for a decision recorded without one.
+	Reason string `json:"reason"`
 }
 
 type pipelineAttestationStep struct {
@@ -215,6 +237,21 @@ func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.Step
 			}
 		}
 		attestation.Steps = append(attestation.Steps, item)
+		// Free text, neutralized like override_reason above.
+		if condition, reason := sr.TestException(); condition != "" {
+			attestation.Exceptions = append(attestation.Exceptions, pipelineAttestationException{
+				Step:      sr.StepName,
+				Kind:      attestationExceptionTest,
+				Condition: neutralizePRControls(strings.TrimSpace(condition)),
+				Reason:    neutralizePRControls(reason),
+			})
+		} else if reason, ok := sr.OperatorSkip(); ok {
+			attestation.Exceptions = append(attestation.Exceptions, pipelineAttestationException{
+				Step:   sr.StepName,
+				Kind:   attestationExceptionOperatorSkip,
+				Reason: neutralizePRControls(reason),
+			})
+		}
 	}
 	// A custom gate shares its anchor's order, so the tie-break decides where
 	// the published record places it. A gate runs immediately AFTER its anchor,
@@ -223,17 +260,25 @@ func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.Step
 	// same anchor - keep the recorded order, which GetStepsByRun makes
 	// deterministic and equal to declaration, hence execution, order.
 	sort.SliceStable(attestation.Steps, func(i, j int) bool {
-		left, right := attestation.Steps[i].Step, attestation.Steps[j].Step
-		if left.Order() != right.Order() {
-			return left.Order() < right.Order()
-		}
-		if left.IsCustomGate() != right.IsCustomGate() {
-			return !left.IsCustomGate()
-		}
-		return false
+		return attestedBefore(attestation.Steps[i].Step, attestation.Steps[j].Step)
+	})
+	sort.SliceStable(attestation.Exceptions, func(i, j int) bool {
+		return attestedBefore(attestation.Exceptions[i].Step, attestation.Exceptions[j].Step)
 	})
 	attestation.LiveValidation = attestedLiveValidation(steps, rounds, headSHA)
 	return attestation
+}
+
+// attestedBefore orders the published record by step order, a core step
+// before the custom gates that share its anchor.
+func attestedBefore(left, right types.StepName) bool {
+	if left.Order() != right.Order() {
+		return left.Order() < right.Order()
+	}
+	if left.IsCustomGate() != right.IsCustomGate() {
+		return !left.IsCustomGate()
+	}
+	return false
 }
 
 // attestedLiveValidation derives the live-validation payload from the test
@@ -310,7 +355,8 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 	if err := json.Unmarshal([]byte(body[payloadStart:end]), &attestation); err != nil {
 		return body, false
 	}
-	if steps == nil {
+	carried := steps == nil
+	if carried {
 		// A CI repair that did not re-run Test keeps the prior Test result,
 		// including an approved-over-failure override_reason. The caller's
 		// current trusted policy still owns allow_test_command_override, so a
@@ -327,6 +373,11 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 		}
 	}
 	rebound := newPipelineAttestation(steps, nil, newHeadSHA, policy)
+	if carried {
+		// The carried statuses keep the exceptions the attestation recorded
+		// with them, reasons included.
+		rebound.Exceptions = attestation.Exceptions
+	}
 	// Step statuses may be republished for a head the pipeline did not
 	// re-validate. Live validation is a factual claim about one commit's
 	// behavior, so it is derived only from current step findings and never

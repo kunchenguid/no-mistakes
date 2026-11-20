@@ -128,12 +128,12 @@ func TestExecutor_AbortAtGateWithoutAReasonKeepsTheExistingError(t *testing.T) {
 	}
 }
 
-// A reason belongs to a Test approval exception or an abort, nothing else, and
-// a refused response leaves the gate parked for a valid one.
+// A reason belongs to a Test approval exception, a skip, or an abort, nothing
+// else, and a refused response leaves the gate parked for a valid one.
 func TestExecutor_ReasonIsRefusedForOtherResponsesAndLeavesTheGateParked(t *testing.T) {
 	exec, database, run, done, _, _ := parkReviewGate(t)
 
-	for _, action := range []types.ApprovalAction{types.ActionApprove, types.ActionSkip, types.ActionFix} {
+	for _, action := range []types.ApprovalAction{types.ActionApprove, types.ActionFix} {
 		if _, err := exec.RespondWithOverrides(types.StepReview, action, []string{"journal-version-deduplication"}, nil, nil, nil, "because"); err == nil {
 			t.Fatalf("a reason with %s was accepted", action)
 		}
