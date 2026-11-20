@@ -1341,6 +1341,140 @@ func TestAxiSyncAdoptPublishedIgnoresForeignWorktreeOrigin(t *testing.T) {
 	}
 }
 
+// rebaseReleasedBranchOverConflict recreates the issue #1293 shape on a
+// released (user_owned) branch: the operator publishes the submitted head
+// directly, main then edits the line the branch edited, and the branch is
+// rebased onto it outside the pipeline with the conflict resolved by hand into
+// content neither side had. The gate still holds the submitted head.
+func rebaseReleasedBranchOverConflict(t *testing.T, f cliRecoverFixture, publishRebase bool) string {
+	t.Helper()
+	cliGit(t, f.local, "remote", "add", "origin", f.remote)
+	cliGit(t, f.local, "push", "origin", "main:refs/heads/main", "HEAD:refs/heads/feature/recover")
+
+	cliGit(t, f.local, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(f.local, "file.txt"), []byte("upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "commit", "-am", "advance main over the same line")
+	cliGit(t, f.local, "push", "origin", "main:refs/heads/main")
+
+	cliGit(t, f.local, "checkout", "feature/recover")
+	if _, err := git.Run(context.Background(), f.local, "rebase", "main"); err == nil {
+		t.Fatal("rebase over the same line did not stop on a conflict")
+	}
+	if err := os.WriteFile(filepath.Join(f.local, "file.txt"), []byte("upstream feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "file.txt")
+	cliGit(t, f.local, "-c", "core.editor=true", "rebase", "--continue")
+	rebased := cliGit(t, f.local, "rev-parse", "HEAD")
+	if publishRebase {
+		cliGit(t, f.local, "push", "--force-with-lease=refs/heads/feature/recover:"+f.submitted, "origin", "HEAD:refs/heads/feature/recover")
+	}
+	return rebased
+}
+
+// TestAxiSyncAdoptPublishedUserOwnedRebasedLane is issue #1293 on the agent
+// surface: a released branch rebased with a hand-resolved conflict and
+// force-pushed to the configured target is adopted into its stale gate lane,
+// with the superseded private head archived the way reconciliation archives it.
+func TestAxiSyncAdoptPublishedUserOwnedRebasedLane(t *testing.T) {
+	f := newCLIUnmovedAbortFixture(t)
+	rebased := rebaseReleasedBranchOverConflict(t, f, true)
+
+	if err := git.Push(context.Background(), f.local, f.gate, "refs/heads/feature/recover", "", false); err == nil {
+		t.Fatal("unforced push to the stale gate unexpectedly succeeded")
+	}
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	for _, want := range []string{"state: user_owned", "relation: diverged"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("rebased status missing %q:\n%s", want, status)
+		}
+	}
+	// A released branch stays immediately usable: status names no action for
+	// a rewrite it cannot know is published.
+	if strings.Contains(status, "next_action") {
+		t.Errorf("released status offers an action:\n%s", status)
+	}
+
+	out, err := executeCmd("axi", "sync", "--adopt-published")
+	if err != nil {
+		t.Fatalf("adopt published rebased head: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: user_owned", "changed: true", "code: run_pipeline", "Run `no-mistakes axi run --intent"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("adoption output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\nerror:") {
+		t.Errorf("successful adoption reports an error:\n%s", out)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != rebased {
+		t.Fatalf("gate lane = %s, want published rebased head %s", got, rebased)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/tags/no-mistakes-abandoned/feature/recover/"+f.submitted); got != f.submitted {
+		t.Fatalf("superseded private head archived at %s, want %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != rebased {
+		t.Fatalf("adoption moved local branch to %s, want %s", got, rebased)
+	}
+	// The exact no-op push lets axi run take its existing rerun path.
+	if err := git.Push(context.Background(), f.local, f.gate, "refs/heads/feature/recover", "", false); err != nil {
+		t.Fatalf("gate push after adoption: %v", err)
+	}
+}
+
+// TestSyncAdoptPublishedUserOwnedRebaseRequiresPublication walks both surfaces
+// through the one thing adoption accepts in place of a containment proof: the
+// rewrite is refused while only local, and adopted once the configured push
+// target has that exact head.
+func TestSyncAdoptPublishedUserOwnedRebaseRequiresPublication(t *testing.T) {
+	f := newCLIUnmovedAbortFixture(t)
+	rebased := rebaseReleasedBranchOverConflict(t, f, false)
+	gateRefs := func() string {
+		return cliGit(t, f.gate, "for-each-ref", "--format=%(refname) %(objectname)")
+	}
+	refsBefore := gateRefs()
+
+	for _, args := range [][]string{{"axi", "sync", "--adopt-published"}, {"sync", "--adopt-published", "--yes"}} {
+		out, err := executeCmd(args...)
+		var ee *exitError
+		if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+			t.Fatalf("%v on an unpublished rebase should refuse, got %#v\n%s", args, err, out)
+		}
+		if !strings.Contains(out, "the configured push target does not exactly match the local rebased head; no files or gate refs were changed") {
+			t.Errorf("%v refusal does not name the target mismatch:\n%s", args, out)
+		}
+		if got := gateRefs(); got != refsBefore {
+			t.Fatalf("%v refusal changed gate refs:\nbefore: %s\nafter: %s", args, refsBefore, got)
+		}
+	}
+	if out, _ := executeCmd("axi", "sync", "--adopt-published"); !strings.Contains(out, "safety: blocked_published_head_mismatch") {
+		t.Errorf("unpublished rebase refusal missing its safety code:\n%s", out)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != rebased {
+		t.Fatalf("refused recovery moved local branch to %s, want %s", got, rebased)
+	}
+
+	cliGit(t, f.local, "push", "--force-with-lease=refs/heads/feature/recover:"+f.submitted, "origin", "HEAD:refs/heads/feature/recover")
+	out, err := executeCmd("sync", "--adopt-published", "--yes")
+	if err != nil {
+		t.Fatalf("human adoption of the published rebase: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "blocked:") || !strings.Contains(out, "the published rebased head is present in this gate lane; start a fresh run when ready") {
+		t.Errorf("successful human adoption does not confirm the adopted lane:\n%s", out)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != rebased {
+		t.Fatalf("gate lane = %s, want published rebased head %s", got, rebased)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/tags/no-mistakes-abandoned/feature/recover/"+f.submitted); got != f.submitted {
+		t.Fatalf("superseded private head archived at %s, want %s", got, f.submitted)
+	}
+}
+
 func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	if err := os.WriteFile(filepath.Join(f.local, "rescope.txt"), []byte("rescope\n"), 0o644); err != nil {

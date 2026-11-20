@@ -112,6 +112,61 @@ done
 	}
 }
 
+// TestArchiveAbandonedHeadNeverMovesTheBranchOrReplacesEvidence covers the
+// archive a caller with its own proof and its own branch compare-and-swap
+// writes before replacing a private head: the same direct create-only tag
+// reconciliation uses, idempotent at the exact commit, and refused for
+// anything that is not that exact evidence.
+func TestArchiveAbandonedHeadNeverMovesTheBranchOrReplacesEvidence(t *testing.T) {
+	ctx := context.Background()
+	_, gateDir, privateHead, _ := reconciliationRefFixture(t)
+	archive := "refs/tags/no-mistakes-abandoned/feature/" + privateHead
+	refs := func() string {
+		return reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)")
+	}
+
+	for round := 0; round < 2; round++ {
+		tag, err := ArchiveAbandonedHead(ctx, gateDir, "feature", privateHead)
+		if err != nil || tag != archive {
+			t.Fatalf("round %d archive = %q, err = %v, want %q", round, tag, err, archive)
+		}
+	}
+	if got, want := reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)", archive), archive+" "+privateHead; got != want {
+		t.Fatalf("archive = %q, want direct ref %q", got, want)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+		t.Fatalf("archiving moved the branch to %s, want %s", got, privateHead)
+	}
+	if !ArchivedHeadRecorded(ctx, gateDir, "feature", privateHead) {
+		t.Fatal("archived head is not recorded as abandoned-head evidence")
+	}
+
+	base := reconcileGit(t, gateDir, "rev-parse", privateHead+"^")
+	reconcileGit(t, gateDir, "update-ref", "--no-deref", "refs/tags/no-mistakes-abandoned/taken/"+privateHead, base)
+	reconcileGit(t, gateDir, "symbolic-ref", "refs/tags/no-mistakes-abandoned/linked/"+privateHead, "refs/heads/other")
+	before := refs()
+	for _, tt := range []struct {
+		name, branch, head, want string
+	}{
+		{name: "tag names another commit", branch: "taken", head: privateHead, want: "already points at " + base},
+		{name: "symbolic tag", branch: "linked", head: privateHead, want: "symbolic"},
+		{name: "abbreviated head", branch: "feature", head: privateHead[:12], want: "not an exact commit"},
+		{name: "non-commit head", branch: "feature", head: reconcileGit(t, gateDir, "rev-parse", privateHead+"^{tree}"), want: "not an exact commit"},
+		{name: "invalid branch name", branch: "feature..lock", head: privateHead, want: "invalid branch name"},
+		{name: "missing head", branch: "feature", head: "", want: "branch and head are required"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tag, err := ArchiveAbandonedHead(ctx, gateDir, tt.branch, tt.head)
+			if err == nil || tag != "" || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("archive = %q, err = %v, want a refusal naming %q", tag, err, tt.want)
+			}
+			if got := refs(); got != before {
+				t.Fatalf("refusal changed refs:\nbefore:\n%s\nafter:\n%s", before, got)
+			}
+		})
+	}
+}
+
 func reconciliationRefFixture(t *testing.T) (string, string, string, string) {
 	t.Helper()
 	work := initReconcileRepo(t)
