@@ -253,7 +253,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		if intentErr != nil {
 			if publicPRIntentSource(sctx) != "" {
-				sctx.Log(intentErr.Error())
+				sctx.Log("intent replaced: " + intentErr.Error())
+			} else if publishesPRIntent(sctx) {
+				sctx.Log("intent removed: " + intentErr.Error())
 			}
 		} else {
 			sctx.PublishedPRIntent = kept

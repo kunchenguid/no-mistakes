@@ -138,14 +138,14 @@ func intentSection(text string) string {
 	return "## Intent\n\n" + text + "\n\n" + prIntentEndMarker
 }
 
-// errUnmarkedPRIntent names the one case a re-raise replaces a published
-// Intent: the body carries an Intent section without prIntentEndMarker, so
-// nothing says where the author's text ends.
-var errUnmarkedPRIntent = errors.New("intent replaced: no intent marker in the published body; republish once to opt in")
-
-// errUnreadablePRIntent names the other case: the host cannot read the
-// published body at all, so there is no Intent to keep.
-var errUnreadablePRIntent = errors.New("intent replaced: this forge cannot read the published body")
+// The reasons a re-raise cannot keep a published Intent. The step states the
+// reason when this run's intent replaces the section or, with no intent of
+// its own, when the section is removed.
+var (
+	errUnmarkedPRIntent   = errors.New("no intent marker in the published body; republish once to opt in")
+	errNearMissPRIntent   = errors.New("no exact ## Intent heading in the published body")
+	errUnreadablePRIntent = errors.New("this forge cannot read the published body")
+)
 
 // clampKeepingIntentMarker wraps clamp for text that may open with a published
 // Intent section: what follows the section is cut first, and when the section
@@ -156,14 +156,12 @@ func clampKeepingIntentMarker(units func(string) int, clamp func(string, int) st
 		if units(text) <= limit {
 			return text
 		}
-		rest, ok := strings.CutPrefix(text, "## Intent\n\n")
-		end := strings.Index(rest, "\n\n"+prIntentEndMarker)
-		if !ok || end < 0 {
+		intent, err := liveIntentSection(text)
+		section := intentSection(intent)
+		if err != nil || intent == "" || !strings.HasPrefix(text, section) {
 			return clamp(text, limit)
 		}
-		intent := rest[:end]
-		section := intentSection(intent)
-		if tail := strings.TrimLeft(rest[end+len("\n\n"+prIntentEndMarker):], "\n"); tail != "" {
+		if tail := strings.TrimLeft(text[len(section):], "\n"); tail != "" {
 			if budget := limit - units(section+"\n\n"); budget > 0 {
 				if clamped := clamp(tail, budget); strings.TrimSpace(clamped) != "" && units(clamped) <= budget {
 					return section + "\n\n" + clamped
@@ -185,26 +183,30 @@ func clampKeepingIntentMarker(units func(string) int, clamp func(string, int) st
 	}
 }
 
-// liveIntentSection returns the text of the first top-level "## Intent"
-// section in an existing PR body, exactly as published up to its
-// prIntentEndMarker, without the blank lines that separate it from its
-// neighbours. It returns "" when the body has no such section or it is empty,
-// and errUnmarkedPRIntent when the section has no marker: the marker is the
+// liveIntentSection returns the text of the first "## Intent" section in an
+// existing PR body, exactly as published up to its prIntentEndMarker, without
+// the blank lines that separate it from its neighbours. Only the exact heading
+// line the generator writes opens the section, and a fenced line never opens
+// or ends it. It returns "" when the body has no such section or it is empty,
+// errUnmarkedPRIntent when the section has no marker, and errNearMissPRIntent
+// when no exact heading exists but a hand-edited one does: the marker is the
 // only boundary trusted, so a heading inside the Intent, even one spelled like
-// a generated section, stays author text. Only a CommonMark ATX heading opens
-// the section (markdownATXHeading), and a fenced line is never a boundary.
+// a generated section, stays author text.
 func liveIntentSection(body string) (string, error) {
 	lines := strings.SplitAfter(body, "\n")
 	var fence markdownFence
 	start := -1
+	nearMiss := false
 	for i, raw := range lines {
 		line := strings.TrimRight(raw, "\r\n")
 		if fence.marker == 0 {
 			if start < 0 {
-				if level, title, ok := markdownATXHeading(line); ok && level == 2 && strings.EqualFold(strings.TrimRight(title, ":.!? "), "intent") {
+				if line == "## Intent" {
 					start = i + 1
 					continue
 				}
+				trimmed := strings.TrimSpace(line)
+				nearMiss = nearMiss || (strings.HasPrefix(trimmed, "#") && strings.EqualFold(strings.Trim(trimmed, "# \t:.!?"), "intent"))
 			} else if line == prIntentEndMarker {
 				intent := strings.Trim(strings.Join(lines[start:i], ""), "\r\n")
 				if strings.TrimSpace(intent) == "" {
@@ -215,29 +217,11 @@ func liveIntentSection(body string) (string, error) {
 		}
 		fence.consume(line)
 	}
-	if start < 0 {
-		return "", nil
+	if start >= 0 {
+		return "", errUnmarkedPRIntent
 	}
-	return "", errUnmarkedPRIntent
-}
-
-// markdownATXHeading parses line as a CommonMark ATX heading: at most three
-// spaces of indentation, one to six "#", then a space, a tab, or the line end.
-// title is the heading text without its optional closing "#" sequence.
-func markdownATXHeading(line string) (level int, title string, ok bool) {
-	rest := strings.TrimLeft(line, " ")
-	if len(line)-len(rest) > 3 {
-		return 0, "", false
+	if nearMiss {
+		return "", errNearMissPRIntent
 	}
-	for level < len(rest) && rest[level] == '#' {
-		level++
-	}
-	if level == 0 || level > 6 || (level < len(rest) && rest[level] != ' ' && rest[level] != '\t') {
-		return 0, "", false
-	}
-	title = strings.TrimSpace(rest[level:])
-	if closing := strings.TrimRight(title, "#"); closing == "" || strings.HasSuffix(closing, " ") || strings.HasSuffix(closing, "\t") {
-		title = strings.TrimSpace(closing)
-	}
-	return level, title, true
+	return "", nil
 }

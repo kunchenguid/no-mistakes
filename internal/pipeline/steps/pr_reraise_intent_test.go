@@ -285,7 +285,7 @@ func TestLiveIntentSection(t *testing.T) {
 	end := "\n\n" + prIntentEndMarker + "\n"
 	for _, tc := range []struct {
 		name, body, want string
-		unmarked         bool
+		err              error
 	}{
 		{name: "no intent", body: "## What Changed\n\n- x\n"},
 		{name: "empty intent", body: "## Intent" + end + "\n## What Changed\n\n- x\n"},
@@ -295,17 +295,80 @@ func TestLiveIntentSection(t *testing.T) {
 		{name: "never takes in what follows the marker", body: "## Intent\n\nGoal." + end + "\n- A summary bullet.\n\n" + validationDetailsOpen + "## Pipeline\n", want: "Goal."},
 		{name: "fenced marker is content", body: "## Intent\n\n```md\n" + prIntentEndMarker + "\n```\n\nMore." + end, want: "```md\n" + prIntentEndMarker + "\n```\n\nMore."},
 		{name: "indented code is content", body: "## Intent\n\nGoal:\n\n    ## Example\n    " + prIntentEndMarker + "\n\nAfter." + end, want: "Goal:\n\n    ## Example\n    " + prIntentEndMarker + "\n\nAfter."},
-		{name: "indented intent is not the heading", body: "Notes:\n\n    ## Intent\n    quoted\n\n## Intent\n\nReal goal." + end, want: "Real goal."},
-		{name: "indented intent alone", body: "    ## Intent\n\n    quoted\n"},
-		{name: "up to three spaces is a heading", body: "   ## Intent\n\nGoal." + end, want: "Goal."},
-		{name: "closing hash sequence", body: "## Intent ##\n\nGoal." + end, want: "Goal."},
-		{name: "markerless intent is unmarked", body: "## Intent\n\nGoal.\n\n## What Changed\n\n- x\n\n## Pipeline\n", unmarked: true},
-		{name: "marker only inside a fence is unmarked", body: "## Intent\n\n```\n" + prIntentEndMarker + "\n```\n", unmarked: true},
+		{name: "exact heading after a near miss wins", body: "Notes:\n\n    ## Intent\n    quoted\n\n## Intent\n\nReal goal." + end, want: "Real goal."},
+		{name: "markerless intent is unmarked", body: "## Intent\n\nGoal.\n\n## What Changed\n\n- x\n\n## Pipeline\n", err: errUnmarkedPRIntent},
+		{name: "marker only inside a fence is unmarked", body: "## Intent\n\n```\n" + prIntentEndMarker + "\n```\n", err: errUnmarkedPRIntent},
+		{name: "re-cased heading is a near miss", body: "## intent\n\nGoal." + end, err: errNearMissPRIntent},
+		{name: "re-indented heading is a near miss", body: "   ## Intent\n\nGoal." + end, err: errNearMissPRIntent},
+		{name: "renamed heading is a near miss", body: "## Intent:\n\nGoal." + end, err: errNearMissPRIntent},
+		{name: "closing hash sequence is a near miss", body: "## Intent ##\n\nGoal." + end, err: errNearMissPRIntent},
+		{name: "other level is a near miss", body: "### Intent\n\nGoal." + end, err: errNearMissPRIntent},
 	} {
 		got, err := liveIntentSection(tc.body)
-		if got != tc.want || errors.Is(err, errUnmarkedPRIntent) != tc.unmarked || (err != nil && !tc.unmarked) {
-			t.Errorf("%s: liveIntentSection = %q, %v; want %q, unmarked %v", tc.name, got, err, tc.want, tc.unmarked)
+		if got != tc.want || !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
+			t.Errorf("%s: liveIntentSection = %q, %v; want %q, %v", tc.name, got, err, tc.want, tc.err)
 		}
+	}
+}
+
+// Without the exact heading the generator writes, the step cannot tell a
+// hand-edited section from author prose, so it states what it did not find:
+// replaced when this run has an intent, removed when it has none.
+func TestPRStep_ReRaiseStatesWhyItCannotKeepTheIntent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, seed, intent, want string
+	}{
+		{name: "near-miss heading", seed: "## intent:\n\n" + reraiseOriginalIntent + "\n\n" + prIntentEndMarker + "\n\n## What Changed\n\n- An older summary.\n", intent: reraiseFollowUpIntent, want: "intent replaced: no exact ## Intent heading in the published body"},
+		{name: "markerless without a run intent", seed: "## Intent\n\n" + reraiseOriginalIntent + "\n\n## What Changed\n\n- An older summary.\n", want: "intent removed: no intent marker in the published body; republish once to opt in"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx, bodyFile, _ := reraiseContext(t, "https://github.com/test/repo/pull/42")
+			if err := os.WriteFile(bodyFile, []byte(tc.seed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var logs []string
+			sctx.Log = func(line string) { logs = append(logs, line) }
+			sctx.UserIntent = tc.intent
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(logs, tc.want) {
+				t.Fatalf("step log does not state %q: %q", tc.want, logs)
+			}
+			after := string(mustRead(t, bodyFile))
+			if strings.Contains(after, reraiseOriginalIntent) {
+				t.Fatalf("the unkept Intent was republished:\n%s", after)
+			}
+			if tc.intent != "" {
+				if got, err := liveIntentSection(after); err != nil || got != tc.intent {
+					t.Fatalf("Intent = %q, %v; want this run's", got, err)
+				}
+			}
+		})
+	}
+}
+
+// A clamp that must shorten what follows the Intent finds the Intent's end the
+// way a re-raise does: a marker line inside a fenced example is content, so
+// the section ends at the real marker and nothing after it opens a fence.
+func TestAssembleDraftPRBody_ClampEndsTheIntentAtTheRealMarker(t *testing.T) {
+	t.Parallel()
+	provider := scm.ProviderAzureDevOps
+	limit := scm.MaxPRBodyChars(provider)
+	intent := "Goal:\n\n```\nexample\n\n" + prIntentEndMarker + "\n```\n\nAfter."
+	whatChanged := "## What Changed\n\n" + strings.Repeat("- a long generated bullet\n", 2*limit/len("- a long generated bullet\n"))
+	pipelineMD := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + pipelineAttestationCommentPrefix + `{"head_sha":"abc"}` + pipelineAttestationCommentClosingToken
+	body, err := assembleDraftPRBody(&pipeline.StepContext{Config: &config.Config{}, UserIntent: intent}, whatChanged, "✅ Low: small", "", pipelineMD, "", limit, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := liveIntentSection(body); err != nil || got != intent {
+		t.Fatalf("published Intent = %q, %v; want the whole fenced example\nbody:\n%s", got, err, body)
+	}
+	if attestation := strings.Index(body, pipelineAttestationCommentPrefix); attestation < 0 || markdownFenceOpen(body[:attestation]) || scm.PRBodyLen(body) > limit {
+		t.Fatalf("the generated sections render inside a fence or the limit is broken:\n%s", body)
 	}
 }
 
