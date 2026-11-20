@@ -256,7 +256,7 @@ func TestCallerRestrictionsTriggerRunChecksCompetingRun(t *testing.T) {
 				if name != "unset request" {
 					ctx = callerrestrictions.WithLaunchRecord(ctx, requested)
 				}
-				runID, err := triggerRunWithPRText(ctx, env, "feature/omit", nil, "", "", false, "", nil, db.RunPRText{})
+				runID, err := triggerRunWithPRText(ctx, env, "feature/omit", nil, "", "", "", false, "", nil, db.RunPRText{})
 				if name == "matching" || name == "unset request" {
 					if err != nil || runID != "competing-run" {
 						t.Fatalf("compatible attachment: run=%q error=%v", runID, err)

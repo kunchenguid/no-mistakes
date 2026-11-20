@@ -138,6 +138,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			skipReason, err := parseOpaquePushOptions(pushOptions, skipReasonPushOptionPrefix, "skip reason")
+			if err != nil {
+				return err
+			}
 			intent, err := parseIntentPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -240,6 +244,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				Old:                    oldSHA,
 				New:                    newSHA,
 				SkipSteps:              skipSteps,
+				SkipReason:             skipReason,
 				Intent:                 intent,
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
@@ -580,7 +585,12 @@ func parseClosingIssueRefsPushOptions(options []string) ([]string, error) {
 	return normalizeClosingIssueRefs(values)
 }
 
-func formatSkipPushOptions(steps []types.StepName) []string {
+// skipReasonPushOptionPrefix carries the operator's reason for a run's
+// explicit skips, base64-encoded like the intent so any text survives the
+// line-oriented push-option transport.
+const skipReasonPushOptionPrefix = "no-mistakes.skip-reason="
+
+func formatSkipPushOptions(steps []types.StepName, reason string) []string {
 	if len(steps) == 0 {
 		return nil
 	}
@@ -588,7 +598,11 @@ func formatSkipPushOptions(steps []types.StepName) []string {
 	for _, step := range dedupeSteps(steps) {
 		parts = append(parts, string(step))
 	}
-	return []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+	options := []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+	if reason != "" {
+		options = append(options, formatOpaquePushOption(skipReasonPushOptionPrefix, reason))
+	}
+	return options
 }
 
 func validStep(step types.StepName) bool {

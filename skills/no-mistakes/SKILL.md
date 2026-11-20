@@ -32,7 +32,8 @@ return control to the outer executor. Safe inspection remains available through
 
 When the user invokes `/no-mistakes`, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching `axi run`
-flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
+flags yourself - for example, "skip the lint step because CI lints" becomes
+`--skip=lint --skip-reason "CI lints"`; a skip always records the user's reason. Run
 `no-mistakes axi run --help` to see the available flags.
 
 ## Two ways to invoke
@@ -216,8 +217,8 @@ Run the pipeline and decide on its findings as they come up:
    # fix some findings and explicitly decline the rest
    no-mistakes axi respond --action fix --findings <id1,id2> --ignore <id3>
 
-   # skip this step
-   no-mistakes axi respond --action skip
+   # skip this step (the reason is required and recorded)
+   no-mistakes axi respond --action skip --reason "<why the step is skipped>"
 
    # continue static review when coverage is incomplete and findings are empty
    no-mistakes axi respond --step review --action complete-coverage
@@ -259,7 +260,8 @@ Run the pipeline and decide on its findings as they come up:
     - `--wait` bounds the hold (default 8m).
     - `--reason "the operator's explanation"` records an explicitly authorized Test exception with `--step test --action approve`.
       This does not grant approval authority; escalate ask-user findings as before.
-      Without a reason, Test approval remains effective; an approval past a failing command, `no-go`, or `inconclusive` verdict is reported as an exception with no operator reason supplied.
+      It is required when the approval is a Test exception - past a failing configured command, a `no-go` or `inconclusive` verdict, or a budget-cut Test turn - and the reason is listed in the PR attestation's `exceptions`.
+    - `--action skip --reason "<why>"` records why the step is skipped. The reason is required and is listed in the PR attestation's `exceptions`; so is the `--skip-reason` that `axi run --skip` requires.
     - `--action abort --reason "<why>"` records the user's decision that the parked gate fails. The reason is required.
       The round is recorded as declined, no fix round starts, nothing is approved, pushed or merged, and the run ends `failed` with the reason in the step and run errors. Saved commits, findings and evidence stay available, but the run's worktree is removed, so uncommitted edits in it are lost.
       Follow the output's `branch_sync.next_action` to get the branch back. It is the user's call, never yours: do not send it to get past a finding, and it is not `axi abort`, which cancels the run instead.
@@ -478,7 +480,7 @@ findings[2]{id,severity,file,line,action,description}:
 help[6]:
   Run `no-mistakes axi respond --action approve` to accept this step and continue
   Run `no-mistakes axi respond --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response
-  Run `no-mistakes axi respond --action skip` to skip this step
+  Run `no-mistakes axi respond --action skip --reason "<why>"` to skip this step; the reason is required and recorded
   Run `no-mistakes axi logs --step review --full` to read the complete step summary and log
   A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
   Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.

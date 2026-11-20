@@ -158,7 +158,7 @@ func TestAxiRunPRTextRefusesOlderDaemon(t *testing.T) {
 			cmd := &cobra.Command{}
 			cmd.SetContext(context.Background())
 			cmd.SetOut(&out)
-			err := runAxiRunWithPRText(cmd, false, nil, "goal", "", false, "", "", defaultAxiWait, db.RunPRText{Title: "Add widget"})
+			err := runAxiRunWithPRText(cmd, false, nil, "", "goal", "", false, "", "", defaultAxiWait, db.RunPRText{Title: "Add widget"})
 			if err == nil || !strings.Contains(out.String(), "too old to honor --pr-title or --pr-body-file") {
 				t.Fatalf("older daemon accepted supplied PR text: %v\n%s", err, out.String())
 			}
@@ -229,7 +229,7 @@ func TestAxiRunRejectsPRTextWithSkipPR(t *testing.T) {
 	launched := olderDaemonFixture(t, nil)
 	writeGlobalConfig(t, "")
 	cmd := newAxiRunCmd()
-	cmd.SetArgs([]string{"--intent", "goal", "--pr-title", "Add widget", "--skip", "pr"})
+	cmd.SetArgs([]string{"--intent", "goal", "--pr-title", "Add widget", "--skip", "pr", "--skip-reason", "no PR for this run"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)

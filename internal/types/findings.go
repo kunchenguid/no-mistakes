@@ -174,6 +174,25 @@ const (
 	TestVerdictNoSurface    = "no-surface"
 )
 
+// TestApprovalException returns the unresolved condition that approving a Test
+// gate parked on findings would complete past - a no-go or inconclusive
+// verdict, or a budget-cut evidence or repair turn - or "" when approving it
+// completes normally, as approving a no-surface park does. A failing
+// configured commands.test (FindingCategoryTestCommand) is the other Test
+// exception; the approval records it as the step's override reason.
+func TestApprovalException(findings Findings) string {
+	switch findings.Verdict {
+	case TestVerdictNoGo, TestVerdictInconclusive:
+		return "live validation verdict: " + findings.Verdict
+	}
+	for _, item := range findings.Items {
+		if item.ID == FindingIDTestAgentTimeout {
+			return "test agent invocation budget exhausted"
+		}
+	}
+	return ""
+}
+
 var (
 	knownScenarioResults = []string{ScenarioResultPass, ScenarioResultFail, ScenarioResultUntested}
 	knownTestVerdicts    = []string{TestVerdictGo, TestVerdictNoGo, TestVerdictInconclusive, TestVerdictNoSurface}

@@ -396,7 +396,7 @@ func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	}}
 	steps := []Step{review, newPassStep(types.StepTest), newPassStep(types.StepPush), ci}
 	exec := NewExecutor(database, p, nil, nil, steps, nil)
-	exec.SetSkippedSteps([]types.StepName{types.StepPush})
+	exec.SetSkippedSteps([]types.StepName{types.StepPush}, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(ctx, run, repo, workDir) }()
@@ -788,7 +788,7 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 	review := newPassStep(types.StepReview)
 	testStep := newPassStep(types.StepTest)
 	exec := NewExecutor(database, p, nil, nil, []Step{review, testStep}, nil)
-	exec.SetSkippedSteps([]types.StepName{types.StepReview})
+	exec.SetSkippedSteps([]types.StepName{types.StepReview}, "")
 	events := collectEvents(exec)
 
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
@@ -830,7 +830,7 @@ func TestExecutor_SkippedPRStepWithClosingIssueRefsFails(t *testing.T) {
 			}
 			pr := newPassStep(types.StepPR)
 			exec := NewExecutor(database, p, nil, nil, []Step{pr}, nil)
-			exec.SetSkippedSteps([]types.StepName{types.StepPR})
+			exec.SetSkippedSteps([]types.StepName{types.StepPR}, "")
 
 			err := exec.Execute(context.Background(), run, repo, t.TempDir())
 			if got := pr.callCount(); got != 0 {

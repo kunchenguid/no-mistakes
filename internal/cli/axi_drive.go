@@ -157,7 +157,7 @@ func qualifyOutcome(word string, rv runView) string {
 
 func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
-	var skipValue string
+	var skipValue, skipReason string
 	var intent, intentFile string
 	var launchNonce string
 	var validationGeneration string
@@ -275,16 +275,25 @@ func newAxiRunCmd() *cobra.Command {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
+				reason := strings.TrimSpace(skipReason)
+				if len(skipSteps) > 0 && reason == "" {
+					return emitError(cmd, 2, "--skip requires --skip-reason <text>: every explicitly skipped step records the operator's reason",
+						"Run `no-mistakes axi run --skip "+skipValue+" --skip-reason \"why these steps are skipped\"`")
+				}
+				if reason != "" && len(skipSteps) == 0 {
+					return emitError(cmd, 2, "--skip-reason applies only with --skip")
+				}
 				profile, err := piProfileFromFlags(cmd, model, effort)
 				if err != nil {
 					return emitError(cmd, 2, err.Error())
 				}
-				return runAxiRunWithPRText(cmd, autoYes, skipSteps, resolvedIntent, baseBranch, noPublishIntent, launchNonce, validationGeneration, wait, prText, profile)
+				return runAxiRunWithPRText(cmd, autoYes, skipSteps, reason, resolvedIntent, baseBranch, noPublishIntent, launchNonce, validationGeneration, wait, prText, profile)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve eligible gates (fix findings, then accept) until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response, and an open review question requires `axi answer`")
-	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
+	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip (requires --skip-reason)")
+	cmd.Flags().StringVar(&skipReason, "skip-reason", "", "why the --skip steps are skipped; required with --skip and recorded on every skipped step and in the PR attestation")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish; '-' reads stdin to EOF (exclusive with --intent-file)")
 	cmd.Flags().StringVar(&intentFile, "intent-file", "", "read intent from this file, relative to the current directory (exclusive with --intent)")
 	cmd.Flags().StringVar(&launchNonce, "launch-nonce", "", "opaque nonce for a daemon-bound pre-drive launch receipt")
@@ -307,12 +316,12 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 }
 
 func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, profiles ...agentcfg.RunSelection) error {
-	return runAxiRunWithPRText(cmd, autoYes, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, wait, db.RunPRText{}, profiles...)
+	return runAxiRunWithPRText(cmd, autoYes, skipSteps, "", intent, baseBranch, omitIntent, launchNonce, validationGeneration, wait, db.RunPRText{}, profiles...)
 }
 
 // runAxiRunWithPRText is runAxiRunWithLaunchProof with the caller-supplied PR
 // text already read and validated by resolvePRTextFlags.
-func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, prText db.RunPRText, profiles ...agentcfg.RunSelection) error {
+func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, skipReason, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, prText db.RunPRText, profiles ...agentcfg.RunSelection) error {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	reviewer := agentcfg.OptionalReviewerProfile(profiles)
 	if reviewer == nil {
@@ -538,12 +547,12 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		}
 		var err error
 		if launchNonce != "" {
-			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, prText, profile, reviewer)
+			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, skipReason, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, prText, profile, reviewer)
 			if err == nil {
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRunWithPRText(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, prText, profile, reviewer)
+			runID, err = triggerRunWithPRText(ctx, env, branch, skipSteps, skipReason, intent, baseBranch, omitIntent, planID, closesIssues, prText, profile, reviewer)
 		}
 		if err == nil && planID != "" && runID != planID {
 			err = fmt.Errorf("launched run does not own the captured verification plan")
@@ -866,12 +875,12 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
 func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, profiles ...agentcfg.RunSelection) (string, error) {
-	return triggerRunWithPRText(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, db.RunPRText{}, profiles...)
+	return triggerRunWithPRText(ctx, env, branch, skipSteps, "", intent, baseBranch, omitIntent, planID, closesIssues, db.RunPRText{}, profiles...)
 }
 
 // triggerRunWithPRText is triggerRun carrying caller-supplied PR text on the
 // push and on the rerun fallback.
-func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (string, error) {
+func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, skipReason, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (string, error) {
 	restrictions := callerrestrictions.LaunchRecord(ctx)
 	if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
 		return "", err
@@ -885,7 +894,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 		return "", err
 	}
 	profile := agentcfg.OptionalPiProfile(profiles)
-	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	pushOptions := append(formatSkipPushOptions(skipSteps, skipReason), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
@@ -985,7 +994,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	// No run appeared: the push was likely up-to-date. Refresh the caller's
 	// clean-head evidence because it may have changed while waiting above.
 	var rr ipc.RerunResult
-	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
+	params := rerunParams(env.repo.ID, branch, skipSteps, skipReason, intent, baseBranch)
 	params.TranscriptHomes = homes
 	params.CallerRestrictions = restrictions
 	params.BaseRemote = integration.RequestedRemote(ctx)
@@ -1094,7 +1103,7 @@ func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch,
 // triggerProofRun captures the immutable submitted commit and waits only for
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
-func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
+func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, skipReason, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	restrictions := callerrestrictions.LaunchRecord(ctx)
 	if err := requireDaemonCallerRestrictions(env.client, restrictions); err != nil {
 		return nil, err
@@ -1108,7 +1117,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if err != nil {
 		return nil, err
 	}
-	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	pushOptions := append(formatSkipPushOptions(skipSteps, skipReason), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
@@ -1150,7 +1159,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		CommitIdentity:     identity,
 		TranscriptHomes:    homes,
 		BaseRemote:         integration.RequestedRemote(ctx),
-		RepoID:             env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
+		RepoID:             env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps, SkipReason: skipReason,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
 		ReviewerProfile: agentcfg.OptionalReviewerProfile(profiles),
@@ -1261,8 +1270,8 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, PRBaseBranch: baseBranch}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, skipReason, intent, baseBranch string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, SkipReason: skipReason, Intent: intent, PRBaseBranch: baseBranch}
 }
 
 // conflictingActiveRunOmitIntent reports when --no-publish-intent would be
@@ -1792,6 +1801,29 @@ func successReportHelp(fixes []fixRow) []string {
 // approval. It refused before recording anything, so the gate stays parked.
 const legacyApprovalReasonRefusal = "an approval reason applies only to Test approval"
 
+// legacySkipReasonRefusal is what every daemon that predates skip reasons
+// answers to the reason a skip carries. It refused before recording anything,
+// so the gate stays parked.
+const legacySkipReasonRefusal = "applies only to Test approval"
+
+// testApprovalIsException reports whether approving a Test gate parked on
+// findingsJSON records a Test exception, which requires the operator's
+// reason: a failing configured commands.test, or a condition
+// types.TestApprovalException names. An unreadable payload counts as one, so
+// the refusal fails toward asking for a reason.
+func testApprovalIsException(findingsJSON string) bool {
+	findings, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil || types.TestApprovalException(findings) != "" {
+		return true
+	}
+	for _, item := range findings.Items {
+		if item.Category == types.FindingCategoryTestCommand {
+			return true
+		}
+	}
+	return false
+}
+
 func newAxiRespondCmd() *cobra.Command {
 	var action, step, findings, ignore, instructions, instructionsFile, addFinding, addFindingFile, reason, runID string
 	var autoYes bool
@@ -1813,6 +1845,11 @@ func newAxiRespondCmd() *cobra.Command {
 			"--ignore is refused too: reverting an applied fix is out of scope for a gate\n" +
 			"response. The recorded dispositions (fixed, ignored, kept) are echoed in the\n" +
 			"output.\n\n" +
+			"--reason records why. It is required with --action skip, with --action\n" +
+			"abort, and with --action approve on a Test gate whose approval is a Test\n" +
+			"exception (a failing configured commands.test, a no-go or inconclusive\n" +
+			"verdict, or a budget-cut Test turn). The reason is recorded on the step,\n" +
+			"and a skip or Test exception is listed with it in the PR attestation.\n\n" +
 			"With --action abort, the operator rejects the parked gate: the round is\n" +
 			"recorded as declined, the step fails as \"aborted by user: <reason>\", and the\n" +
 			"run ends failed. --reason is required and is kept in the step error and the\n" +
@@ -1864,7 +1901,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to selected findings; '-' reads stdin (exclusive with --instructions-file)")
 	cmd.Flags().StringVar(&instructionsFile, "instructions-file", "", "read fix guidance from a file (exclusive with --instructions)")
-	cmd.Flags().StringVar(&reason, "reason", "", "reason preserved with a Test approval exception (--step test --action approve), and required with --action abort")
+	cmd.Flags().StringVar(&reason, "reason", "", "operator's reason, required with --action skip, --action abort, and a Test exception approval (--step test --action approve)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix; '-' reads stdin (exclusive with --add-finding-file)")
 	cmd.Flags().StringVar(&addFindingFile, "add-finding-file", "", "read JSON finding object from a file (exclusive with --add-finding)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response, and an open review question requires `axi answer`")
@@ -2011,14 +2048,26 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 
 	reason := ra.reason
-	if act == types.ActionAbort {
+	switch {
+	case act == types.ActionAbort:
 		reason = strings.TrimSpace(reason)
 		if reason == "" {
 			return emitError(cmd, 2, "--action abort requires --reason <text>: the rejection is recorded with the operator's reason",
 				"Run `"+respondCmd+" --action abort --reason \"why this gate is rejected\"`")
 		}
-	} else if ra.reason != "" && (act != types.ActionApprove || stepName != types.StepTest) {
-		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step, or to --action abort")
+	case act == types.ActionSkip:
+		reason = strings.TrimSpace(reason)
+		if reason == "" {
+			return emitError(cmd, 2, "--action skip requires --reason <text>: the skip is recorded with the operator's reason",
+				"Run `"+respondCmd+" --action skip --reason \"why this step is skipped\"`")
+		}
+	case act == types.ActionApprove && stepName == types.StepTest:
+		if strings.TrimSpace(reason) == "" && testApprovalIsException(rv.step(stepName).FindingsJSON) {
+			return emitError(cmd, 2, "approving this Test gate records a Test exception, which requires --reason <text>: the approval is recorded with the operator's reason",
+				"Run `"+respondCmd+" --step test --action approve --reason \"why the change ships without this validation\"`, or use fix, skip, or abort")
+		}
+	case ra.reason != "":
+		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step, --action skip, or --action abort")
 	}
 	if act == types.ActionCompleteCoverage && stepName != types.StepReview {
 		return emitError(cmd, 2, "complete-coverage applies only to a parked Review")
@@ -2071,6 +2120,10 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		var refusal *respondRefusalError
 		if errors.As(err, &refusal) {
 			return emitError(cmd, 2, refusal.refusal, refusal.helpLines(ra.runID)...)
+		}
+		if act == types.ActionSkip && strings.Contains(err.Error(), legacySkipReasonRefusal) {
+			return emitError(cmd, 1, "the running daemon is too old to record a skip reason; nothing was recorded",
+				"A plain `no-mistakes daemon restart` refuses while runs are active and lists every run, in all repositories, that a restart would interrupt: read that list, then run `no-mistakes daemon restart --force` so the current binary serves it, and send the skip again")
 		}
 		if act == types.ActionAbort && strings.Contains(err.Error(), legacyApprovalReasonRefusal) {
 			return emitError(cmd, 1, "the running daemon is too old to record an abort reason; nothing was recorded",

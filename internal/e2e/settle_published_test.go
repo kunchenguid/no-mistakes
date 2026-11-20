@@ -24,7 +24,7 @@ func TestSettlePublishedToleratesRunFinishedBeforeCancel(t *testing.T) {
 	const branch = "feature/settle-published"
 	h.CommitChange(branch, "s.txt", "s\n", "add settle fixture")
 	wt := h.AddWorktree(branch)
-	if out, err := h.RunInDir(wt, "axi", "run", "--intent", "settle a finished run", "--skip", "ci"); err != nil {
+	if out, err := h.RunInDir(wt, "axi", "run", "--intent", "settle a finished run", "--skip", "ci", "--skip-reason", "synthetic e2e run"); err != nil {
 		t.Fatalf("axi run: %v\n%s", err, out)
 	}
 	finished := h.WaitForRun(branch, 3*time.Minute)
