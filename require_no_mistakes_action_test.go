@@ -314,16 +314,22 @@ func TestRequireActionEnforcesTheGate(t *testing.T) {
 			wantOut: []string{"review", "missing"},
 		},
 		{
-			name:    "pending review fails",
+			name:    "pending review publishes as unreported and fails",
 			run:     actionRun{body: pipelineSummaryWithStatuses(t, types.StepStatusPending, types.StepStatusCompleted, types.StepStatusCompleted), headSHA: requiredWorkflowTestHeadSHA},
 			want:    "failure",
-			wantOut: []string{"review", "pending"},
+			wantOut: []string{"review", "status=unreported"},
 		},
 		{
-			name:    "running test fails",
+			name:    "running test publishes as unreported and fails",
 			run:     actionRun{body: pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusRunning, types.StepStatusCompleted), headSHA: requiredWorkflowTestHeadSHA},
 			want:    "failure",
-			wantOut: []string{"test", "running"},
+			wantOut: []string{"test", "status=unreported"},
+		},
+		{
+			name:    "review parked for a person keeps its state and fails",
+			run:     actionRun{body: pipelineSummaryWithStatuses(t, types.StepStatusAwaitingApproval, types.StepStatusCompleted, types.StepStatusCompleted), headSHA: requiredWorkflowTestHeadSHA},
+			want:    "failure",
+			wantOut: []string{"review", "status=awaiting_approval"},
 		},
 	}
 
