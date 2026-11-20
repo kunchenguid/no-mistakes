@@ -40,11 +40,12 @@ no-mistakes init --skip-user-skill
 | `--worktree-root`   | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 | `--skip-user-skill` | `bool`   | `false` | Do not install or refresh the `/no-mistakes` agent skill at user level                           |
 
-Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md` (unless you pass `--skip-user-skill`), and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/` and `~/.agents/skills/no-mistakes/` (unless you pass `--skip-user-skill`), and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Each skill installation contains a short `SKILL.md` core and its linked `references/` documents, which agents read when they need the detailed procedures.
 `init` writes no skill files into the repo; the user-level copies serve Claude Code (`~/.claude/skills`) and agents that use the vendor-neutral `~/.agents/skills` convention (Codex, OpenCode, Rovo Dev, and Pi) across all repos. Grok Build is a pipeline runner and does not consume this installed skill.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
-With `--skip-user-skill`, `init` does not run the skill installer at all: neither user-level `SKILL.md` is created, refreshed, or otherwise touched (including through the symlink layouts above), and a missing skills directory is not created.
+With `--skip-user-skill`, `init` does not run the skill installer at all: no user-level skill documents are created, refreshed, or otherwise touched (including through the symlink layouts above), and a missing skills directory is not created.
 Everything else about `init` is unchanged, and it reports `skipped: --skip-user-skill` on its skill line.
 The flag applies to that run only and is not remembered, so a later `init` without it installs or refreshes the skill again.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
@@ -68,7 +69,7 @@ It also refuses to register anything while `~/.no-mistakes/config.yaml` does not
 Before reinitializing a nonempty gate directory or changing hook-path isolation, no-mistakes verifies that the intended path resolves to the bare repository itself. A working repository, its `.git` directory, a linked worktree or its Git directory, or a stale directory that discovers an enclosing repository is refused before those Git configuration writes. Identity refusals name the intended and resolved paths, or report the resolved path as unavailable when discovery fails. A missing or empty gate directory can still be initialized.
 
 Re-running `init` on an already-initialized repo with a valid bare gate succeeds and reports `Gate already initialized (refreshed)`.
-It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, unless you pass `--skip-user-skill`, the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
+It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, unless you pass `--skip-user-skill`, every generated document in both skill installations, overwriting stale content and restoring missing files.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
@@ -87,7 +88,7 @@ Install or refresh the `/no-mistakes` agent skill independently of repository se
 no-mistakes skill install
 ```
 
-Writes the skill bundled with the current binary to `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, using the same installer as `init` and following the same symlink layouts. Re-running the command overwrites stale skill content. Installation errors return a nonzero exit status.
+Installs the complete skill set bundled with the current binary using the [installation locations, refresh behavior, and symlink support described for `init`](#no-mistakes-init). Installation errors return a nonzero exit status.
 
 This command works outside a Git repository and does not register a gate or start the daemon. To control when the user-level skill is installed, run `init --skip-user-skill` for repository setup and `skill install` separately when wanted.
 
