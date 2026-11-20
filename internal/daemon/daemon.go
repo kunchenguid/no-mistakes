@@ -1415,6 +1415,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ClaimLaunchReceiptResult{Receipt: &receipt}, nil
 	})
 
+	// Capability probe for --skip-reason: see ipc.ProbeSkipReasonResult.
+	srv.Handle(ipc.MethodProbeSkipReason, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeSkipReasonResult{OK: true}, nil
+	})
 	// Capability probe for --no-publish-intent: see ipc.ProbeOmitIntentResult.
 	srv.Handle(ipc.MethodProbeOmitIntent, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeOmitIntentResult{OK: true}, nil

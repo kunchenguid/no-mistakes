@@ -1003,6 +1003,9 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.P
 
 func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD, evidenceMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err == nil {
+		steps, err = sctx.DB.WithCarriedTestEvidence(steps)
+	}
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
 		return "", "", "", ""

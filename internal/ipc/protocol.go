@@ -21,6 +21,7 @@ const (
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodResolveReviewerProfile    = "resolve_reviewer_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
+	MethodProbeSkipReason           = "probe_skip_reason"
 	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodProbeTranscriptHomes      = "probe_transcript_homes"
 	MethodProbeCallerRestrictions   = "probe_caller_restrictions"
@@ -186,6 +187,14 @@ type ProbeOmitIntentParams struct{}
 // is refused by such a daemon (method not found) instead of succeeding
 // silently, so a client that reaches OK=true knows omit_intent is honored.
 type ProbeOmitIntentResult struct {
+	OK bool `json:"ok"`
+}
+
+// ProbeSkipReasonResult answers MethodProbeSkipReason, the capability check
+// for axi run --skip-reason. Like ProbeOmitIntentResult, it exists because an
+// older daemon decodes launch requests permissively and would drop the
+// unknown skip_reason field, skipping the steps without the operator's reason.
+type ProbeSkipReasonResult struct {
 	OK bool `json:"ok"`
 }
 

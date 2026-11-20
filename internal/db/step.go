@@ -402,6 +402,33 @@ func (s *StepResult) TestException() (condition, reason string) {
 	return condition, NoOperatorReasonSupplied
 }
 
+// WithCarriedTestEvidence returns steps with each carried Test row's
+// findings read from the row it was carried from. A carried row keeps none of
+// its source's findings (InsertCarriedStepResult), so without them a retry
+// cannot tell that its carried Test completion was an approved exception.
+// The returned rows are copies; nothing is written back, so statistics still
+// count the source's findings once.
+func (d *DB) WithCarriedTestEvidence(steps []*StepResult) ([]*StepResult, error) {
+	out := make([]*StepResult, len(steps))
+	for i, s := range steps {
+		out[i] = s
+		if s == nil || s.StepName != types.StepTest || s.CarriedFrom == nil || s.FindingsJSON != nil {
+			continue
+		}
+		origin, err := d.GetStepResult(*s.CarriedFrom)
+		if err != nil {
+			return nil, fmt.Errorf("read carried Test evidence: %w", err)
+		}
+		if origin == nil {
+			return nil, fmt.Errorf("read carried Test evidence: step %s is not recorded", *s.CarriedFrom)
+		}
+		carried := *s
+		carried.FindingsJSON = origin.FindingsJSON
+		out[i] = &carried
+	}
+	return out, nil
+}
+
 // OperatorSkip reports a step an operator skipped explicitly, with the reason
 // recorded for it or NoOperatorReasonSupplied when none was. A step skipped
 // automatically, or skipped before the reason was recorded, is not one.

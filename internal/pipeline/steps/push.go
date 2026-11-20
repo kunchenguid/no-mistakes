@@ -88,6 +88,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// AllSteps' fixed order), so these are honest statuses to attest for the
 	// head about to be pushed - see attestHeadBeforePush.
 	attestationSteps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err == nil {
+		attestationSteps, err = sctx.DB.WithCarriedTestEvidence(attestationSteps)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load step results for attestation: %w", err)
 	}

@@ -508,6 +508,24 @@ func probeDaemonOmitIntent(client *ipc.Client) error {
 	return nil
 }
 
+// requireDaemonHonorsSkipReason refuses a launch whose skip reason an older
+// daemon would drop: the skip would still happen, with no recorded reason. A
+// launch without a skip reason needs no probe.
+func requireDaemonHonorsSkipReason(client *ipc.Client, reason string) error {
+	if reason == "" {
+		return nil
+	}
+	var result ipc.ProbeSkipReasonResult
+	err := client.Call(ipc.MethodProbeSkipReason, struct{}{}, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the skip-reason capability")
+	}
+	if err != nil {
+		return fmt.Errorf("the running daemon is too old to record a skip reason, so nothing was started (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
 // reconciledPreviousHeadPushOptionPrefix carries the pre-reconciliation private
 // mirror head through a git push. A reconciled branch is deleted and re-created
 // by that push, so the hook sees no previous head of its own.

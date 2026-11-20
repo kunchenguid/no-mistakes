@@ -399,6 +399,11 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	if err := requireDaemonHonorsRunPRText(env.client, prText); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
+	// Same reasoning: an older daemon would drop skip_reason and skip the
+	// steps without recording the reason --skip requires.
+	if err := requireDaemonHonorsSkipReason(env.client, skipReason); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
 	// The first receipt lookup can already claim a competing run. Capture and
 	// bind restrictions before that lookup, as well as before the push.
 	restrictions, captureErr := captureCallerRestrictions(cmd)

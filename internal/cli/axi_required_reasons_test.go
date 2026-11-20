@@ -1,47 +1,74 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// respondFixture parks the run at gate, records what a respond sent, and
-// completes the run once one arrives.
-func respondFixture(t *testing.T, gate ipc.StepResultInfo, respond func() error) (*atomic.Bool, *ipc.RespondParams) {
+// reasonsDaemon is one fake daemon shared by every respond case below, so the
+// cases pay for one repository and one server rather than one each. A case
+// parks the run at its gate and optionally makes the respond call fail; once a
+// response is accepted, the run reads back as completed.
+type reasonsDaemon struct {
+	mu        sync.Mutex
+	gate      ipc.StepResultInfo
+	refuse    error
+	responded bool
+	got       ipc.RespondParams
+}
+
+func (d *reasonsDaemon) park(gate ipc.StepResultInfo, refuse error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.gate, d.refuse, d.responded, d.got = gate, refuse, false, ipc.RespondParams{}
+}
+
+func (d *reasonsDaemon) response() (bool, ipc.RespondParams) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.responded, d.got
+}
+
+func newReasonsDaemon(t *testing.T) *reasonsDaemon {
 	t.Helper()
-	var got ipc.RespondParams
-	responded := new(atomic.Bool)
+	d := &reasonsDaemon{}
 	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
 		respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-			if err := json.Unmarshal(raw, &got); err != nil {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if err := json.Unmarshal(raw, &d.got); err != nil {
 				return nil, err
 			}
-			if respond != nil {
-				if err := respond(); err != nil {
-					return nil, err
-				}
+			if d.refuse != nil {
+				return nil, d.refuse
 			}
-			responded.Store(true)
+			d.responded = true
 			return &ipc.RespondResult{OK: true}, nil
 		},
 	})
 	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
-		if responded.Load() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.responded {
 			return fx.completed(), nil
 		}
 		run := fx.running()
-		run.Steps = []ipc.StepResultInfo{gate}
+		run.Steps = []ipc.StepResultInfo{d.gate}
 		return run, nil
 	})
-	return responded, &got
+	return d
 }
 
 func parkedGate(step types.StepName, findings string) ipc.StepResultInfo {
@@ -52,7 +79,7 @@ func parkedGate(step types.StepName, findings string) ipc.StepResultInfo {
 	return gate
 }
 
-func wantUsageRefusal(t *testing.T, out string, err error, responded *atomic.Bool, want string) {
+func wantUsageRefusal(t *testing.T, out string, err error, want string) {
 	t.Helper()
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != 2 {
@@ -61,44 +88,70 @@ func wantUsageRefusal(t *testing.T, out string, err error, responded *atomic.Boo
 	if !strings.Contains(out, want) {
 		t.Fatalf("output missing %q:\n%s", want, out)
 	}
-	if responded.Load() {
-		t.Fatal("a refused response still reached the daemon")
-	}
 }
 
-// A skip is recorded with the operator's reason, so the reason is not
-// optional, and a missing one is refused before anything reaches the daemon.
-func TestAxiRespond_SkipRequiresAReason(t *testing.T) {
-	for name, args := range map[string][]string{
-		"absent": {"axi", "respond", "--action", "skip", "--wait", "3s"},
-		"blank":  {"axi", "respond", "--action", "skip", "--reason", "  ", "--wait", "3s"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			responded, _ := respondFixture(t, parkedGate(types.StepReview, ""), nil)
-			out, err := executeCmd(args...)
-			wantUsageRefusal(t, out, err, responded, "--action skip requires --reason")
+// `axi respond` requires the operator's reason for a skip and for a Test
+// approval that records a Test exception; a refused response never reaches
+// the daemon, and an accepted one forwards the trimmed reason.
+func TestAxiRespond_RequiredReasons(t *testing.T) {
+	d := newReasonsDaemon(t)
+	review := parkedGate(types.StepReview, "")
+	noGo := `{"findings":[{"id":"t1","severity":"error","description":"refund fails"}],"verdict":"no-go"}`
+
+	refusals := []struct {
+		name string
+		gate ipc.StepResultInfo
+		args []string
+		want string
+	}{
+		{"skip without a reason", review, []string{"--action", "skip"}, "--action skip requires --reason"},
+		{"skip with a blank reason", review, []string{"--action", "skip", "--reason", "  "}, "--action skip requires --reason"},
+		{"reason on a review approval", review, []string{"--action", "approve", "--reason", "why"}, "--reason applies only to --action approve on the Test step, --action skip, or --action abort"},
+		{"no-go approval", parkedGate(types.StepTest, noGo), []string{"--action", "approve"}, "records a Test exception, which requires --reason"},
+		{"inconclusive approval", parkedGate(types.StepTest, `{"findings":[],"verdict":"inconclusive"}`), []string{"--action", "approve"}, "records a Test exception, which requires --reason"},
+		{"budget-cut approval", parkedGate(types.StepTest, `{"findings":[{"id":"`+types.FindingIDTestAgentTimeout+`","severity":"warning","description":"cut"}]}`), []string{"--action", "approve"}, "records a Test exception, which requires --reason"},
+		{"failing-command approval", parkedGate(types.StepTest, `{"findings":[{"id":"cmd","severity":"error","category":"`+types.FindingCategoryTestCommand+`","description":"go test failed"}]}`), []string{"--action", "approve"}, "records a Test exception, which requires --reason"},
+		{"unreadable-findings approval", parkedGate(types.StepTest, `not json`), []string{"--action", "approve", "--reason", " "}, "records a Test exception, which requires --reason"},
+	}
+	for _, tc := range refusals {
+		t.Run(tc.name, func(t *testing.T) {
+			d.park(tc.gate, nil)
+			out, err := executeCmd(append(append([]string{"axi", "respond"}, tc.args...), "--wait", "3s")...)
+			wantUsageRefusal(t, out, err, tc.want)
+			if responded, _ := d.response(); responded {
+				t.Fatal("a refused response still reached the daemon")
+			}
 		})
 	}
-}
 
-func TestAxiRespond_SkipForwardsItsReason(t *testing.T) {
-	responded, got := respondFixture(t, parkedGate(types.StepReview, ""), nil)
-	out, err := executeCmd("axi", "respond", "--action", "skip", "--reason", "  reviewed upstream  ", "--wait", "3s")
-	if err != nil {
-		t.Fatalf("skip with a reason = %v\n%s", err, out)
+	accepted := []struct {
+		name       string
+		gate       ipc.StepResultInfo
+		args       []string
+		wantAction types.ApprovalAction
+		wantReason string
+	}{
+		{"skip with a reason", review, []string{"--action", "skip", "--reason", "  reviewed upstream  "}, types.ActionSkip, "reviewed upstream"},
+		{"exception approval with a reason", parkedGate(types.StepTest, noGo), []string{"--action", "approve", "--reason", "provider sandbox is down"}, types.ActionApprove, "provider sandbox is down"},
+		{"no-surface approval needs none", parkedGate(types.StepTest, `{"findings":[],"verdict":"no-surface"}`), []string{"--action", "approve"}, types.ActionApprove, ""},
 	}
-	if !responded.Load() || got.Action != types.ActionSkip || got.Step != types.StepReview || got.ApprovalReason != "reviewed upstream" {
-		t.Fatalf("forwarded %+v, want the skip with the trimmed reason", got)
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			d.park(tc.gate, nil)
+			out, err := executeCmd(append(append([]string{"axi", "respond"}, tc.args...), "--wait", "3s")...)
+			responded, got := d.response()
+			if err != nil || !responded || got.Action != tc.wantAction || got.Step != tc.gate.StepName || got.ApprovalReason != tc.wantReason {
+				t.Fatalf("respond = %v, forwarded %+v (responded %v)\n%s", err, got, responded, out)
+			}
+		})
 	}
-}
 
-// A CLI upgraded under a still-running older daemon must say so: that daemon
-// refuses a skip's reason with a message about Test approval, before
-// recording anything.
-func TestAxiRespond_SkipExplainsAnOlderDaemonThatCannotRecordTheReason(t *testing.T) {
+	// A CLI upgraded under a still-running older daemon must say so: that
+	// daemon refuses a skip's reason with a message about Test approval,
+	// before recording anything.
 	for _, refusal := range []string{"an approval reason applies only to Test approval", "a reason applies only to Test approval or an abort"} {
-		t.Run(refusal, func(t *testing.T) {
-			respondFixture(t, parkedGate(types.StepReview, ""), func() error { return errors.New(refusal) })
+		t.Run("older daemon: "+refusal, func(t *testing.T) {
+			d.park(review, errors.New(refusal))
 			out, err := executeCmd("axi", "respond", "--action", "skip", "--reason", "reviewed upstream", "--wait", "3s")
 			var ee *exitError
 			if !errors.As(err, &ee) || ee.code != 1 {
@@ -111,42 +164,6 @@ func TestAxiRespond_SkipExplainsAnOlderDaemonThatCannotRecordTheReason(t *testin
 			}
 		})
 	}
-}
-
-// Approving a Test gate is refused without a reason exactly when the approval
-// records a Test exception; approving a no-surface park completes normally
-// and still needs none.
-func TestAxiRespond_TestExceptionApprovalRequiresAReason(t *testing.T) {
-	exceptions := map[string]string{
-		"no-go":        `{"findings":[{"id":"t1","severity":"error","description":"refund fails"}],"verdict":"no-go"}`,
-		"inconclusive": `{"findings":[],"verdict":"inconclusive"}`,
-		"budget cut":   `{"findings":[{"id":"` + types.FindingIDTestAgentTimeout + `","severity":"warning","description":"cut"}]}`,
-		"command":      `{"findings":[{"id":"cmd","severity":"error","category":"` + types.FindingCategoryTestCommand + `","description":"go test failed"}]}`,
-		"unreadable":   `not json`,
-	}
-	for name, findings := range exceptions {
-		t.Run(name, func(t *testing.T) {
-			responded, _ := respondFixture(t, parkedGate(types.StepTest, findings), nil)
-			out, err := executeCmd("axi", "respond", "--action", "approve", "--wait", "3s")
-			wantUsageRefusal(t, out, err, responded, "records a Test exception, which requires --reason")
-		})
-	}
-
-	t.Run("with a reason", func(t *testing.T) {
-		responded, got := respondFixture(t, parkedGate(types.StepTest, exceptions["no-go"]), nil)
-		out, err := executeCmd("axi", "respond", "--action", "approve", "--reason", "provider sandbox is down", "--wait", "3s")
-		if err != nil || !responded.Load() || got.Action != types.ActionApprove || got.ApprovalReason != "provider sandbox is down" {
-			t.Fatalf("approve with a reason = %v, forwarded %+v\n%s", err, got, out)
-		}
-	})
-
-	t.Run("no-surface", func(t *testing.T) {
-		responded, got := respondFixture(t, parkedGate(types.StepTest, `{"findings":[],"verdict":"no-surface"}`), nil)
-		out, err := executeCmd("axi", "respond", "--action", "approve", "--wait", "3s")
-		if err != nil || !responded.Load() || got.Action != types.ActionApprove || got.ApprovalReason != "" {
-			t.Fatalf("no-surface approve = %v, forwarded %+v\n%s", err, got, out)
-		}
-	})
 }
 
 // The gate help names the reason wherever the response requires one.
@@ -165,20 +182,26 @@ func TestGateHelpNamesTheRequiredReason(t *testing.T) {
 }
 
 // `axi run --skip` records the operator's reason on every skipped step, so it
-// is refused without one, and the reason is refused without a skip.
+// is refused without one, and the reason is refused without a skip. Both are
+// flag refusals, decided before any daemon is contacted.
 func TestAxiRun_SkipRequiresASkipReason(t *testing.T) {
+	t.Setenv("NM_HOME", t.TempDir())
 	for name, tc := range map[string]struct {
 		args []string
 		want string
 	}{
-		"absent":      {[]string{"axi", "run", "--skip", "lint", "--intent", "goal"}, "--skip requires --skip-reason"},
-		"blank":       {[]string{"axi", "run", "--skip", "lint", "--skip-reason", " ", "--intent", "goal"}, "--skip requires --skip-reason"},
-		"reason only": {[]string{"axi", "run", "--skip-reason", "CI lints", "--intent", "goal"}, "--skip-reason applies only with --skip"},
+		"absent":      {[]string{"--skip", "lint", "--intent", "goal"}, "--skip requires --skip-reason"},
+		"blank":       {[]string{"--skip", "lint", "--skip-reason", " ", "--intent", "goal"}, "--skip requires --skip-reason"},
+		"reason only": {[]string{"--skip-reason", "CI lints", "--intent", "goal"}, "--skip-reason applies only with --skip"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			responded, _ := respondFixture(t, parkedGate(types.StepReview, ""), nil)
-			out, err := executeCmd(tc.args...)
-			wantUsageRefusal(t, out, err, responded, tc.want)
+			cmd := newAxiRunCmd()
+			cmd.SetArgs(tc.args)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			err := cmd.Execute()
+			wantUsageRefusal(t, out.String(), err, tc.want)
 		})
 	}
 }
@@ -196,5 +219,25 @@ func TestSkipReasonReachesTheDaemon(t *testing.T) {
 	}
 	if params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepLint}, reason, "goal", ""); params.SkipReason != reason {
 		t.Fatalf("rerun SkipReason = %q, want %q", params.SkipReason, reason)
+	}
+}
+
+// An older daemon would drop the unknown skip_reason and skip the steps
+// without it, so a launch carrying one probes first and refuses a daemon
+// without the capability before any launch request reaches it. The current
+// daemon's answer is exercised by the e2e journey TestRequiredSkipReasonJourney.
+func TestAxiRunSkipReasonRefusesAnOlderDaemon(t *testing.T) {
+	launched := olderDaemonFixture(t, nil)
+	writeGlobalConfig(t, "intent:\n  publish_intent: true\n")
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	err := runAxiRunWithPRText(cmd, false, []types.StepName{types.StepLint}, "CI lints", "goal", "", false, "", "", defaultAxiWait, db.RunPRText{})
+	if err == nil || !strings.Contains(out.String(), "too old to record a skip reason") {
+		t.Fatalf("axi run = %v, want the older daemon refused:\n%s", err, out.String())
+	}
+	if len(*launched) != 0 {
+		t.Fatalf("a skip reason the daemon would drop reached it: %v", *launched)
 	}
 }
