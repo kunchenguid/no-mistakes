@@ -80,6 +80,10 @@ func (u *updater) checkLatest(ctx context.Context) (*releasePlan, error) {
 	if err != nil {
 		return nil, err
 	}
+	return u.planRelease(release)
+}
+
+func (u *updater) planRelease(release *releaseResponse) (*releasePlan, error) {
 	plan := &releasePlan{
 		CurrentVersion: u.currentVersion,
 		LatestVersion:  release.TagName,
@@ -103,9 +107,6 @@ func (u *updater) checkLatest(ctx context.Context) (*releasePlan, error) {
 }
 
 func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, error) {
-	if u.httpClient == nil {
-		u.httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
 	return u.fetchReleaseFromManifest(ctx)
 }
 
