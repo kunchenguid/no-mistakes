@@ -63,6 +63,11 @@ type shellOutputPipe struct {
 	dst    io.Writer
 }
 
+func ConfigureDetachedShellCommand(cmd *exec.Cmd) {
+	ConfigureShellCommand(cmd)
+	detachFromTerminal(cmd)
+}
+
 // RunShellCommand starts cmd with StartShellCommand, waits for it, and
 // terminates any surviving command-group descendants.
 //
