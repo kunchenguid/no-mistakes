@@ -786,7 +786,10 @@ Final diff paths and statuses:
 				if keepsPRUpdateText(sctx) {
 					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
 				}
-				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+				content.Body, err = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+				if err != nil {
+					return prContent{}, err
+				}
 				return content, nil
 			}
 		}
@@ -1966,7 +1969,10 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	if keepsPRUpdateText(sctx) {
 		return s.publishKeptDraft(sctx, provider, title, body, bodyLimit)
 	}
-	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	body, err := assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	if err != nil {
+		return prContent{}, err
+	}
 	return prContent{
 		Title: title,
 		Body:  body,

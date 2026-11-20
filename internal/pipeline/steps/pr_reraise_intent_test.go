@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -218,6 +220,92 @@ func TestPRStep_ReRaiseOmitIntentStillRemovesIt(t *testing.T) {
 	}
 }
 
+func mustAssembleDraftPRBody(t *testing.T, sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+	t.Helper()
+	body, err := assembleDraftPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// The kept Intent is author text: a hand-written closing line must still close
+// its issue after a re-raise, so it is not neutralized like generated prose.
+func TestPRStep_ReRaiseKeepsAHandWrittenClosingLine(t *testing.T) {
+	t.Parallel()
+	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
+	handWritten := "Fix the crash on start.\n\nCloses #12"
+	seed := "## Intent\n\n" + handWritten + "\n\n## What Changed\n\n- An older summary.\n"
+	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.UserIntent = reraiseFollowUpIntent
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if patchCount(t, logFile) != 1 {
+		t.Fatalf("re-raise must write the regenerated body:\n%s", mustRead(t, logFile))
+	}
+	after := string(mustRead(t, bodyFile))
+	if !strings.HasPrefix(after, "## Intent\n\n"+handWritten+"\n\n## What Changed") {
+		t.Fatalf("hand-written Intent was not kept byte for byte:\n%s", after)
+	}
+	grammar := closingGrammarFor(scm.ProviderGitHub)
+	if targets := closingTargets(extractClosingKeywordLines(after, grammar), "test/repo", grammar); len(targets) != 1 {
+		t.Fatalf("closing reference no longer live after the re-raise (targets %v):\n%s", targets, after)
+	}
+}
+
+// An Intent too long to leave room for the generated sections refuses the
+// update; it is never shortened to make room.
+func TestPRStep_ReRaiseRefusesAnIntentThatCannotFit(t *testing.T) {
+	t.Parallel()
+	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
+	handWritten := strings.Repeat("Original goal line.\n", maxPullRequestBodyBytes/len("Original goal line.\n"))
+	handWritten = strings.TrimSuffix(handWritten, "\n")
+	seed := "## Intent\n\n" + handWritten + "\n"
+	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.UserIntent = reraiseFollowUpIntent
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "refusing to shorten author text") {
+		t.Fatalf("Execute error = %v, want a refusal to shorten the kept Intent", err)
+	}
+	if got := patchCount(t, logFile); got != 0 {
+		t.Fatalf("refused re-raise still wrote the PR (%d PATCH calls)", got)
+	}
+	if after := string(mustRead(t, bodyFile)); after != seed {
+		t.Fatal("refused re-raise changed the live body")
+	}
+}
+
+func TestAssembleDraftPRBody_KeptIntentIsNeverShortened(t *testing.T) {
+	t.Parallel()
+	kept := "Goal, as the author wrote it.\n\nCloses #12"
+	pipelineMD := "## Pipeline\n\n" + pipelineAttestationCommentPrefix + `{"head":"abc"}` + pipelineAttestationCommentClosingToken
+	sctx := &pipeline.StepContext{PublishedPRIntent: kept}
+	whatChanged := "## What Changed\n\n" + strings.Repeat("- a long generated bullet\n", 40)
+	block := "## Intent\n\n" + kept + "\n\n"
+
+	limit := scm.PRBodyLen(block) + scm.PRBodyLen(pipelineMD) + 200
+	got, err := assembleDraftPRBody(sctx, whatChanged, "low risk", "", pipelineMD, "", limit, scm.ProviderAzureDevOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, block) || scm.PRBodyLen(got) > limit || !strings.Contains(got, pipelineAttestationCommentPrefix) {
+		t.Fatalf("generated text, not the kept Intent, must give way under the limit (%d):\n%s", limit, got)
+	}
+
+	for _, limit := range []int{scm.PRBodyLen(block) - 1, scm.PRBodyLen(block) + 10} {
+		if _, err := assembleDraftPRBody(sctx, whatChanged, "low risk", "", pipelineMD, "", limit, scm.ProviderAzureDevOps); err == nil || !strings.Contains(err.Error(), "refusing to shorten author text") {
+			t.Fatalf("limit %d: error = %v, want a refusal naming the limit", limit, err)
+		} else if !strings.Contains(err.Error(), fmt.Sprintf("%d-character", limit)) {
+			t.Fatalf("limit %d: refusal does not name the limit: %v", limit, err)
+		}
+	}
+}
+
 func TestLiveIntentSection(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -231,6 +319,14 @@ func TestLiveIntentSection(t *testing.T) {
 		{name: "stops at a top-level title", body: "## Intent\n\nGoal.\n\n# Notes\n", want: "Goal.", ok: true},
 		{name: "keeps subheadings and fenced headings", body: "## Intent\n\nGoal.\n\n### Detail\n\n```\n## inside\n```\n\n## Pipeline\n", want: "Goal.\n\n### Detail\n\n```\n## inside\n```", ok: true},
 		{name: "last section", body: "## Intent\n\nGoal.\n", want: "Goal.", ok: true},
+		{name: "indented code is content", body: "## Intent\n\nGoal:\n\n    ## Example\n    more\n\nAfter.\n\n## Pipeline\n", want: "Goal:\n\n    ## Example\n    more\n\nAfter.", ok: true},
+		{name: "tab-indented code is content", body: "## Intent\n\nGoal.\n\n\t## Example\n\n## Pipeline\n", want: "Goal.\n\n\t## Example", ok: true},
+		{name: "fence nested in a list item", body: "## Intent\n\n- step:\n\n    ```md\n    ## Example\n    ```\n\n## Pipeline\n", want: "- step:\n\n    ```md\n    ## Example\n    ```", ok: true},
+		{name: "indented intent is not the heading", body: "Notes:\n\n    ## Intent\n    quoted\n\n## Intent\n\nReal goal.\n\n## What Changed\n", want: "Real goal.", ok: true},
+		{name: "indented intent alone", body: "    ## Intent\n\n    quoted\n"},
+		{name: "up to three spaces is a heading", body: "   ## Intent\n\nGoal.\n\n   ## What Changed\n", want: "Goal.", ok: true},
+		{name: "closing hash sequence", body: "## Intent ##\n\nGoal.\n\n## Pipeline\n", want: "Goal.", ok: true},
+		{name: "hash without a space is text", body: "## Intent\n\nGoal.\n\n##not-a-heading\n\n## Pipeline\n", want: "Goal.\n\n##not-a-heading", ok: true},
 	} {
 		got, ok := liveIntentSection(tc.body)
 		if got != tc.want || ok != tc.ok {
