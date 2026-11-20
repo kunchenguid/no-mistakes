@@ -61,10 +61,10 @@ func TestDoctorAcceptsConfiguredACPBridge(t *testing.T) {
 func writeDoctorGitBinary(t *testing.T, dir string) {
 	t.Helper()
 	name := "git"
-	contents := "#!/bin/sh\necho 'git version test'\n"
+	contents := "#!/bin/sh\nif [ \"$1\" = var ]; then\n  echo 'Doctor Fixture <doctor@example.invalid> 1700000000 +0000'\nelse\n  echo 'git version test'\nfi\n"
 	if runtime.GOOS == "windows" {
 		name = "git.cmd"
-		contents = "@echo off\r\necho git version test\r\n"
+		contents = "@echo off\r\nif \"%1\"==\"var\" (\r\n  echo Doctor Fixture ^<doctor@example.invalid^> 1700000000 +0000\r\n) else (\r\n  echo git version test\r\n)\r\n"
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
