@@ -1,8 +1,8 @@
 package steps
 
 import (
+	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -74,7 +74,7 @@ func keptPRIntent(sctx *pipeline.StepContext) (string, error) {
 // publishedPRIntent returns the Intent section an existing PR body already
 // publishes: from the owned appendix when the body has one, since the text
 // above it is the author's own narrative, otherwise from the whole body.
-func publishedPRIntent(body string) (string, bool) {
+func publishedPRIntent(body string) (string, error) {
 	if parts, err := parsePROwnedBody(body); err == nil && parts.managed {
 		body = parts.appendix
 	}
@@ -122,18 +122,58 @@ func intentSection(text string) string {
 	return "## Intent\n\n" + text + "\n\n" + prIntentEndMarker
 }
 
+// errUnmarkedPRIntent names the one case a re-raise replaces a published
+// Intent: the body carries an Intent section without prIntentEndMarker, so
+// nothing says where the author's text ends.
+var errUnmarkedPRIntent = errors.New("intent replaced: no intent marker in the published body; republish once to opt in")
+
+// clampKeepingIntentMarker wraps clamp for text that may open with a published
+// Intent section: what follows the section is cut first, and when the section
+// itself must shrink only its text is cut, so a published Intent always ends
+// with prIntentEndMarker. It returns "" when not even a shortened section fits.
+func clampKeepingIntentMarker(units func(string) int, clamp func(string, int) string) func(string, int) string {
+	return func(text string, limit int) string {
+		if units(text) <= limit {
+			return text
+		}
+		rest, ok := strings.CutPrefix(text, "## Intent\n\n")
+		end := strings.Index(rest, "\n\n"+prIntentEndMarker)
+		if !ok || end < 0 {
+			return clamp(text, limit)
+		}
+		intent := rest[:end]
+		section := intentSection(intent)
+		if tail := strings.TrimLeft(rest[end+len("\n\n"+prIntentEndMarker):], "\n"); tail != "" {
+			if budget := limit - units(section+"\n\n"); budget > 0 {
+				if clamped := clamp(tail, budget); strings.TrimSpace(clamped) != "" && units(clamped) <= budget {
+					return section + "\n\n" + clamped
+				}
+			}
+		}
+		if units(section) <= limit {
+			return section
+		}
+		if budget := limit - units(intentSection("")); budget > 0 {
+			if shortened := intentSection(clamp(intent, budget)); units(shortened) <= limit {
+				return shortened
+			}
+		}
+		return ""
+	}
+}
+
 // liveIntentSection returns the text of the first top-level "## Intent"
-// section in an existing PR body, exactly as published, without the blank
-// lines that separate it from its neighbours. ok is false when the body has no
-// such section or it is empty. The section ends at prIntentEndMarker. A body
-// published before that marker existed ends instead where the generator's own
-// exact text begins (legacyIntentBoundary). Only a CommonMark ATX heading
-// counts (markdownATXHeading), and a line in a fenced block is never a
-// boundary.
-func liveIntentSection(body string) (string, bool) {
+// section in an existing PR body, exactly as published up to its
+// prIntentEndMarker, without the blank lines that separate it from its
+// neighbours. It returns "" when the body has no such section or it is empty,
+// and errUnmarkedPRIntent when the section has no marker: the marker is the
+// only boundary trusted, so a heading inside the Intent, even one spelled like
+// a generated section, stays author text. Only a CommonMark ATX heading opens
+// the section (markdownATXHeading), and a fenced line is never a boundary.
+func liveIntentSection(body string) (string, error) {
 	lines := strings.SplitAfter(body, "\n")
 	var fence markdownFence
-	start, end, legacyEnd := -1, -1, -1
+	start := -1
 	for i, raw := range lines {
 		line := strings.TrimRight(raw, "\r\n")
 		if fence.marker == 0 {
@@ -143,63 +183,19 @@ func liveIntentSection(body string) (string, bool) {
 					continue
 				}
 			} else if line == prIntentEndMarker {
-				end = i
-				break
-			} else if legacyEnd < 0 && legacyIntentBoundary(lines, i) {
-				legacyEnd = i
+				intent := strings.Trim(strings.Join(lines[start:i], ""), "\r\n")
+				if strings.TrimSpace(intent) == "" {
+					return "", nil
+				}
+				return intent, nil
 			}
 		}
 		fence.consume(line)
 	}
 	if start < 0 {
-		return "", false
+		return "", nil
 	}
-	if end < 0 {
-		end = legacyEnd
-	}
-	if end < 0 {
-		end = len(lines)
-	}
-	intent := strings.Trim(strings.Join(lines[start:end], ""), "\r\n")
-	if strings.TrimSpace(intent) == "" {
-		return "", false
-	}
-	return intent, true
-}
-
-// legacyGeneratedHeadings are the exact heading lines the generator writes
-// after an Intent section.
-var legacyGeneratedHeadings = []string{"## Intent", "## What Changed", "## Risk Assessment", "## Testing", "## Pipeline", "## Evidence", issuesSectionHeading}
-
-// legacyIntentBoundary reports whether lines[i] starts text the generator
-// wrote after an Intent section published without prIntentEndMarker: one of
-// its exact heading lines, the collapsed Validation block, the pipeline
-// introduction, or the minimal appendix's one-line risk assessment directly
-// ahead of that introduction.
-func legacyIntentBoundary(lines []string, i int) bool {
-	line := strings.TrimRight(lines[i], "\r\n")
-	if slices.Contains(legacyGeneratedHeadings, line) || strings.HasPrefix(line, noMistakesPRSignature) {
-		return true
-	}
-	details := strings.Split(validationDetailsOpen, "\n")
-	if line == details[0] && i+1 < len(lines) && strings.TrimRight(lines[i+1], "\r\n") == details[1] {
-		return true
-	}
-	next := ""
-	for _, raw := range lines[i+1:] {
-		if next = strings.TrimRight(raw, "\r\n"); strings.TrimSpace(next) != "" {
-			break
-		}
-	}
-	if !strings.HasPrefix(next, noMistakesPRSignature) {
-		return false
-	}
-	for _, level := range []string{"low", "medium", "high", ""} {
-		if strings.HasPrefix(line, riskEmoji(level)+" ") {
-			return true
-		}
-	}
-	return false
+	return "", errUnmarkedPRIntent
 }
 
 // markdownATXHeading parses line as a CommonMark ATX heading: at most three

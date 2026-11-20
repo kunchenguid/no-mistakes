@@ -3,8 +3,10 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -117,14 +119,14 @@ func TestPRStep_ReRaisePreservesTheOriginalIntent(t *testing.T) {
 			if _, err := (&PRStep{}).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}
-			intent, ok := liveIntentSection(string(mustRead(t, bodyFile)))
-			if !ok || intent != reraiseOriginalIntent {
-				t.Fatalf("initial raise intent = %q, %v", intent, ok)
+			intent, err := liveIntentSection(string(mustRead(t, bodyFile)))
+			if err != nil || intent != reraiseOriginalIntent {
+				t.Fatalf("initial raise intent = %q, %v", intent, err)
 			}
 			return intent
 		}},
 		{name: "hand-written intent with nested markup", seed: func(t *testing.T, _ *pipeline.StepContext, bodyFile string) string {
-			body := "## Intent\n\n" + handWritten + "\n\n## What Changed\n\n- An older summary.\n\n## Pipeline\n\nOld pipeline section.\n"
+			body := intentSection(handWritten) + "\n\n## What Changed\n\n- An older summary.\n\n## Pipeline\n\nOld pipeline section.\n"
 			if err := os.WriteFile(bodyFile, []byte(body), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -152,8 +154,8 @@ func TestPRStep_ReRaisePreservesTheOriginalIntent(t *testing.T) {
 				t.Fatalf("re-raise PATCH count = %d, want %d", got, patches+1)
 			}
 			after := string(mustRead(t, bodyFile))
-			intent, ok := liveIntentSection(after)
-			if !ok || intent != original {
+			intent, err := liveIntentSection(after)
+			if err != nil || intent != original {
 				t.Fatalf("re-raise Intent = %q, want the original byte for byte %q\nbody:\n%s", intent, original, after)
 			}
 			if !strings.HasPrefix(after, "## Intent\n\n"+original+"\n\n") {
@@ -207,7 +209,7 @@ func TestPRStep_ReRaiseKeepsAHandWrittenClosingLine(t *testing.T) {
 	t.Parallel()
 	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
 	handWritten := "Fix the crash on start.\n\nCloses #12"
-	seed := "## Intent\n\n" + handWritten + "\n\n## What Changed\n\n- An older summary.\n"
+	seed := intentSection(handWritten) + "\n\n## What Changed\n\n- An older summary.\n"
 	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +237,7 @@ func TestPRStep_ReRaiseRefusesAnIntentThatCannotFit(t *testing.T) {
 	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
 	handWritten := strings.Repeat("Original goal line.\n", maxPullRequestBodyBytes/len("Original goal line.\n"))
 	handWritten = strings.TrimSuffix(handWritten, "\n")
-	seed := "## Intent\n\n" + handWritten + "\n"
+	seed := intentSection(handWritten) + "\n"
 	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -280,39 +282,88 @@ func TestAssembleDraftPRBody_KeptIntentIsNeverShortened(t *testing.T) {
 
 func TestLiveIntentSection(t *testing.T) {
 	t.Parallel()
+	end := "\n\n" + prIntentEndMarker + "\n"
 	for _, tc := range []struct {
 		name, body, want string
-		ok               bool
+		unmarked         bool
 	}{
 		{name: "no intent", body: "## What Changed\n\n- x\n"},
-		{name: "empty intent", body: "## Intent\n\n## What Changed\n\n- x\n"},
+		{name: "empty intent", body: "## Intent" + end + "\n## What Changed\n\n- x\n"},
 		{name: "intent only inside a fence", body: "```md\n## Intent\n\nquoted\n```\n\n## What Changed\n"},
-		{name: "stops at the next section", body: "## Intent\n\nGoal.\n\n## What Changed\n\n- x\n", want: "Goal.", ok: true},
-		{name: "keeps a top-level title", body: "## Intent\n\nGoal.\n\n# Notes\n\n## Pipeline\n", want: "Goal.\n\n# Notes", ok: true},
-		{name: "keeps its own sections", body: "## Intent\n\nGoal.\n\n## Constraints\n\n- must not Y\n\n## What Changed\n\n- x\n", want: "Goal.\n\n## Constraints\n\n- must not Y", ok: true},
-		{name: "stops at the collapsed validation block", body: "## Intent\n\nGoal.\n\n" + validationDetailsOpen + "## Pipeline\n", want: "Goal.", ok: true},
-		{name: "stops at the pipeline introduction", body: "## Intent\n\nGoal.\n\n" + noMistakesPRSignature + "\n", want: "Goal.", ok: true},
-		{name: "stops at the minimal risk line", body: "## Intent\n\nGoal.\n\n⚠️ Medium: touches publication\n\n" + noMistakesPRSignature + "\n", want: "Goal.", ok: true},
-		{name: "risk-like line without the introduction is content", body: "## Intent\n\n✅ Low effort.\n\n## Pipeline\n", want: "✅ Low effort.", ok: true},
-		{name: "keeps subheadings and fenced headings", body: "## Intent\n\nGoal.\n\n### Detail\n\n```\n## inside\n```\n\n## Pipeline\n", want: "Goal.\n\n### Detail\n\n```\n## inside\n```", ok: true},
-		{name: "last section", body: "## Intent\n\nGoal.\n", want: "Goal.", ok: true},
-		{name: "indented code is content", body: "## Intent\n\nGoal:\n\n    ## Example\n    more\n\nAfter.\n\n## Pipeline\n", want: "Goal:\n\n    ## Example\n    more\n\nAfter.", ok: true},
-		{name: "tab-indented code is content", body: "## Intent\n\nGoal.\n\n\t## Example\n\n## Pipeline\n", want: "Goal.\n\n\t## Example", ok: true},
-		{name: "fence nested in a list item", body: "## Intent\n\n- step:\n\n    ```md\n    ## Example\n    ```\n\n## Pipeline\n", want: "- step:\n\n    ```md\n    ## Example\n    ```", ok: true},
-		{name: "indented intent is not the heading", body: "Notes:\n\n    ## Intent\n    quoted\n\n## Intent\n\nReal goal.\n\n## What Changed\n", want: "Real goal.", ok: true},
+		{name: "ends at the marker", body: "## Intent\n\nGoal." + end + "\n## What Changed\n\n- x\n", want: "Goal."},
+		{name: "keeps generator-spelled author headings", body: "## Intent\n\nGoal.\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- old\n\n# Notes" + end + "\n## What Changed\n\n- new\n\n## Pipeline\n", want: "Goal.\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- old\n\n# Notes"},
+		{name: "never takes in what follows the marker", body: "## Intent\n\nGoal." + end + "\n- A summary bullet.\n\n" + validationDetailsOpen + "## Pipeline\n", want: "Goal."},
+		{name: "fenced marker is content", body: "## Intent\n\n```md\n" + prIntentEndMarker + "\n```\n\nMore." + end, want: "```md\n" + prIntentEndMarker + "\n```\n\nMore."},
+		{name: "indented code is content", body: "## Intent\n\nGoal:\n\n    ## Example\n    " + prIntentEndMarker + "\n\nAfter." + end, want: "Goal:\n\n    ## Example\n    " + prIntentEndMarker + "\n\nAfter."},
+		{name: "indented intent is not the heading", body: "Notes:\n\n    ## Intent\n    quoted\n\n## Intent\n\nReal goal." + end, want: "Real goal."},
 		{name: "indented intent alone", body: "    ## Intent\n\n    quoted\n"},
-		{name: "up to three spaces is a heading", body: "   ## Intent\n\nGoal.\n\n## What Changed\n", want: "Goal.", ok: true},
-		{name: "legacy boundary is the generator's exact text", body: "## Intent\n\nGoal.\n\n## What changed\n\n## testing\n\n## Pipeline\n", want: "Goal.\n\n## What changed\n\n## testing", ok: true},
-		{name: "marker keeps generator-spelled author headings", body: "## Intent\n\nGoal.\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- old\n\n" + prIntentEndMarker + "\n\n## What Changed\n\n- new\n\n## Pipeline\n", want: "Goal.\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- old", ok: true},
-		{name: "marker ends the intent before a headingless summary", body: "## Intent\n\nGoal.\n\n" + prIntentEndMarker + "\n\n- A summary bullet.\n", want: "Goal.", ok: true},
-		{name: "fenced marker is content", body: "## Intent\n\n```md\n" + prIntentEndMarker + "\n```\n\nMore.\n\n" + prIntentEndMarker + "\n", want: "```md\n" + prIntentEndMarker + "\n```\n\nMore.", ok: true},
-		{name: "closing hash sequence", body: "## Intent ##\n\nGoal.\n\n## Pipeline\n", want: "Goal.", ok: true},
-		{name: "hash without a space is text", body: "## Intent\n\nGoal.\n\n##not-a-heading\n\n## Pipeline\n", want: "Goal.\n\n##not-a-heading", ok: true},
+		{name: "up to three spaces is a heading", body: "   ## Intent\n\nGoal." + end, want: "Goal."},
+		{name: "closing hash sequence", body: "## Intent ##\n\nGoal." + end, want: "Goal."},
+		{name: "markerless intent is unmarked", body: "## Intent\n\nGoal.\n\n## What Changed\n\n- x\n\n## Pipeline\n", unmarked: true},
+		{name: "marker only inside a fence is unmarked", body: "## Intent\n\n```\n" + prIntentEndMarker + "\n```\n", unmarked: true},
 	} {
-		got, ok := liveIntentSection(tc.body)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("%s: liveIntentSection = %q, %v; want %q, %v", tc.name, got, ok, tc.want, tc.ok)
+		got, err := liveIntentSection(tc.body)
+		if got != tc.want || errors.Is(err, errUnmarkedPRIntent) != tc.unmarked || (err != nil && !tc.unmarked) {
+			t.Errorf("%s: liveIntentSection = %q, %v; want %q, unmarked %v", tc.name, got, err, tc.want, tc.unmarked)
 		}
+	}
+}
+
+// A body published without the end marker cannot say where the author's text
+// ends, so the re-raise replaces its Intent with this run's and says so.
+func TestPRStep_ReRaiseReplacesAMarkerlessIntentAndSaysWhy(t *testing.T) {
+	t.Parallel()
+	sctx, bodyFile, _ := reraiseContext(t, "https://github.com/test/repo/pull/42")
+	seed := "## Intent\n\n" + reraiseOriginalIntent + "\n\n## What Changed\n\n- An older summary.\n"
+	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	sctx.UserIntent = reraiseFollowUpIntent
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	after := string(mustRead(t, bodyFile))
+	if intent, err := liveIntentSection(after); err != nil || intent != reraiseFollowUpIntent {
+		t.Fatalf("re-raise Intent = %q, %v; want this run's intent, now marked\nbody:\n%s", intent, err, after)
+	}
+	if !slices.Contains(logs, "intent replaced: no intent marker in the published body; republish once to opt in") {
+		t.Fatalf("replacement was not stated in the step log: %q", logs)
+	}
+}
+
+// A provider body limit that forces the first publish to shorten its Intent
+// cuts only the Intent text, so the published Intent keeps its end marker and
+// a later re-raise republishes it within the same limit.
+func TestAssembleDraftPRBody_BodyLimitKeepsTheIntentMarker(t *testing.T) {
+	t.Parallel()
+	provider := scm.ProviderAzureDevOps
+	limit := scm.MaxPRBodyChars(provider)
+	pipelineMD := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + pipelineAttestationCommentPrefix + `{"head_sha":"abc"}` + pipelineAttestationCommentClosingToken
+	long := strings.TrimSuffix(strings.Repeat("A long original goal line.\n", 2*limit/len("A long original goal line.\n")), "\n")
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := &config.Config{}
+			cfg.PR.Appendix = mode
+			first, err := assembleDraftPRBody(&pipeline.StepContext{Config: cfg, UserIntent: long}, "## What Changed\n\n- A helper.", "✅ Low: small", "", pipelineMD, "", limit, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept, err := liveIntentSection(first)
+			if err != nil || kept == "" || len(kept) >= len(long) || scm.PRBodyLen(first) > limit {
+				t.Fatalf("first publish Intent = %d chars, %v; want a shortened, marked Intent within %d\nbody:\n%s", len(kept), err, limit, first)
+			}
+
+			again, err := assembleDraftPRBody(&pipeline.StepContext{Config: cfg, UserIntent: reraiseFollowUpIntent, PublishedPRIntent: kept}, "## What Changed\n\n- A helper.", "✅ Low: small", "", pipelineMD, "", limit, provider)
+			if err != nil {
+				t.Fatalf("re-raise of the first publish failed: %v", err)
+			}
+			if got, err := liveIntentSection(again); err != nil || got != kept {
+				t.Fatalf("re-raise Intent differs from the first publish (%v)\nbody:\n%s", err, again)
+			}
+		})
 	}
 }
 
@@ -373,8 +424,8 @@ func TestPRStep_EveryReRaiseRoutePreservesTheOriginalIntent(t *testing.T) {
 				t.Fatal(err)
 			}
 			first := string(mustRead(t, bodyFile))
-			if intent, ok := publishedPRIntent(first); !ok || intent != reraiseSectionedIntent {
-				t.Fatalf("first raise Intent = %q, %v; want the task's intent\nbody:\n%s", intent, ok, first)
+			if intent, err := publishedPRIntent(first); err != nil || intent != reraiseSectionedIntent {
+				t.Fatalf("first raise Intent = %q, %v; want the task's intent\nbody:\n%s", intent, err, first)
 			}
 			if reraiseAttestationStatus(t, first, types.StepTest) == types.StepStatusCompleted {
 				t.Fatal("first raise already reports Test completed; the update would prove nothing")
@@ -389,8 +440,8 @@ func TestPRStep_EveryReRaiseRoutePreservesTheOriginalIntent(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := string(mustRead(t, bodyFile))
-			if intent, ok := publishedPRIntent(after); !ok || intent != reraiseSectionedIntent {
-				t.Fatalf("re-raise Intent = %q, %v; want the original byte for byte\nbody:\n%s", intent, ok, after)
+			if intent, err := publishedPRIntent(after); err != nil || intent != reraiseSectionedIntent {
+				t.Fatalf("re-raise Intent = %q, %v; want the original byte for byte\nbody:\n%s", intent, err, after)
 			}
 			if strings.Count(after, "## Intent") != 1 || strings.Contains(after, reraiseFollowUpIntent) {
 				t.Fatalf("follow-up intent was published or the Intent repeated:\n%s", after)
@@ -402,8 +453,9 @@ func TestPRStep_EveryReRaiseRoutePreservesTheOriginalIntent(t *testing.T) {
 	}
 }
 
-// A drafted body without its "## What Changed" heading is given one, so a
-// later re-raise does not take the stale summary in as part of the Intent.
+// A drafted body without its "## What Changed" heading follows the Intent's end
+// marker, and the marker alone keeps a later re-raise from taking the stale
+// summary in as part of the Intent.
 func TestPRStep_ReRaiseDoesNotAbsorbAHeadinglessSummary(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
@@ -421,8 +473,8 @@ func TestPRStep_ReRaiseDoesNotAbsorbAHeadinglessSummary(t *testing.T) {
 			t.Fatal(err)
 		}
 		body := string(mustRead(t, bodyFile))
-		if got, ok := liveIntentSection(body); !ok || got != reraiseOriginalIntent {
-			t.Fatalf("Intent = %q, %v; want %q\nbody:\n%s", got, ok, reraiseOriginalIntent, body)
+		if got, err := liveIntentSection(body); err != nil || got != reraiseOriginalIntent {
+			t.Fatalf("Intent = %q, %v; want %q\nbody:\n%s", got, err, reraiseOriginalIntent, body)
 		}
 		if strings.Count(body, "- A helper.") != 1 {
 			t.Fatalf("summary repeated or lost:\n%s", body)
@@ -436,7 +488,7 @@ func TestPRStep_OwnedReRaiseRefusesAnIntentThatCannotFit(t *testing.T) {
 	t.Parallel()
 	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
 	huge := strings.TrimSuffix(strings.Repeat("Original goal line.\n", maxPullRequestBodyBytes/len("Original goal line.\n")), "\n")
-	seed := "## Intent\n\n" + huge + "\n\n## What Changed\n\n- An older summary.\n"
+	seed := intentSection(huge) + "\n\n## What Changed\n\n- An older summary.\n"
 	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -478,8 +530,8 @@ func TestPRStep_ReRaiseKeepingTheIntentDraftsNoBrief(t *testing.T) {
 			if _, err := (&PRStep{}).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}
-			if intent, ok := publishedPRIntent(string(mustRead(t, bodyFile))); !ok || intent != reraiseOriginalIntent {
-				t.Fatalf("first raise Intent = %q, %v", intent, ok)
+			if intent, err := publishedPRIntent(string(mustRead(t, bodyFile))); err != nil || intent != reraiseOriginalIntent {
+				t.Fatalf("first raise Intent = %q, %v", intent, err)
 			}
 
 			sctx.Config.PR.Intent.Format = "brief"
@@ -494,8 +546,8 @@ func TestPRStep_ReRaiseKeepingTheIntentDraftsNoBrief(t *testing.T) {
 			if _, err := (&PRStep{}).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}
-			if intent, ok := publishedPRIntent(string(mustRead(t, bodyFile))); !ok || intent != reraiseOriginalIntent {
-				t.Fatalf("re-raise Intent = %q, %v; want the original", intent, ok)
+			if intent, err := publishedPRIntent(string(mustRead(t, bodyFile))); err != nil || intent != reraiseOriginalIntent {
+				t.Fatalf("re-raise Intent = %q, %v; want the original", intent, err)
 			}
 		})
 	}

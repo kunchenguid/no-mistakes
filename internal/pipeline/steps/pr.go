@@ -246,7 +246,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		// Every update refreshes what the pipeline owns, but the Intent states
 		// what the PR was opened to do; this run's intent describes the
 		// follow-up, so the live section is republished as written.
-		if intent, ok := publishedPRIntent(live.Body); ok {
+		if intent, err := publishedPRIntent(live.Body); err != nil {
+			if publishesPRIntent(sctx) {
+				sctx.Log(err.Error())
+			}
+		} else {
 			sctx.PublishedPRIntent = intent
 		}
 		// Removing pr.template must not switch an already owned body back to
@@ -1119,14 +1123,15 @@ func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testi
 
 func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	prefix := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", "", provider), sctx)
+	clamp := clampKeepingIntentMarker(scm.PRBodyLen, scm.ClampPRBody)
 	if pipelineMD == "" {
-		return scm.ClampPRBody(prefix, bodyLimit)
+		return clamp(prefix, bodyLimit)
 	}
 
 	header, _ := splitPipelineSectionHeader(pipelineMD)
 	headerLen := scm.PRBodyLen(header)
 	if header == "" || headerLen > bodyLimit {
-		return scm.ClampPRBody(prefix+"\n\n"+pipelineMD, bodyLimit)
+		return clamp(prefix+"\n\n"+pipelineMD, bodyLimit)
 	}
 
 	separator := "\n\n"
@@ -1134,8 +1139,8 @@ func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, risk
 	if prefixBudget <= 0 {
 		return header
 	}
-	prefix = scm.ClampPRBody(prefix, prefixBudget)
-	if scm.PRBodyLen(prefix) > prefixBudget {
+	prefix = clamp(prefix, prefixBudget)
+	if prefix == "" || scm.PRBodyLen(prefix) > prefixBudget {
 		prefix = ""
 		separator = ""
 	}
