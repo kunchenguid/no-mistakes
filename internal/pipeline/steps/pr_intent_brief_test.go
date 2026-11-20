@@ -240,17 +240,17 @@ func TestPRStep_ExistingPRUpdateAddsBriefWithoutReplacingNarrative(t *testing.T)
 	}}
 	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = createEnv
-	sctx.UserIntent = source
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	insertCompletedStep(t, sctx, types.StepReview, "", "")
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
 	created := string(mustRead(t, envEntry(createEnv, "FAKE_CLI_PR_BODY_FILE")))
-	if !strings.Contains(created, narrative) {
-		t.Fatalf("created PR omitted narrative:\n%s", created)
+	if !strings.Contains(created, narrative) || strings.Contains(created, "## Intent") {
+		t.Fatalf("created PR omitted narrative or already carries an Intent:\n%s", created)
 	}
 
+	sctx.UserIntent = source
 	sctx.Config.PR.Intent.Format = "brief"
 	updateEnv, _ := fakeGH(t, "https://github.com/test/repo/pull/42")
 	bodyFile := envEntry(updateEnv, "FAKE_CLI_PR_BODY_FILE")

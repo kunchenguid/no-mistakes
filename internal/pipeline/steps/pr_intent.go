@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -31,7 +32,7 @@ import (
 // under either signal.
 func publicPRIntent(sctx *pipeline.StepContext) string {
 	// A re-raise keeps the Intent the PR already publishes instead, as author
-	// text outside the generated prose (keptPRIntent, assembleDraftPRBody).
+	// text outside the generated prose (keptPRIntent).
 	if sctx != nil && sctx.PublishedPRIntent != "" {
 		return ""
 	}
@@ -57,12 +58,26 @@ func publicPRIntentSource(sctx *pipeline.StepContext) string {
 // caller places it byte for byte, never through neutralizeAttestationMarkers
 // or a size helper, so a hand-written closing line such as "Closes #12" keeps
 // working. The suppression checks still win, so a since-tightened policy
-// removes it.
-func keptPRIntent(sctx *pipeline.StepContext) string {
+// removes it. A kept Intent carrying a pipeline attestation is refused, since
+// it would sit ahead of this run's attestation and cannot be rewritten.
+func keptPRIntent(sctx *pipeline.StepContext) (string, error) {
 	if sctx == nil || sctx.PublishedPRIntent == "" || !publishesPRIntent(sctx) {
-		return ""
+		return "", nil
 	}
-	return sctx.PublishedPRIntent
+	if strings.Contains(sctx.PublishedPRIntent, pipelineAttestationCommentPrefix) {
+		return "", fmt.Errorf("existing PR Intent section contains a pipeline attestation marker; refusing to republish it ahead of this run's attestation or to rewrite author text")
+	}
+	return sctx.PublishedPRIntent, nil
+}
+
+// publishedPRIntent returns the Intent section an existing PR body already
+// publishes: from the owned appendix when the body has one, since the text
+// above it is the author's own narrative, otherwise from the whole body.
+func publishedPRIntent(body string) (string, bool) {
+	if parts, err := parsePROwnedBody(body); err == nil && parts.managed {
+		body = parts.appendix
+	}
+	return liveIntentSection(body)
 }
 
 // publishesPRIntent reports whether neither the repository policy nor the
@@ -96,38 +111,79 @@ func prDraftIntentPromptSection(sctx *pipeline.StepContext) string {
 }
 
 // liveIntentSection returns the text of the first top-level "## Intent"
-// section in an existing PR body, exactly as published: everything after the
-// heading up to the next "#" or "##" heading outside a fenced block, without
-// the blank lines that separate it from its neighbours. ok is false when the
-// body has no such section or it is empty. Only a CommonMark ATX heading counts
-// (markdownATXHeading): a line indented four or more spaces, or by a tab, is
-// indented code, so neither ends the section nor is taken for its heading.
+// section in an existing PR body, exactly as published, without the blank
+// lines that separate it from its neighbours. ok is false when the body has no
+// such section or it is empty. The section ends only where something the
+// pipeline itself generates begins (generatedIntentBoundary), never at a
+// heading the Intent text contains, so an Intent with its own sections is kept
+// whole. Only a CommonMark ATX heading counts (markdownATXHeading): a line
+// indented four or more spaces, or by a tab, is indented code, and a line in a
+// fenced block is never a boundary.
 func liveIntentSection(body string) (string, bool) {
 	lines := strings.SplitAfter(body, "\n")
 	var fence markdownFence
-	start := -1
-	var text strings.Builder
-	for _, raw := range lines {
+	start, end := -1, len(lines)
+	for i, raw := range lines {
 		line := strings.TrimRight(raw, "\r\n")
-		if level, title, ok := markdownATXHeading(line); fence.marker == 0 && ok && level <= 2 {
-			if start >= 0 {
+		if fence.marker == 0 {
+			if start < 0 {
+				if level, title, ok := markdownATXHeading(line); ok && level == 2 && strings.EqualFold(strings.TrimRight(title, ":.!? "), "intent") {
+					start = i + 1
+					continue
+				}
+			} else if generatedIntentBoundary(lines, i) {
+				end = i
 				break
-			}
-			if level == 2 && strings.EqualFold(strings.TrimRight(title, ":.!? "), "intent") {
-				start = 0
-				continue
 			}
 		}
 		fence.consume(line)
-		if start >= 0 {
-			text.WriteString(raw)
-		}
 	}
-	intent := strings.Trim(text.String(), "\r\n")
-	if start < 0 || strings.TrimSpace(intent) == "" {
+	if start < 0 {
+		return "", false
+	}
+	intent := strings.Trim(strings.Join(lines[start:end], ""), "\r\n")
+	if strings.TrimSpace(intent) == "" {
 		return "", false
 	}
 	return intent, true
+}
+
+// generatedIntentBoundary reports whether lines[i] starts something the
+// pipeline generates after an Intent section: one of its own "## " section
+// headings (What Changed included), the collapsed Validation block, the
+// pipeline introduction, or the minimal appendix's one-line risk assessment
+// directly ahead of that introduction.
+func generatedIntentBoundary(lines []string, i int) bool {
+	line := strings.TrimRight(lines[i], "\r\n")
+	if level, title, ok := markdownATXHeading(line); ok && level == 2 {
+		return isGeneratedSectionHeading("## "+title) || isWhatChangedTitle(title)
+	}
+	if strings.HasPrefix(line, noMistakesPRSignature) {
+		return true
+	}
+	details := strings.Split(validationDetailsOpen, "\n")
+	if line == details[0] && i+1 < len(lines) && strings.TrimRight(lines[i+1], "\r\n") == details[1] {
+		return true
+	}
+	next := ""
+	for _, raw := range lines[i+1:] {
+		if next = strings.TrimRight(raw, "\r\n"); strings.TrimSpace(next) != "" {
+			break
+		}
+	}
+	if !strings.HasPrefix(next, noMistakesPRSignature) {
+		return false
+	}
+	for _, level := range []string{"low", "medium", "high", ""} {
+		if strings.HasPrefix(line, riskEmoji(level)+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func isWhatChangedTitle(title string) bool {
+	return strings.EqualFold(strings.TrimRight(title, ":.!? "), "what changed")
 }
 
 // markdownATXHeading parses line as a CommonMark ATX heading: at most three

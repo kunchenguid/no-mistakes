@@ -458,12 +458,15 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 // generated body and its attestation, the update is refused rather than
 // shortening the author's text.
 func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (string, error) {
-	kept := keptPRIntent(sctx)
+	kept, err := keptPRIntent(sctx)
+	if err != nil {
+		return "", err
+	}
+	if kept != "" || publicPRIntent(sctx) != "" {
+		whatChanged = withWhatChangedHeading(whatChanged)
+	}
 	if kept == "" {
 		return assembleGeneratedDraftPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, maxPullRequestBodyBytes, provider), nil
-	}
-	if strings.Contains(kept, pipelineAttestationCommentPrefix) {
-		return "", fmt.Errorf("existing PR Intent section contains a pipeline attestation marker; refusing to republish it ahead of this run's attestation or to rewrite author text")
 	}
 	block := "## Intent\n\n" + kept + "\n\n"
 	limit, size, maxBytes := maxPullRequestBodyBytes, len(block), maxPullRequestBodyBytes-len(block)
@@ -490,6 +493,21 @@ func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, test
 		return "", refuse
 	}
 	return body, nil
+}
+
+// withWhatChangedHeading starts a drafted body that follows an Intent section
+// with the "## What Changed" heading the drafting prompt asks for, so a later
+// re-raise can tell where the Intent ends (liveIntentSection).
+func withWhatChangedHeading(whatChanged string) string {
+	body := stripGeneratedSections(whatChanged)
+	if body == "" {
+		return body
+	}
+	first, _, _ := strings.Cut(body, "\n")
+	if level, title, ok := markdownATXHeading(strings.TrimRight(first, "\r")); ok && level == 2 && isWhatChangedTitle(title) {
+		return body
+	}
+	return "## What Changed\n\n" + body
 }
 
 // assembleGeneratedDraftPRBody is assembleDraftPRBody's generated part, within

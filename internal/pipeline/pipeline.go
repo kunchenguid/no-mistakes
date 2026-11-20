@@ -105,8 +105,8 @@ type StepContext struct {
 	// trusted pr.intent.format is brief. It is never used as review criteria.
 	PublicIntentBrief string
 	// PublishedPRIntent is the PR-step's copy of the Intent section an existing
-	// PR already carries, read from the live body before an ordinary
-	// (regenerate) update. The update republishes it byte for byte instead of
+	// PR already carries, read from the live body (its owned appendix, when it
+	// has one) before any update. The update republishes it byte for byte instead of
 	// this run's intent, which describes the follow-up, not what the PR was
 	// opened to do. Empty when the PR is new or its body has no Intent section.
 	PublishedPRIntent string

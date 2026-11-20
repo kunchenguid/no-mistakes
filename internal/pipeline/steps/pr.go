@@ -245,6 +245,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			logSuppliedPRTextUnused(sctx, "the pull request already exists, and inherited text does not request an update")
 		}
 		updated := existing
+		// Every update refreshes what the pipeline owns, but the Intent states
+		// what the PR was opened to do; this run's intent describes the
+		// follow-up, so the live section is republished as written.
+		if intent, ok := publishedPRIntent(live.Body); ok {
+			sctx.PublishedPRIntent = intent
+		}
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
 		// update_text: keep uses that same path when no template is configured.
@@ -328,12 +334,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 		} else {
-			// The regenerated body owns every other section, but the Intent
-			// states what the PR was opened to do; this run's intent describes
-			// the follow-up, so the live section is republished as written.
-			if intent, ok := liveIntentSection(live.Body); ok {
-				sctx.PublishedPRIntent = intent
-			}
 			drafter := *s
 			drafter.titleReplaced = freshTitle || keepAppliedTitle
 			content, err := drafter.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)

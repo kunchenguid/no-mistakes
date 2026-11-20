@@ -316,7 +316,12 @@ func TestLiveIntentSection(t *testing.T) {
 		{name: "empty intent", body: "## Intent\n\n## What Changed\n\n- x\n"},
 		{name: "intent only inside a fence", body: "```md\n## Intent\n\nquoted\n```\n\n## What Changed\n"},
 		{name: "stops at the next section", body: "## Intent\n\nGoal.\n\n## What Changed\n\n- x\n", want: "Goal.", ok: true},
-		{name: "stops at a top-level title", body: "## Intent\n\nGoal.\n\n# Notes\n", want: "Goal.", ok: true},
+		{name: "keeps a top-level title", body: "## Intent\n\nGoal.\n\n# Notes\n\n## Pipeline\n", want: "Goal.\n\n# Notes", ok: true},
+		{name: "keeps its own sections", body: "## Intent\n\nGoal.\n\n## Constraints\n\n- must not Y\n\n## What Changed\n\n- x\n", want: "Goal.\n\n## Constraints\n\n- must not Y", ok: true},
+		{name: "stops at the collapsed validation block", body: "## Intent\n\nGoal.\n\n" + validationDetailsOpen + "## Pipeline\n", want: "Goal.", ok: true},
+		{name: "stops at the pipeline introduction", body: "## Intent\n\nGoal.\n\n" + noMistakesPRSignature + "\n", want: "Goal.", ok: true},
+		{name: "stops at the minimal risk line", body: "## Intent\n\nGoal.\n\n⚠️ Medium: touches publication\n\n" + noMistakesPRSignature + "\n", want: "Goal.", ok: true},
+		{name: "risk-like line without the introduction is content", body: "## Intent\n\n✅ Low effort.\n\n## Pipeline\n", want: "✅ Low effort.", ok: true},
 		{name: "keeps subheadings and fenced headings", body: "## Intent\n\nGoal.\n\n### Detail\n\n```\n## inside\n```\n\n## Pipeline\n", want: "Goal.\n\n### Detail\n\n```\n## inside\n```", ok: true},
 		{name: "last section", body: "## Intent\n\nGoal.\n", want: "Goal.", ok: true},
 		{name: "indented code is content", body: "## Intent\n\nGoal:\n\n    ## Example\n    more\n\nAfter.\n\n## Pipeline\n", want: "Goal:\n\n    ## Example\n    more\n\nAfter.", ok: true},
@@ -332,5 +337,145 @@ func TestLiveIntentSection(t *testing.T) {
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("%s: liveIntentSection = %q, %v; want %q, %v", tc.name, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+// The Intent the PR was opened with may carry its own "## " sections; only the
+// sections the pipeline generates end it.
+const reraiseSectionedIntent = "Ship the original goal.\n\n## Constraints\n\n- must not grow the API\n\n## Out of scope\n\nRefs the first report."
+
+// Every update route refreshes the evidence the pipeline owns but republishes
+// the PR's original Intent byte for byte: the ordinary rewrite, the owned
+// appendix of pr.template and pr.update_text: keep, an appendix those left
+// behind after the setting was removed, and a freshly supplied description.
+func TestPRStep_EveryReRaiseRoutePreservesTheOriginalIntent(t *testing.T) {
+	t.Parallel()
+	const prURL = "https://github.com/test/repo/pull/42"
+	keepContext := func(t *testing.T) (*pipeline.StepContext, string, string) {
+		sctx, bodyFile, logFile := reraiseContext(t, prURL)
+		sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+		if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return sctx, bodyFile, logFile
+	}
+	templateContext := func(t *testing.T) (*pipeline.StepContext, string, string) {
+		sctx, _, _ := templateTestContext(t)
+		env, logFile := fakeGH(t, prURL)
+		sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+reraiseTitle)
+		bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+		if err := os.WriteFile(bodyFile, []byte(filledPRTemplate), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return sctx, bodyFile, logFile
+	}
+	for _, tc := range []struct {
+		name     string
+		setup    func(t *testing.T) (*pipeline.StepContext, string, string)
+		followUp func(sctx *pipeline.StepContext)
+	}{
+		{name: "regenerate", setup: func(t *testing.T) (*pipeline.StepContext, string, string) { return reraiseContext(t, prURL) }},
+		{name: "update_text keep", setup: keepContext},
+		{name: "keep appendix after the setting is removed", setup: keepContext, followUp: func(sctx *pipeline.StepContext) {
+			sctx.Config.PR.UpdateText = ""
+		}},
+		{name: "template", setup: templateContext},
+		{name: "template appendix after the template is removed", setup: templateContext, followUp: func(sctx *pipeline.StepContext) {
+			sctx.Config.PR.Template = ""
+		}},
+		{name: "fresh supplied description", setup: func(t *testing.T) (*pipeline.StepContext, string, string) { return reraiseContext(t, prURL) }, followUp: func(sctx *pipeline.StepContext) {
+			body := suppliedPRBodyText
+			sctx.Run.PRBody = &body
+			sctx.Run.PRBodyFresh = true
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx, bodyFile, _ := tc.setup(t)
+			sctx.UserIntent = reraiseSectionedIntent
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			first := string(mustRead(t, bodyFile))
+			if intent, ok := publishedPRIntent(first); !ok || intent != reraiseSectionedIntent {
+				t.Fatalf("first raise Intent = %q, %v; want the task's intent\nbody:\n%s", intent, ok, first)
+			}
+			if reraiseAttestationStatus(t, first, types.StepTest) == types.StepStatusCompleted {
+				t.Fatal("first raise already reports Test completed; the update would prove nothing")
+			}
+
+			sctx.UserIntent = reraiseFollowUpIntent
+			completeReraiseStep(t, sctx, types.StepTest)
+			if tc.followUp != nil {
+				tc.followUp(sctx)
+			}
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			after := string(mustRead(t, bodyFile))
+			if intent, ok := publishedPRIntent(after); !ok || intent != reraiseSectionedIntent {
+				t.Fatalf("re-raise Intent = %q, %v; want the original byte for byte\nbody:\n%s", intent, ok, after)
+			}
+			if strings.Count(after, "## Intent") != 1 || strings.Contains(after, reraiseFollowUpIntent) {
+				t.Fatalf("follow-up intent was published or the Intent repeated:\n%s", after)
+			}
+			if got := reraiseAttestationStatus(t, after, types.StepTest); got != types.StepStatusCompleted {
+				t.Fatalf("re-raised attestation reports Test as %q, want completed", got)
+			}
+		})
+	}
+}
+
+// A drafted body without its "## What Changed" heading is given one, so a
+// later re-raise does not take the stale summary in as part of the Intent.
+func TestPRStep_ReRaiseDoesNotAbsorbAHeadinglessSummary(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	env, _ := fakeGH(t, "https://github.com/test/repo/pull/42")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"title":"` + reraiseTitle + `","body":"- A helper."}`)}, nil
+	}}
+	sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
+	sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+reraiseTitle)
+	completeReraiseStep(t, sctx, types.StepReview)
+	for _, intent := range []string{reraiseOriginalIntent, reraiseFollowUpIntent} {
+		sctx.UserIntent = intent
+		if _, err := (&PRStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		body := string(mustRead(t, bodyFile))
+		if got, ok := liveIntentSection(body); !ok || got != reraiseOriginalIntent {
+			t.Fatalf("Intent = %q, %v; want %q\nbody:\n%s", got, ok, reraiseOriginalIntent, body)
+		}
+		if strings.Count(body, "- A helper.") != 1 {
+			t.Fatalf("summary repeated or lost:\n%s", body)
+		}
+	}
+}
+
+// An owned update whose kept Intent cannot fit the body budget is refused,
+// never shortened.
+func TestPRStep_OwnedReRaiseRefusesAnIntentThatCannotFit(t *testing.T) {
+	t.Parallel()
+	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
+	huge := strings.TrimSuffix(strings.Repeat("Original goal line.\n", maxPullRequestBodyBytes/len("Original goal line.\n")), "\n")
+	seed := "## Intent\n\n" + huge + "\n\n## What Changed\n\n- An older summary.\n"
+	if err := os.WriteFile(bodyFile, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := suppliedPRBodyText
+	sctx.Run.PRBody = &body
+	sctx.Run.PRBodyFresh = true
+	sctx.UserIntent = reraiseFollowUpIntent
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "refusing to drop author text") {
+		t.Fatalf("Execute error = %v, want a refusal to drop the kept Intent", err)
+	}
+	if got := patchCount(t, logFile); got != 0 {
+		t.Fatalf("refused re-raise still wrote the PR (%d PATCH calls)", got)
+	}
+	if after := string(mustRead(t, bodyFile)); after != seed {
+		t.Fatal("refused re-raise changed the live body")
 	}
 }
