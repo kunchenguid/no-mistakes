@@ -450,7 +450,51 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 // assembleDraftPRBody assembles an ordinary drafted body and appends the
 // Issues section last, reserving its room up front so body-limit truncation
 // sheds generated evidence rather than a closing reference.
-func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+//
+// An Intent section kept from the live PR (keptPRIntent) is author text, not
+// generated prose: it is placed ahead of the generated body exactly as
+// written, outside the neutralization and every size helper, and its room is
+// reserved before the generated body is fitted. When it leaves no room for the
+// generated body and its attestation, the update is refused rather than
+// shortening the author's text.
+func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (string, error) {
+	kept, err := keptPRIntent(sctx)
+	if err != nil {
+		return "", err
+	}
+	if kept == "" {
+		return assembleGeneratedDraftPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, maxPullRequestBodyBytes, provider), nil
+	}
+	block := intentSection(kept) + "\n\n"
+	limit, size, maxBytes := maxPullRequestBodyBytes, len(block), maxPullRequestBodyBytes-len(block)
+	generatedLimit := 0
+	if bodyLimit > 0 {
+		limit, size = bodyLimit, scm.PRBodyLen(block)
+		generatedLimit = bodyLimit - size
+	}
+	refuse := fmt.Errorf("existing PR Intent section (%d characters) leaves no room for the generated sections within the %d-character PR body limit; refusing to shorten author text", size, limit)
+	if maxBytes <= 0 || (bodyLimit > 0 && generatedLimit <= 0) {
+		return "", refuse
+	}
+	generated := assembleGeneratedDraftPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD, generatedLimit, maxBytes, provider)
+	if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" && !strings.Contains(generated, marker) {
+		return "", refuse
+	}
+	body := block + generated
+	if strings.TrimSpace(generated) == "" {
+		body = strings.TrimSuffix(block, "\n\n")
+	}
+	// The size helpers keep the attestation even past their budget; the kept
+	// Intent must not be what pushes the body over the limit.
+	if len(body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit) {
+		return "", refuse
+	}
+	return body, nil
+}
+
+// assembleGeneratedDraftPRBody is assembleDraftPRBody's generated part, within
+// bodyLimit (0 = unlimited by the provider) and maxBytes.
+func assembleGeneratedDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit, maxBytes int, provider scm.Provider) string {
 	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
 	reserve := 0
 	if section != "" {
@@ -471,5 +515,5 @@ func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, test
 		}
 		return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit-reserve, provider), section)
 	}
-	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, maxPullRequestBodyBytes-reserve), section)
+	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, maxBytes-reserve), section)
 }

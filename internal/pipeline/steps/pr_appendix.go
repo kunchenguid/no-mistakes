@@ -142,7 +142,7 @@ func assembleMinimalPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, pi
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
-	return shrinkMeasuredKeepingTail(full, tail, bodyLimit, scm.PRBodyLen, scm.ClampPRBody)
+	return shrinkMeasuredKeepingTail(full, tail, bodyLimit, scm.PRBodyLen, clampKeepingIntentMarker(scm.PRBodyLen, scm.ClampPRBody))
 }
 
 func assembleCollapsedPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
@@ -150,7 +150,7 @@ func assembleCollapsedPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, 
 	if bodyLimit <= 0 {
 		return joinBlocks(prefix, wrapValidation(joinAppendixSections(riskLine, testingMD, pipelineMD, provider)))
 	}
-	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, bodyLimit, scm.PRBodyLen, scm.ClampPRBody, provider)
+	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, bodyLimit, scm.PRBodyLen, clampKeepingIntentMarker(scm.PRBodyLen, scm.ClampPRBody), provider)
 }
 
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, provider scm.Provider) string {
@@ -213,12 +213,14 @@ func buildMinimalPRBody(body, riskLine, pipelineMD string, sctx *pipeline.StepCo
 	if len(full) <= maxBytes {
 		return full
 	}
-	return shrinkMeasuredKeepingTail(full, tail, maxBytes, func(s string) int { return len(s) }, clampPRBytes)
+	units := func(s string) int { return len(s) }
+	return shrinkMeasuredKeepingTail(full, tail, maxBytes, units, clampKeepingIntentMarker(units, clampPRBytes))
 }
 
 func buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
 	prefix := narrativeWithIntent(sctx, body)
-	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, maxBytes, func(s string) int { return len(s) }, clampPRBytes, provider)
+	units := func(s string) int { return len(s) }
+	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, maxBytes, units, clampKeepingIntentMarker(units, clampPRBytes), provider)
 }
 
 func clampPRBytes(text string, max int) string {

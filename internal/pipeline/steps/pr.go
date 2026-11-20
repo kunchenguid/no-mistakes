@@ -124,6 +124,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	step := *s
 	s = &step
 	sctx.PublicIntentBrief = ""
+	sctx.PublishedPRIntent = ""
+	defer func() { sctx.PublishedPRIntent = "" }()
 	s.headProofUnavailable = ""
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -213,7 +215,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		var live scm.PRContent
-		if reader, ok := host.(scm.PRContentReader); ok {
+		reader, readable := host.(scm.PRContentReader)
+		if readable {
 			live, err = reader.GetPRContent(ctx, existing)
 			if err != nil {
 				return nil, fmt.Errorf("read existing PR before publication: %w", err)
@@ -241,6 +244,22 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			logSuppliedPRTextUnused(sctx, "the pull request already exists, and inherited text does not request an update")
 		}
 		updated := existing
+		// Every update refreshes what the pipeline owns, but the Intent states
+		// what the PR was opened to do; this run's intent describes the
+		// follow-up, so the live section is republished as written.
+		kept, intentErr := publishedPRIntent(live.Body)
+		if !readable {
+			intentErr = errUnreadablePRIntent
+		}
+		if intentErr != nil {
+			if publicPRIntentSource(sctx) != "" {
+				sctx.Log("intent replaced: " + intentErr.Error())
+			} else if publishesPRIntent(sctx) {
+				sctx.Log("intent removed: " + intentErr.Error())
+			}
+		} else {
+			sctx.PublishedPRIntent = kept
+		}
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
 		// update_text: keep uses that same path when no template is configured.
@@ -771,7 +790,10 @@ Final diff paths and statuses:
 				if keepsPRUpdateText(sctx) {
 					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
 				}
-				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+				content.Body, err = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+				if err != nil {
+					return prContent{}, err
+				}
 				return content, nil
 			}
 		}
@@ -1108,14 +1130,15 @@ func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testi
 
 func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	prefix := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", "", provider), sctx)
+	clamp := clampKeepingIntentMarker(scm.PRBodyLen, scm.ClampPRBody)
 	if pipelineMD == "" {
-		return scm.ClampPRBody(prefix, bodyLimit)
+		return clamp(prefix, bodyLimit)
 	}
 
 	header, _ := splitPipelineSectionHeader(pipelineMD)
 	headerLen := scm.PRBodyLen(header)
 	if header == "" || headerLen > bodyLimit {
-		return scm.ClampPRBody(prefix+"\n\n"+pipelineMD, bodyLimit)
+		return clamp(prefix+"\n\n"+pipelineMD, bodyLimit)
 	}
 
 	separator := "\n\n"
@@ -1123,8 +1146,8 @@ func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, risk
 	if prefixBudget <= 0 {
 		return header
 	}
-	prefix = scm.ClampPRBody(prefix, prefixBudget)
-	if scm.PRBodyLen(prefix) > prefixBudget {
+	prefix = clamp(prefix, prefixBudget)
+	if prefix == "" || scm.PRBodyLen(prefix) > prefixBudget {
 		prefix = ""
 		separator = ""
 	}
@@ -1167,7 +1190,7 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 		return sections
 	}
 
-	intent := "## Intent\n\n" + cleaned
+	intent := intentSection(cleaned)
 	separator := "\n\n"
 	if len(intent)+len(separator)+len(sections) <= maxBytes {
 		return intent + separator + sections
@@ -1179,11 +1202,11 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 		return intent + separator + sections
 	}
 
-	intentBudget := maxBytes - len(separator) - len(sections)
-	if intentBudget <= 0 {
+	intent = clampKeepingIntentMarker(func(s string) int { return len(s) }, clampPRBytes)(intent, maxBytes-len(separator)-len(sections))
+	if intent == "" {
 		return sections
 	}
-	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	return intent + separator + sections
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string, provider scm.Provider) string {
@@ -1924,7 +1947,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	if cleaned == "" {
 		return body
 	}
-	section := "## Intent\n\n" + cleaned
+	section := intentSection(cleaned)
 	if strings.TrimSpace(body) == "" {
 		return section
 	}
@@ -1951,7 +1974,10 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	if keepsPRUpdateText(sctx) {
 		return s.publishKeptDraft(sctx, provider, title, body, bodyLimit)
 	}
-	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	body, err := assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	if err != nil {
+		return prContent{}, err
+	}
 	return prContent{
 		Title: title,
 		Body:  body,
