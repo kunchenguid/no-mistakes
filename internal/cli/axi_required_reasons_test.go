@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -210,9 +211,9 @@ func TestAxiRun_SkipRequiresASkipReason(t *testing.T) {
 func TestSkipReasonReachesTheDaemon(t *testing.T) {
 	reason := "CI lints, commas, colons: ok\nand a second line"
 	options := formatSkipPushOptions([]types.StepName{types.StepLint}, reason)
-	got, err := parseOpaquePushOptions(append(options, "no-mistakes.intent=x"), skipReasonPushOptionPrefix, "skip reason")
-	if err != nil || got != reason {
-		t.Fatalf("push option round trip = %q, %v; want %q", got, err, reason)
+	wantWireReason := "no-mistakes.skip-reason=" + base64.StdEncoding.EncodeToString([]byte(reason))
+	if len(options) != 2 || options[1] != wantWireReason {
+		t.Fatalf("skip reason push option = %v; want %q", options, wantWireReason)
 	}
 	if steps, err := parseSkipPushOptions(options); err != nil || !reflect.DeepEqual(steps, []types.StepName{types.StepLint}) {
 		t.Fatalf("skip steps = %v, %v", steps, err)
