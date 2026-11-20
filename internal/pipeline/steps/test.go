@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,6 +135,7 @@ Previous test findings to address:
 			FallbackSummary: "fix test failures",
 			RunAgent: func(runOpts agent.RunOpts) (*agent.Result, error) {
 				runOpts.RequireCompletedChildren = true
+				runOpts.Env = append(runOpts.Env, testForegroundCommandEnv(sctx)...)
 				result, runErr := sctx.RunAgentBudget(sctx.Ctx, fixTimeout, testAgentWorkingTimeout(sctx), errTestAgentTimeout, runOpts)
 				if runErr != nil {
 					return nil, testAgentError(fixTimeout, "agent fix tests", runErr)
@@ -415,6 +417,7 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 		timeout := testAgentTimeout(sctx)
 		result, err := sctx.RunAgentBudget(sctx.Ctx, timeout, testAgentWorkingTimeout(sctx), errTestAgentTimeout, agent.RunOpts{
 			RequireCompletedChildren: true,
+			Env:                      testForegroundCommandEnv(sctx),
 			Prompt:                   current,
 			CWD:                      sctx.WorkDir,
 			JSONSchema:               testFindingsSchema,
@@ -637,6 +640,16 @@ func testAgentTimeout(sctx *pipeline.StepContext) time.Duration {
 		return sctx.Config.TestAgentTimeout
 	}
 	return config.DefaultTestAgentTimeout
+}
+
+// testForegroundCommandEnv raises Claude Code's per-command foreground limit
+// to the turn's own budget. Past the default 2-minute limit Claude moves a
+// command to the background and ends its turn, which RequireCompletedChildren
+// refuses (#1740).
+func testForegroundCommandEnv(sctx *pipeline.StepContext) []string {
+	budget := max(testAgentTimeout(sctx), testAgentWorkingTimeout(sctx))
+	ms := strconv.FormatInt(budget.Milliseconds(), 10)
+	return []string{"BASH_DEFAULT_TIMEOUT_MS=" + ms, "BASH_MAX_TIMEOUT_MS=" + ms}
 }
 
 func testAgentWorkingTimeout(sctx *pipeline.StepContext) time.Duration {
