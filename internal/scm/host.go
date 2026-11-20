@@ -231,6 +231,13 @@ type Check struct {
 	AppID   int64
 	AppHost string
 	HeadSHA string
+	// ReviewFindings is the unresolved feedback a required-review adapter
+	// read and verified for this exact check: inline thread comments and
+	// summary-only items from the same review observation. It is local
+	// evidence that travels with the check to the CI findings classifier, so
+	// an item that exists only in a review summary is never lost to a second,
+	// best-effort comment read. It never crosses the wire.
+	ReviewFindings []ReviewComment `json:"-"`
 }
 
 // Failing reports whether the check is in a failed bucket.
@@ -251,6 +258,9 @@ type ReviewBot struct {
 	RequiredReview string
 
 	// AppSlug is the provider app slug the bot publishes its check under.
+	// A bot that publishes no check of its own (Copilot submits a pull
+	// request review instead) leaves it empty and is recognized only through
+	// its required-review adapter's synthesized check.
 	AppSlug string
 	// Logins are the account logins the bot posts review comments as.
 	Logins       []string
@@ -262,12 +272,29 @@ type ReviewBot struct {
 const CodeRabbitAppID int64 = 347564
 const CodeRabbitAuthorID int64 = 136622811
 
+// CopilotAuthorID is GitHub.com's immutable user ID for the Copilot code
+// review bot (GET /users/copilot-pull-request-reviewer[bot]). It is a user ID,
+// never a check publisher app ID: Copilot submits a pull request review and
+// publishes no check run of its own.
+const CopilotAuthorID int64 = 175728472
+
 // ReviewBots is the registry of supported review bots. Both halves of the
 // integration - check identity and comment authorship - read it, so adding a
 // bot is one entry here.
 var ReviewBots = []ReviewBot{
 	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}, GitLabLogins: []string{"greptileai"}},
 	{AppSlug: "coderabbitai", RequiredReview: "coderabbit", AppID: CodeRabbitAppID, AuthorID: CodeRabbitAuthorID, Logins: []string{"coderabbitai", "coderabbitai[bot]"}},
+	{RequiredReview: "copilot", AuthorID: CopilotAuthorID, Logins: []string{"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}},
+}
+
+// Identity is the stable key that ties a bot's checks to its comments: the
+// app slug for a bot that publishes a check, otherwise its required-review
+// name.
+func (b ReviewBot) Identity() string {
+	if b.AppSlug != "" {
+		return b.AppSlug
+	}
+	return "required-review:" + b.RequiredReview
 }
 
 // ReviewBotsFor returns the registered bots a run recognizes: every bot that
@@ -284,9 +311,17 @@ func ReviewBotsFor(requiredReviews []string) []ReviewBot {
 
 // ReviewBotForCheck authenticates the check publisher among bots. CodeRabbit
 // requires GitHub.com's fixed app ID or a verified required-review check carrying
-// its trusted GHES instance ID; Greptile retains slug matching.
+// its trusted GHES instance ID; Copilot, which publishes no check, is only ever
+// its GitHub.com required-review adapter's synthesized check; Greptile retains
+// slug matching.
 func ReviewBotForCheck(bots []ReviewBot, check Check) (ReviewBot, bool) {
 	for _, bot := range bots {
+		if bot.AppID == 0 && bot.AppSlug == "" {
+			if bot.RequiredReview != "" && check.ExternalReview == bot.RequiredReview && strings.EqualFold(check.AppHost, "github.com") && check.HeadSHA != "" {
+				return bot, true
+			}
+			continue
+		}
 		if bot.AppID != 0 {
 			if check.AppHost == "github.com" && check.AppID == bot.AppID {
 				return bot, true

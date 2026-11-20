@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 func TestPRTemplateBitbucketVisibleAttestationUsesExistingConsumer(t *testing.T) {
@@ -19,7 +21,7 @@ func TestPRTemplateBitbucketVisibleAttestationUsesExistingConsumer(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err = composeOwnedPRContent(parts, "", appendix, 0, "", "")
+	content, err = composeOwnedPRContent(parts, scm.ProviderBitbucket, "", appendix, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

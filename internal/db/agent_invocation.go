@@ -168,11 +168,15 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 // identify work shared across logical pipeline steps without changing the
 // pipeline's execution model.
 func (d *DB) HasAgentInvocationPurpose(runID, stepName, purpose string) (bool, error) {
+	columns, err := d.readProjection("agent_invocations", "run_id, step_name, purpose", new(string), new(string), new(string))
+	if err != nil {
+		return false, err
+	}
 	var found bool
-	err := d.sql.QueryRow(
+	err = d.sql.QueryRow(
 		`SELECT EXISTS(
 			SELECT 1 FROM agent_invocations
-			WHERE run_id = ? AND step_name = ? AND purpose = ?
+			WHERE (`+columns+`) = (?, ?, ?)
 		)`,
 		runID, stepName, purpose,
 	).Scan(&found)

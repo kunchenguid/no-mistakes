@@ -35,6 +35,12 @@ func run() int {
 		return exitCode
 	}
 
+	// Export is a storage-only probe, including in release builds. Dispatch
+	// before executable cleanup, background update checks and CLI log creation.
+	if len(os.Args) > 1 && os.Args[1] == "export" {
+		return cli.Execute()
+	}
+
 	_ = cleanupOldExecutable()
 
 	if root, ok, err := daemonLogSinkRootFromArgs(os.Args[1:]); err != nil {

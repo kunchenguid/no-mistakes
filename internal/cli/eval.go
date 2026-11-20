@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -26,6 +27,106 @@ func newEvalCmd() *cobra.Command {
 	cmd.AddCommand(newEvalSetsCmd())
 	cmd.AddCommand(newEvalReportCmd())
 	cmd.AddCommand(newEvalRelabelCmd())
+	cmd.AddCommand(newEvalLabelsCmd())
+	cmd.AddCommand(newEvalAdjudicateCmd())
+	return cmd
+}
+
+func newEvalLabelsCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "labels [case]",
+		Short: "Inspect gold labels, provenance, and explicit adjudications",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, store, err := openEvalStore()
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			var cases []eval.Case
+			if len(args) == 1 {
+				c, err := store.CaseByID(args[0])
+				if err != nil {
+					return err
+				}
+				cases = []eval.Case{c}
+			} else {
+				cases, err = store.ListCases("all")
+				if err != nil {
+					return err
+				}
+			}
+			type labelRow struct {
+				CaseID        string           `json:"case_id"`
+				Index         int              `json:"index"`
+				Gold          eval.FindingGold `json:"gold"`
+				Provenance    string           `json:"provenance"`
+				EffectiveKind string           `json:"effective_kind"`
+			}
+			rows := []labelRow{}
+			for _, c := range cases {
+				for i, gold := range c.Labels.Findings {
+					kind := gold.Kind
+					if a := gold.Adjudication; a != nil {
+						kind = a.Kind
+						if a.Excluded {
+							kind = "excluded"
+						}
+					}
+					rows = append(rows, labelRow{c.ID, i + 1, gold, gold.GoldProvenance(), kind})
+				}
+			}
+			if asJSON {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(rows)
+			}
+			for _, row := range rows {
+				fmt.Fprintf(cmd.OutOrStdout(), "case %s index %d id %q: %s [%s]; captured %s source %q\n  %s:%d %s\n", row.CaseID, row.Index, row.Gold.ID, row.EffectiveKind, row.Provenance, row.Gold.Kind, row.Gold.Source, row.Gold.File, row.Gold.Line, row.Gold.Description)
+				if a := row.Gold.Adjudication; a != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "  adjudication at %d: %s\n", a.DecidedAt, a.Reason)
+				}
+			}
+			if len(rows) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no gold labels recorded")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit labels with captured evidence, effective kind, and provenance as JSON")
+	return cmd
+}
+
+func newEvalAdjudicateCmd() *cobra.Command {
+	var finding, kind, reason string
+	var index int
+	var exclude bool
+	cmd := &cobra.Command{
+		Use:   "adjudicate <case> --finding <id> (--kind <kind> | --exclude) --reason <text>",
+		Short: "Correct, confirm, or exclude local gold without deleting evidence",
+		Long:  "Records an explicit local curator decision with a reason. Use --index for ID-less or ambiguous findings shown by eval labels. A later --kind re-includes an excluded label. Reports rescore saved outputs for this case against current labels; source outputs and measurements remain intact.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("index") && index <= 0 {
+				return fmt.Errorf("--index must be positive (one-based)")
+			}
+			_, store, err := openEvalStore()
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			c, err := store.Adjudicate(cmd.Context(), args[0], finding, index, eval.Adjudication{Kind: kind, Excluded: exclude, Reason: reason})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "adjudicated case %s: %d active gold label(s); captured evidence retained\n", c.ID, len(c.Labels.ActiveFindings()))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&finding, "finding", "", "exact gold finding ID")
+	cmd.Flags().IntVar(&index, "index", 0, "one-based gold label position from eval labels (alternative to --finding)")
+	cmd.Flags().StringVar(&kind, "kind", "", "gold kind: true-positive, false-positive, or false-negative")
+	cmd.Flags().BoolVar(&exclude, "exclude", false, "exclude the label from scoring and gold-only sets, retaining evidence")
+	cmd.Flags().StringVar(&reason, "reason", "", "required explanation for this explicit label decision")
 	return cmd
 }
 

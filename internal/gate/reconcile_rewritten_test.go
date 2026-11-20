@@ -41,7 +41,7 @@ func TestPlanStaleBranchReconciliationRewrittenRecoveryAnchors(t *testing.T) {
 				}
 				beforeGate := reconcileGit(t, gateDir, "for-each-ref")
 				beforeWork := reconcileGit(t, work, "for-each-ref")
-				plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature/reconcile", liveHead, "")
+				plan, err := PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature/reconcile", liveHead, "", nil)
 				if got := reconcileGit(t, gateDir, "for-each-ref"); got != beforeGate {
 					t.Fatalf("planning changed gate refs:\nbefore: %s\nafter: %s", beforeGate, got)
 				}

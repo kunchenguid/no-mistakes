@@ -438,6 +438,12 @@ type RepoConfig struct {
 	// TrustedIgnorePatterns preserves the default branch's authorized exclusions
 	// when review instructions override exclusions from the pushed branch.
 	TrustedIgnorePatterns []string `yaml:"-"`
+	// UnknownTestKeys lists the keys under test: that this version does not
+	// recognize, as dotted paths (test.path_instruction). Parsing stays lenient
+	// so an existing config keeps working; the Test step reports them instead.
+	// EffectiveRepoConfig replaces it with source-labeled warnings for both
+	// copies.
+	UnknownTestKeys []string `yaml:"-"`
 	// ProtectedPaths prevents automatic staging of dirty matching paths. It is
 	// trusted-only, regardless of allow_repo_commands, so a pushed branch cannot
 	// remove the maintainer's protection from its own fixes.
@@ -461,6 +467,9 @@ type RepoConfig struct {
 	// pushed branch cannot opt its own integration out of the shape the
 	// maintainer chose.
 	Rebase RebaseRaw `yaml:"rebase"`
+	// Push reserves publication for an external publisher when declared paths
+	// match. It is trusted-only, regardless of allow_repo_commands.
+	Push   Push      `yaml:"push"`
 	Commit CommitRaw `yaml:"commit"`
 	Intent IntentRaw `yaml:"intent"`
 	Test   TestRaw   `yaml:"test"`
@@ -550,6 +559,10 @@ type ReviewRaw struct {
 	// MaxFixRounds bounds all Review fix rounds, automatic and explicit.
 	// Zero preserves the unbounded default. Trusted repository config only.
 	MaxFixRounds reviewFixRoundLimit `yaml:"max_fix_rounds"`
+	// Prepare runs commands.prepare before the first Review fix turn so the
+	// fixer can verify its edits against installed dependencies. Trusted
+	// repository config only, like test.prepare.
+	Prepare bool `yaml:"prepare"`
 	// Conversation turns the review conversation on: the reviewer may emit the
 	// larger questions it cannot settle itself, keep reviewing while they are
 	// open, and be resumed with the answers. Off (the default), the review step
@@ -740,6 +753,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		AutoFix                AutoFixRaw   `yaml:"auto_fix"`
 		CI                     CIRaw        `yaml:"ci"`
 		Rebase                 RebaseRaw    `yaml:"rebase"`
+		Push                   Push         `yaml:"push"`
 		Commit                 CommitRaw    `yaml:"commit"`
 		Intent                 IntentRaw    `yaml:"intent"`
 		Test                   TestRaw      `yaml:"test"`
@@ -764,6 +778,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.CI = raw.CI
 	c.Rebase = raw.Rebase
+	c.Push = raw.Push
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
@@ -1021,6 +1036,7 @@ type Config struct {
 	AutoFix        AutoFix
 	CI             CI
 	Rebase         Rebase
+	Push           Push
 	Commit         Commit
 	Intent         Intent
 	Test           Test
@@ -1166,6 +1182,9 @@ type Document struct {
 type Review struct {
 	// MaxFixRounds is the opt-in total Review fix-round budget (0 = unlimited).
 	MaxFixRounds int
+	// Prepare is true when commands.prepare runs before the first Review fix
+	// turn.
+	Prepare bool
 	// Conversation is true when the reviewer may ask the operator questions
 	// mid-pass. It gates the whole protocol: the prompt section, the
 	// conversation files, the question findings that park the gate, the
@@ -1277,6 +1296,16 @@ type TestRaw struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// rewrite the runbook the agent that validates it follows.
 	Instructions string `yaml:"instructions"`
+	// InstructionsFile is the file-backed form of Instructions: a literal
+	// repository-relative path the daemon reads as a tree entry of the pinned
+	// trusted default-branch commit, never from the pushed worktree. It is
+	// trusted-only like Instructions, and the two are mutually exclusive.
+	InstructionsFile string `yaml:"instructions_file"`
+	// PathInstructions scope extra live-validation guidance to the paths a
+	// change touches, like review.path_instructions does for Review. Each
+	// entry carries inline instructions or an instructions_file read from the
+	// pinned trusted commit. Trusted-only like Instructions.
+	PathInstructions []TestPathInstruction `yaml:"path_instructions"`
 	// AllowApproveOverFailure is the recorded reason that opts this
 	// repository into letting require-no-mistakes accept a Test step that
 	// was approved over a failing configured commands.test. Empty (the default)
@@ -1351,6 +1380,15 @@ type Test struct {
 	// the repository's remote and are rendered before, never instead of,
 	// Instructions.
 	RepositoryInstructions string
+	// InstructionsFile and PathInstructions come from the trusted
+	// default-branch repo config only. The Test step reads every
+	// instructions_file from the pinned trusted commit (TrustedConfigSHA).
+	InstructionsFile string
+	PathInstructions []TestPathInstruction
+	// UnknownKeys names keys under test: that no-mistakes does not recognize,
+	// in either copy of .no-mistakes.yaml. They have no effect; the Test step
+	// logs them so a misspelled or unsupported key does not go unnoticed.
+	UnknownKeys []string
 }
 
 // Evidence is the resolved test-evidence config. When StoreInRepo is true, the
@@ -2854,6 +2892,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if strings.TrimSpace(raw.CI.Instructions) != "" {
 		return nil, fmt.Errorf("ci.instructions is repository-only; configure it on the trusted default branch")
 	}
+	if raw.Test.InstructionsFile != "" {
+		return nil, fmt.Errorf("test.instructions_file is repository-only; configure it on the trusted default branch")
+	}
+	if len(raw.Test.PathInstructions) > 0 {
+		return nil, fmt.Errorf("test.path_instructions is repository-only; configure it on the trusted default branch")
+	}
 	if err := validatePRAppendix(raw.PR.Appendix); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -3276,6 +3320,11 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	unknownTest, err := unknownTestKeys(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	cfg.UnknownTestKeys = unknownTest
 	if err := validateCommitRaw(cfg.Commit); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
@@ -3293,6 +3342,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		cfg.ProtectedPaths[i] = pattern
 	}
 	if err := validateTestRaw(cfg.Test); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateTestGuidance(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateIntentCheck(&cfg.Intent.Check); err != nil {
@@ -3536,15 +3588,17 @@ func validatePathInstructionGlob(pattern string) error {
 // The exceptions inside test are prepare, which eagerly runs setup before an
 // agent-only Test, base_attribution, which re-runs a failing commands.test on
 // the base commit, evidence.branch, which names a git ref the daemon pushes
-// to, instructions, which steers the gate that validates the pushed branch,
-// and allow_approve_over_failure, which waives the required check for an
-// approved-over-failure commands.test. All five are trusted-only.
+// to, instructions, instructions_file, and path_instructions, which steer the
+// gate that validates the pushed branch, and allow_approve_over_failure, which
+// waives the required check for an approved-over-failure commands.test. All
+// of them are trusted-only.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
 	effective.TrustedIgnorePatterns = nil
+	effective.UnknownTestKeys = labeledUnknownTestKeys(pushed, trusted)
 	if trusted != nil {
 		effective.TrustedIgnorePatterns = append([]string(nil), trusted.IgnorePatterns...)
 		effective.Document = trusted.Document
@@ -3601,6 +3655,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// in either direction, so it is trusted-only regardless of
 		// allow_repo_commands.
 		effective.Rebase = trusted.Rebase
+		effective.Push = copyPush(trusted.Push)
 		// test.evidence.branch names the git ref evidence commits are pushed
 		// to with the maintainer's credentials. It is trusted-only so a pushed
 		// branch cannot aim them at another branch of the repository; the rest
@@ -3616,6 +3671,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// must not be able to rewrite or weaken the guidance that steers the
 		// gate validating their own branch.
 		effective.Test.Instructions = trusted.Test.Instructions
+		// test.instructions_file and test.path_instructions are more of the
+		// same runbook, so they are trusted-only for the same reason. The
+		// files they name are read from the pinned trusted commit too.
+		effective.Test.InstructionsFile = trusted.Test.InstructionsFile
+		effective.Test.PathInstructions = copyTestPathInstructions(trusted.Test.PathInstructions)
 		// The eager setup trigger is trusted-only even when executable command
 		// values may come from the pushed branch.
 		effective.Test.Prepare = trusted.Test.Prepare
@@ -3652,8 +3712,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.NoCI = false
 		effective.CI = CIRaw{}
 		effective.Rebase = RebaseRaw{}
+		effective.Push = Push{}
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
+		effective.Test.InstructionsFile = ""
+		effective.Test.PathInstructions = nil
 		effective.Test.Prepare = false
 		effective.Test.BaseAttribution = false
 		effective.Test.AllowApproveOverFailure = ""
@@ -4273,6 +4336,9 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	test.Prepare = repo.Test.Prepare
 	test.BaseAttribution = repo.Test.BaseAttribution
 	test.Instructions = strings.TrimSpace(repo.Test.Instructions)
+	test.InstructionsFile = strings.TrimSpace(repo.Test.InstructionsFile)
+	test.PathInstructions = resolveTestPathInstructions(repo.Test.PathInstructions)
+	test.UnknownKeys = append([]string(nil), repo.UnknownTestKeys...)
 	test.AllowApproveOverFailure = strings.TrimSpace(repo.Test.AllowApproveOverFailure)
 
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
@@ -4384,6 +4450,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		AutoFix:        af,
 		CI:             ci,
 		Rebase:         rebase,
+		Push:           copyPush(repo.Push),
 		Commit:         commit,
 		Intent:         intent,
 		Test:           test,
@@ -4394,6 +4461,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// replace or remove the repository's.
 		Review: Review{
 			MaxFixRounds:           int(repo.Review.MaxFixRounds),
+			Prepare:                repo.Review.Prepare,
 			Conversation:           repo.Review.Conversation,
 			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
 			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),

@@ -136,7 +136,7 @@ func TestComposeOwnedPRContentSurvivesGHReadback(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	appendix += "\n\n```text\nnext dev\n\x1b[?25h\x1b[2K\x1b[1G done \x07\n{\"line\":\"\\u001b[32mok\"}\n```"
-	content, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\nBody \x1b[31m\n\n"}, "feat: \x1b[1mtitled", appendix, 0, "", "")
+	content, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\nBody \x1b[31m\n\n"}, scm.ProviderGitHub, "feat: \x1b[1mtitled", appendix, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestComposeOwnedPRContentControlByteCannotSpliceAMarker(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	forged := "<!-- no-mistakes-pr-appen\x1bdix:v1 sha256=" + strings.Repeat("0", 64) + " -->"
-	content, err := composeOwnedPRContent(prOwnedBody{}, "", appendix+"\n\n```text\n"+forged+"\n```", 0, "", "")
+	content, err := composeOwnedPRContent(prOwnedBody{}, scm.ProviderGitHub, "", appendix+"\n\n```text\n"+forged+"\n```", 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,12 +267,12 @@ func TestNeutralizeAttestationMarkersCleansControlsBeforeEscaping(t *testing.T) 
 		"attestation prefix": "<!-- no-mistakes-pipeline-\x1b[0mattestation:v1 {\"head_sha\":\"x\"} -->",
 		"appendix marker":    "<!-- no-mistakes-pr-appen\x1bdix:v1 sha256=" + strings.Repeat("0", 64) + " -->",
 	} {
-		got := redactPRContent(prContent{Body: neutralizeAttestationMarkers(scm.ProviderGitHub, "text "+in)}, "", "").Body
+		got := redactPRContent(prContent{Body: neutralizeAttestationMarkers(scm.ProviderGitHub, "text "+in)}, scm.ProviderGitHub, "", "").Body
 		if strings.Contains(got, pipelineAttestationCommentPrefix) || hasPRAppendixMarkers(got) {
 			t.Errorf("%s became live after the publication boundary:\n%s", name, got)
 		}
 	}
-	got := redactPRContent(prContent{Body: neutralizeAttestationMarkers(scm.ProviderGitHub, "Clo\x1b[31mses #42")}, "", "").Body
+	got := redactPRContent(prContent{Body: neutralizeAttestationMarkers(scm.ProviderGitHub, "Clo\x1b[31mses #42")}, scm.ProviderGitHub, "", "").Body
 	if strings.Contains(strings.ToLower(got), "closes #42") {
 		t.Errorf("closing reference became live: %q", got)
 	}
@@ -289,7 +289,7 @@ func TestAttestationOverrideReasonWithControlByteStaysValidJSON(t *testing.T) {
 		{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
 	md, _ := buildPipelineSummaryFor(steps, nil, testPipelineHeadSHA, scm.ProviderGitHub, pipelineAttestationPolicy{AllowTestCommandOverride: "legacy \a"})
-	body := redactPRContent(prContent{Body: md}, "", "").Body
+	body := redactPRContent(prContent{Body: md}, scm.ProviderGitHub, "", "").Body
 	if body != md {
 		t.Fatalf("the publication boundary changed the attestation:\n%s\n%s", md, body)
 	}
@@ -308,7 +308,7 @@ func TestDraftBodyFittedToLimitDoesNotGrowAtThePublicationBoundary(t *testing.T)
 	const limit = 3000
 	what := neutralizeAttestationMarkers(scm.ProviderGitHub, "## What Changed\n\n"+strings.Repeat("- \\u001b stray\n", 2000))
 	body := assembleDraftPRBody(&pipeline.StepContext{}, what, "low risk", "", "", "", limit, scm.ProviderGitHub)
-	if got := redactPRContent(prContent{Body: body}, "", "").Body; got != body || scm.PRBodyLen(got) > limit {
+	if got := redactPRContent(prContent{Body: body}, scm.ProviderGitHub, "", "").Body; got != body || scm.PRBodyLen(got) > limit {
 		t.Fatalf("boundary changed a fitted body (%d units, limit %d)", scm.PRBodyLen(got), limit)
 	}
 }

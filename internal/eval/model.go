@@ -30,13 +30,9 @@ const (
 	labelsVersion = 2
 )
 
-// Gold kinds are the scientific labels written from the recorded gate decision
-// (see goldFromRound). Capture writes true-positive gold from a user Fix or
-// from an auto-fix selection on a merged run, false-negative gold from a
-// user-added finding, and false-positive gold from a finding the human did not
-// select for fix that shipped in a merged PR. IngestPostPRMiss writes
-// additional false-negative gold after a green review. Adjudicated labels are
-// never inferred from pending unmatched candidate findings.
+// Gold kinds describe finding-level labels, not case-level verdicts.
+// Capture and provenance rules are owned by docs/src/content/docs/reference/eval.md.
+// Unmatched candidate findings never imply false-positive gold.
 const (
 	GoldTruePositive  = "true-positive"
 	GoldFalseNegative = "false-negative"
@@ -201,6 +197,17 @@ type FindingGold struct {
 	Description string `json:"description,omitempty"`
 	Severity    string `json:"severity,omitempty"`
 	Action      string `json:"action,omitempty"`
+	// Adjudication overrides scoring while retaining the captured kind/source.
+	Adjudication *Adjudication `json:"adjudication,omitempty"`
+}
+
+// Adjudication is an explicit local curator decision, never capture inference.
+// Exclusion retains the finding and makes a later correction possible.
+type Adjudication struct {
+	Kind      string `json:"kind,omitempty"`
+	Excluded  bool   `json:"excluded,omitempty"`
+	Reason    string `json:"reason"`
+	DecidedAt int64  `json:"decided_at"`
 }
 
 // Labels is a local, growing label file. Finding-level gold is the unit of
@@ -218,11 +225,35 @@ type Labels struct {
 	QueuedCandidateFindings int           `json:"queued_candidate_findings"`
 }
 
-func (l Labels) HasGold() bool { return len(l.Findings) > 0 }
+func (l Labels) HasGold() bool { return len(l.ActiveFindings()) > 0 }
+
+// ActiveFindings is the shared scoring/set view. Original evidence stays on disk.
+func (l Labels) ActiveFindings() []FindingGold {
+	active := make([]FindingGold, 0, len(l.Findings))
+	for _, g := range l.Findings {
+		if a := g.Adjudication; a != nil {
+			if a.Excluded {
+				continue
+			}
+			g.Kind = a.Kind
+		}
+		active = append(active, g)
+	}
+	return active
+}
+
+func (l Labels) HasAdjudication() bool {
+	for _, g := range l.Findings {
+		if g.Adjudication != nil {
+			return true
+		}
+	}
+	return false
+}
 
 func (l Labels) TrueIssueCount() int {
 	n := 0
-	for _, finding := range l.Findings {
+	for _, finding := range l.ActiveFindings() {
 		if isTrueIssueGold(finding.Kind) {
 			n++
 		}
@@ -232,7 +263,7 @@ func (l Labels) TrueIssueCount() int {
 
 func (l Labels) FalsePositiveCount() int {
 	n := 0
-	for _, finding := range l.Findings {
+	for _, finding := range l.ActiveFindings() {
 		if finding.Kind == GoldFalsePositive {
 			n++
 		}

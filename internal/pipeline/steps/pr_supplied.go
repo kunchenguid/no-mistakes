@@ -158,7 +158,7 @@ func (s *PRStep) buildSuppliedPRContent(sctx *pipeline.StepContext, branch, base
 	}
 	narrative := neutralizeAttestationMarkers(provider, body)
 	appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
-	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, appendix, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
+	return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, title, appendix, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }
 
 // applySuppliedPRTitle replaces a drafted title with the supplied one. The
@@ -173,6 +173,6 @@ func applySuppliedPRTitle(sctx *pipeline.StepContext, content prContent) (prCont
 	if err != nil {
 		return prContent{}, err
 	}
-	content.Title = redactPRContent(prContent{Title: title}, sctx.WorkDir, nmWorktreesRoot()).Title
+	content.Title = redactPRContent(prContent{Title: title}, resolvedProviderForBody(sctx), sctx.WorkDir, nmWorktreesRoot()).Title
 	return content, nil
 }

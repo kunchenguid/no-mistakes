@@ -51,8 +51,14 @@ CREATE TABLE IF NOT EXISTS runs (
     pi_profile           TEXT,
 	 reviewer_profile     TEXT,
     verification_plan    TEXT,
+    caller_restrictions  TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_commit_identities (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    identity_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS step_results (
@@ -271,6 +277,8 @@ CREATE TABLE IF NOT EXISTS run_retries (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE runs ADD COLUMN caller_restrictions TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_caller_restrictions_immutable BEFORE UPDATE OF caller_restrictions ON runs WHEN NEW.caller_restrictions IS NOT OLD.caller_restrictions BEGIN SELECT RAISE(ABORT, 'run caller restrictions are immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,
@@ -447,7 +455,8 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN review_max_fix_rounds INTEGER`,
 	// Caller-supplied PR title and description (axi run --pr-title /
 	// --pr-body-file). Written once, with the row, and NULL when not
-	// supplied; the PR step publishes them only when the run creates the PR.
+	// supplied; creation may use inherited values, while existing-PR updates
+	// require the separately recorded fresh flags.
 	`ALTER TABLE runs ADD COLUMN pr_title TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_body TEXT`,
 	// Run-history lookup indexes. Without them every run snapshot scans the
@@ -469,4 +478,13 @@ COMMIT;`,
 	// Caller transcript roots are immutable launch context. Historical runs
 	// retain NULL and the pre-existing default discovery paths.
 	`ALTER TABLE runs ADD COLUMN transcript_homes TEXT`,
+	// Distinguish explicit flags on this run from text inherited by rerun/retry.
+	// Old rows default false, preserving their existing-PR behavior.
+	`ALTER TABLE runs ADD COLUMN pr_title_fresh BOOLEAN NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN pr_body_fresh BOOLEAN NOT NULL DEFAULT 0`,
+	// Set once this run's fresh supplied PR text has been published, so a CI
+	// repair restart or recovery re-running the PR step treats it as inherited
+	// and never reverts later edits on the live PR.
+	`ALTER TABLE runs ADD COLUMN pr_text_applied_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN integration_destination TEXT`,
 }

@@ -55,6 +55,9 @@ func handleFakeCLI(mode string) {
 	if logFile != "" {
 		f, _ := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if f != nil {
+			if os.Getenv("FAKE_CLI_LOG_REPO") == "1" {
+				fmt.Fprintln(f, "GITLAB_REPO="+os.Getenv("GITLAB_REPO"))
+			}
 			fmt.Fprintln(f, strings.Join(args, " "))
 			f.Close()
 		}
@@ -70,6 +73,10 @@ func handleFakeCLI(mode string) {
 		fakeAzureEmptyPRHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
+	case "pr-appendix-verify":
+		fakePRAppendixVerifyHandler(args)
+	case "pr-appendix-identity":
+		fakePRAppendixIdentityHandler(args)
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
 	case "git-move-head-passthrough":
@@ -111,6 +118,47 @@ func handleFakeCLI(mode string) {
 		} else {
 			fakeCIGHHandler(args)
 		}
+	default:
+		os.Exit(1)
+	}
+}
+
+func fakePRAppendixIdentityHandler(args []string) {
+	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+	joined := strings.Join(args, " ")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		if (name == "gh" && strings.Contains(joined, "github.com")) || (name == "glab" && strings.Contains(joined, "gitlab.com")) || name == "origin" {
+			return
+		}
+		os.Exit(1)
+	}
+	if len(args) > 0 && args[0] == "status" {
+		fmt.Println(os.Getenv("FAKE_CLI_STATUS_JSON"))
+		return
+	}
+	if name == "az" && len(args) > 0 && (args[0] == "extension" || args[0] == "devops") {
+		return
+	}
+	if name == "tea" && (strings.Contains(joined, "--help") || strings.HasSuffix(joined, "/user")) {
+		fmt.Println("{}")
+		return
+	}
+	if (len(args) >= 2 && ((args[0] == "pr" && args[1] == "view") || (args[0] == "mr" && args[1] == "view"))) ||
+		(name == "az" && strings.HasPrefix(joined, "repos pr show ")) ||
+		(len(args) > 0 && args[0] == "api" && (name == "tea" || name == "forgejo-axi")) {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_CONTENT_JSON"))
+		return
+	}
+	os.Exit(1)
+}
+
+func fakePRAppendixVerifyHandler(args []string) {
+	switch {
+	case len(args) > 0 && args[0] == "status":
+		fmt.Println(os.Getenv("FAKE_CLI_STATUS_JSON"))
+	case len(args) >= 3 && args[0] == "api" && args[1] == "GET",
+		len(args) >= 3 && args[0] == "pr" && args[1] == "view":
+		fmt.Println(os.Getenv("FAKE_CLI_PR_CONTENT_JSON"))
 	default:
 		os.Exit(1)
 	}
@@ -653,8 +701,10 @@ func fakeGlabHandler(args []string) {
 // description in FAKE_CLI_MR_STATE_FILE, so a later `glab mr view` - which the
 // PR step uses to verify the body it published - reads back what was published.
 // A flag the update omits keeps the recorded value, mirroring GitLab's
-// partial-update semantics. State is only kept when the variable is set;
-// without it the handler answers statically from FAKE_CLI_MR_VIEW_JSON.
+// partial-update semantics. The description is stored as GitLab stores it:
+// every CRLF in it reads back as LF (#1795). State is only kept when the
+// variable is set; without it the handler answers statically from
+// FAKE_CLI_MR_VIEW_JSON.
 func fakeGlabRecordMR(args []string, iid int) {
 	path := os.Getenv("FAKE_CLI_MR_STATE_FILE")
 	if path == "" {
@@ -668,7 +718,7 @@ func fakeGlabRecordMR(args []string, iid int) {
 		record["title"] = value
 	}
 	if value, ok := fakeCLIFlagValue(args, "--description"); ok {
-		record["description"] = value
+		record["description"] = strings.ReplaceAll(value, "\r\n", "\n")
 	}
 	if iid != 0 {
 		record["iid"] = iid
@@ -900,6 +950,17 @@ func fakeCIGHHandler(args []string) {
 		if strings.Contains(joined, "reviewThreads") {
 			printFakeReviewThreads(os.Getenv("FAKE_CLI_REVIEW_COMMENTS"))
 			os.Exit(0)
+		}
+		if strings.Contains(joined, "reviewRequests") {
+			// The Copilot required-review read. It fails unless a test
+			// supplied the response, so an opted-out run proves it made no
+			// such request.
+			if payload := os.Getenv("FAKE_CLI_COPILOT_REVIEWS"); payload != "" {
+				fmt.Println(payload)
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "unexpected Copilot review read")
+			os.Exit(1)
 		}
 		if checksErr != "" {
 			fmt.Fprintln(os.Stderr, checksErr)
@@ -1500,9 +1561,10 @@ func printFakeCommitChecks(raw string, args []string) {
 }
 
 // printFakeReviewThreads renders FAKE_CLI_REVIEW_COMMENTS - a JSON array of
-// {author, path, line, body} - as the reviewThreads GraphQL response the
-// GitHub backend's GetReviewComments parses, one unresolved thread per
-// comment. An empty or invalid value renders a pull request with no threads.
+// {author, author_id, path, line, body, id, resolved} - as the reviewThreads
+// GraphQL response the GitHub backend's GetReviewComments parses, one thread
+// per comment (unresolved unless resolved is set; id defaults to the comment's
+// position). An empty or invalid value renders a pull request with no threads.
 func printFakeReviewThreads(raw string) {
 	var comments []struct {
 		Author   string `json:"author"`
@@ -1510,6 +1572,8 @@ func printFakeReviewThreads(raw string) {
 		Path     string `json:"path"`
 		Line     int    `json:"line"`
 		Body     string `json:"body"`
+		ID       int64  `json:"id"`
+		Resolved bool   `json:"resolved"`
 	}
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &comments); err != nil {
@@ -1519,15 +1583,20 @@ func printFakeReviewThreads(raw string) {
 	}
 	threads := make([]map[string]any, 0, len(comments))
 	for i, comment := range comments {
+		id := comment.ID
+		if id == 0 {
+			id = int64(i + 1)
+		}
 		threads = append(threads, map[string]any{
-			"isResolved": false,
+			"id":         fmt.Sprintf("T%d", i+1),
+			"isResolved": comment.Resolved,
 			"comments": map[string]any{
 				"nodes": []map[string]any{{
-					"databaseId": i + 1,
+					"databaseId": id,
 					"body":       comment.Body,
 					"path":       comment.Path,
 					"line":       comment.Line,
-					"url":        fmt.Sprintf("https://github.com/test/repo/pull/42#discussion_r%d", i+1),
+					"url":        fmt.Sprintf("https://github.com/test/repo/pull/42#discussion_r%d", id),
 					"createdAt":  "2026-09-07T00:00:00Z",
 					"author":     map[string]any{"login": comment.Author, "databaseId": comment.AuthorID},
 				}},

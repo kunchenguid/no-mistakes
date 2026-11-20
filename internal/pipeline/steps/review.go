@@ -172,6 +172,11 @@ Previous review findings to address:
 			historySection,
 			previousFindings,
 		)
+		if sctx.Config.Review.Prepare {
+			if err := ensurePrepared(sctx, s.Name()); err != nil {
+				return nil, fmt.Errorf("prepare review fix dependencies: %w", err)
+			}
+		}
 		// Every logical agent turn owns a fresh stall budget. The fixer keeps
 		// the step parent for synchronous preparation and commit work, so the
 		// independent rereviewer cannot inherit its spent deadline.

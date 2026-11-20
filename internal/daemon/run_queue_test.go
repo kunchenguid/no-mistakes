@@ -631,6 +631,7 @@ func insertParkedQueueTestRun(t *testing.T, p *paths.Paths, d *db.DB, repo *db.R
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindFixtureCommitIdentity(t, d, run.ID)
 	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
