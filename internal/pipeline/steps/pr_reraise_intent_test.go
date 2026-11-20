@@ -338,32 +338,87 @@ func TestPRStep_ReRaiseReplacesAMarkerlessIntentAndSaysWhy(t *testing.T) {
 // a later re-raise republishes it within the same limit.
 func TestAssembleDraftPRBody_BodyLimitKeepsTheIntentMarker(t *testing.T) {
 	t.Parallel()
-	provider := scm.ProviderAzureDevOps
-	limit := scm.MaxPRBodyChars(provider)
 	pipelineMD := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + pipelineAttestationCommentPrefix + `{"head_sha":"abc"}` + pipelineAttestationCommentClosingToken
-	long := strings.TrimSuffix(strings.Repeat("A long original goal line.\n", 2*limit/len("A long original goal line.\n")), "\n")
-	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
-		t.Run(mode, func(t *testing.T) {
-			t.Parallel()
-			cfg := &config.Config{}
-			cfg.PR.Appendix = mode
-			first, err := assembleDraftPRBody(&pipeline.StepContext{Config: cfg, UserIntent: long}, "## What Changed\n\n- A helper.", "✅ Low: small", "", pipelineMD, "", limit, provider)
-			if err != nil {
-				t.Fatal(err)
-			}
-			kept, err := liveIntentSection(first)
-			if err != nil || kept == "" || len(kept) >= len(long) || scm.PRBodyLen(first) > limit {
-				t.Fatalf("first publish Intent = %d chars, %v; want a shortened, marked Intent within %d\nbody:\n%s", len(kept), err, limit, first)
-			}
+	for _, provider := range []scm.Provider{scm.ProviderAzureDevOps, scm.ProviderGitHub} {
+		limit := scm.MaxPRBodyChars(provider)
+		size := 2 * max(limit, maxPullRequestBodyBytes)
+		plain := strings.TrimSuffix(strings.Repeat("A long original goal line.\n", size/len("A long original goal line.\n")), "\n")
+		// The fenced example crosses wherever the cut lands.
+		fenced := "Goal:\n\n```go\n" + strings.Repeat("x := 1\n", size/len("x := 1\n")) + "```\n\nAfter."
+		for _, intent := range []struct{ name, text string }{{"plain", plain}, {"fence crossing the cut", fenced}} {
+			for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+				t.Run(string(provider)+"/"+intent.name+"/"+mode, func(t *testing.T) {
+					t.Parallel()
+					cfg := &config.Config{}
+					cfg.PR.Appendix = mode
+					first, err := assembleDraftPRBody(&pipeline.StepContext{Config: cfg, UserIntent: intent.text}, "## What Changed\n\n- A helper.", "✅ Low: small", "", pipelineMD, "", limit, provider)
+					if err != nil {
+						t.Fatal(err)
+					}
+					kept, err := liveIntentSection(first)
+					if err != nil || kept == "" || len(kept) >= len(intent.text) || len(first) > maxPullRequestBodyBytes || (limit > 0 && scm.PRBodyLen(first) > limit) {
+						t.Fatalf("first publish Intent = %d chars, %v; want a shortened, marked Intent within the limit\nbody tail:\n%s", len(kept), err, first[max(0, len(first)-600):])
+					}
 
-			again, err := assembleDraftPRBody(&pipeline.StepContext{Config: cfg, UserIntent: reraiseFollowUpIntent, PublishedPRIntent: kept}, "## What Changed\n\n- A helper.", "✅ Low: small", "", pipelineMD, "", limit, provider)
-			if err != nil {
-				t.Fatalf("re-raise of the first publish failed: %v", err)
+					again, err := assembleDraftPRBody(&pipeline.StepContext{Config: cfg, UserIntent: reraiseFollowUpIntent, PublishedPRIntent: kept}, "## What Changed\n\n- A helper.", "✅ Low: small", "", pipelineMD, "", limit, provider)
+					if err != nil {
+						t.Fatalf("re-raise of the first publish failed: %v", err)
+					}
+					if got, err := liveIntentSection(again); err != nil || got != kept {
+						t.Fatalf("re-raise Intent differs from the first publish (%v)", err)
+					}
+				})
 			}
-			if got, err := liveIntentSection(again); err != nil || got != kept {
-				t.Fatalf("re-raise Intent differs from the first publish (%v)\nbody:\n%s", err, again)
-			}
-		})
+		}
+	}
+}
+
+// A bare end-marker line or an unclosed fence in the Intent text cannot hide
+// or fake the marker: the text after either survives a re-raise, and
+// republishing what was read back changes nothing.
+func TestIntentSection_MarkerStaysTheBoundary(t *testing.T) {
+	t.Parallel()
+	for _, text := range []string{
+		"Goal.\n\n" + prIntentEndMarker + "\n\nAfter the marker line.",
+		"Goal:\n\n```sh\nmake e2e\nAfter the open fence.",
+	} {
+		body := intentSection(text) + "\n\n## What Changed\n\n- A helper.\n"
+		got, err := liveIntentSection(body)
+		if err != nil || !strings.HasPrefix(got, "Goal") || !strings.Contains(got, "After the") || strings.Contains(got, "A helper.") {
+			t.Fatalf("Intent read back = %q, %v\nbody:\n%s", got, err, body)
+		}
+		if again := intentSection(got) + "\n\n## What Changed\n\n- A helper.\n"; again != body {
+			t.Fatalf("republishing the kept Intent changed it:\nfirst:\n%s\nagain:\n%s", body, again)
+		}
+	}
+}
+
+// A host that cannot read the published body has no Intent to keep, so the
+// re-raise publishes this run's and says so.
+func TestPRStep_ReRaiseOnAHostThatCannotReadSaysWhy(t *testing.T) {
+	t.Parallel()
+	sctx, bodyFile, _ := reraiseContext(t, "https://github.com/test/repo/pull/42")
+	if err := os.WriteFile(bodyFile, []byte(intentSection(reraiseOriginalIntent)+"\n\n## What Changed\n\n- An older summary.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host, reason := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil {
+		t.Fatal(reason)
+	}
+	if _, ok := any(struct{ scm.Host }{host}).(scm.PRContentReader); ok {
+		t.Fatal("wrapped host still reads PR content")
+	}
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	sctx.UserIntent = reraiseFollowUpIntent
+	if _, err := (&PRStep{host: struct{ scm.Host }{host}}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(logs, "intent replaced: this forge cannot read the published body") {
+		t.Fatalf("replacement was not stated in the step log: %q", logs)
+	}
+	if intent, err := liveIntentSection(string(mustRead(t, bodyFile))); err != nil || intent != reraiseFollowUpIntent {
+		t.Fatalf("Intent = %q, %v; want this run's intent", intent, err)
 	}
 }
 

@@ -215,7 +215,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		var live scm.PRContent
-		if reader, ok := host.(scm.PRContentReader); ok {
+		reader, readable := host.(scm.PRContentReader)
+		if readable {
 			live, err = reader.GetPRContent(ctx, existing)
 			if err != nil {
 				return nil, fmt.Errorf("read existing PR before publication: %w", err)
@@ -246,12 +247,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		// Every update refreshes what the pipeline owns, but the Intent states
 		// what the PR was opened to do; this run's intent describes the
 		// follow-up, so the live section is republished as written.
-		if intent, err := publishedPRIntent(live.Body); err != nil {
-			if publishesPRIntent(sctx) {
-				sctx.Log(err.Error())
+		kept, intentErr := publishedPRIntent(live.Body)
+		if !readable {
+			intentErr = errUnreadablePRIntent
+		}
+		if intentErr != nil {
+			if publicPRIntentSource(sctx) != "" {
+				sctx.Log(intentErr.Error())
 			}
 		} else {
-			sctx.PublishedPRIntent = intent
+			sctx.PublishedPRIntent = kept
 		}
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
@@ -1195,11 +1200,11 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 		return intent + separator + sections
 	}
 
-	textBudget := maxBytes - len(separator) - len(sections) - len(intentSection(""))
-	if textBudget <= 0 {
+	intent = clampKeepingIntentMarker(func(s string) int { return len(s) }, clampPRBytes)(intent, maxBytes-len(separator)-len(sections))
+	if intent == "" {
 		return sections
 	}
-	return intentSection(truncateTextAtLineBoundary(cleaned, textBudget, essentialPRBodyTruncationMarker())) + separator + sections
+	return intent + separator + sections
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string, provider scm.Provider) string {

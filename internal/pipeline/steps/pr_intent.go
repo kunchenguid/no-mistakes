@@ -117,8 +117,24 @@ func prDraftIntentPromptSection(sctx *pipeline.StepContext) string {
 // the Intent, even one spelled like a generated section, stays author text.
 const prIntentEndMarker = "[//]: # (no-mistakes-intent-end)"
 
-// intentSection renders a published Intent section ending in its marker.
+// intentSection renders a published Intent section ending in its marker. A
+// bare marker line in the text is escaped and a fence the text leaves open is
+// closed, so the marker is always the first one a re-raise finds outside a
+// fence. Text read back by liveIntentSection already satisfies both, so
+// republishing it is byte for byte.
 func intentSection(text string) string {
+	lines := strings.Split(text, "\n")
+	var fence markdownFence
+	for i, line := range lines {
+		if fence.marker == 0 && strings.TrimRight(line, "\r") == prIntentEndMarker {
+			lines[i] = `\` + line
+		}
+		fence.consume(line)
+	}
+	text = strings.Join(lines, "\n")
+	if fence.marker != 0 {
+		text += "\n" + strings.Repeat(string(fence.marker), fence.width)
+	}
 	return "## Intent\n\n" + text + "\n\n" + prIntentEndMarker
 }
 
@@ -126,6 +142,10 @@ func intentSection(text string) string {
 // Intent: the body carries an Intent section without prIntentEndMarker, so
 // nothing says where the author's text ends.
 var errUnmarkedPRIntent = errors.New("intent replaced: no intent marker in the published body; republish once to opt in")
+
+// errUnreadablePRIntent names the other case: the host cannot read the
+// published body at all, so there is no Intent to keep.
+var errUnreadablePRIntent = errors.New("intent replaced: this forge cannot read the published body")
 
 // clampKeepingIntentMarker wraps clamp for text that may open with a published
 // Intent section: what follows the section is cut first, and when the section
@@ -153,10 +173,13 @@ func clampKeepingIntentMarker(units func(string) int, clamp func(string, int) st
 		if units(section) <= limit {
 			return section
 		}
-		if budget := limit - units(intentSection("")); budget > 0 {
-			if shortened := intentSection(clamp(intent, budget)); units(shortened) <= limit {
+		for budget := limit - units(intentSection("")); budget > 0; {
+			shortened := intentSection(clamp(intent, budget))
+			over := units(shortened) - limit
+			if over <= 0 {
 				return shortened
 			}
+			budget -= over
 		}
 		return ""
 	}
