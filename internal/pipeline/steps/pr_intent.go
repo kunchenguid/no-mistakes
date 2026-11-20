@@ -30,6 +30,12 @@ import (
 // Review, test, document, lint, and CI-fix prompts keep the full intent
 // under either signal.
 func publicPRIntent(sctx *pipeline.StepContext) string {
+	// A re-raise keeps the Intent the PR already publishes, even when this
+	// run's own intent is empty or different. The suppression checks still
+	// win, so a since-tightened policy removes it.
+	if sctx != nil && sctx.PublishedPRIntent != "" && publishesPRIntent(sctx) {
+		return sctx.PublishedPRIntent
+	}
 	source := publicPRIntentSource(sctx)
 	if source == "" {
 		return ""
@@ -41,13 +47,19 @@ func publicPRIntent(sctx *pipeline.StepContext) string {
 }
 
 func publicPRIntentSource(sctx *pipeline.StepContext) string {
-	if sctx != nil && sctx.Config != nil && !sctx.Config.PR.PublishesIntent() {
-		return ""
-	}
-	if runOmitsIntent(sctx) {
+	if !publishesPRIntent(sctx) {
 		return ""
 	}
 	return cleanedUserIntent(sctx)
+}
+
+// publishesPRIntent reports whether neither the repository policy nor the
+// caller-side omission suppresses the Intent section.
+func publishesPRIntent(sctx *pipeline.StepContext) bool {
+	if sctx != nil && sctx.Config != nil && !sctx.Config.PR.PublishesIntent() {
+		return false
+	}
+	return !runOmitsIntent(sctx)
 }
 
 // runOmitsIntent reports whether this run was started with the caller-side,
@@ -69,4 +81,37 @@ func prDraftIntentPromptSection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 	return userIntentPromptSection(sctx)
+}
+
+// liveIntentSection returns the text of the first top-level "## Intent"
+// section in an existing PR body, exactly as published: everything after the
+// heading up to the next "#" or "##" heading outside a fenced block, without
+// the blank lines that separate it from its neighbours. ok is false when the
+// body has no such section or it is empty.
+func liveIntentSection(body string) (string, bool) {
+	lines := strings.SplitAfter(body, "\n")
+	var fence markdownFence
+	start := -1
+	var text strings.Builder
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, "\r\n")
+		if trimmed := strings.TrimSpace(line); fence.marker == 0 && (strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ")) {
+			if start >= 0 {
+				break
+			}
+			if strings.HasPrefix(trimmed, "## ") && strings.EqualFold(strings.TrimRight(strings.TrimSpace(trimmed[3:]), ":.!? "), "intent") {
+				start = 0
+				continue
+			}
+		}
+		fence.consume(line)
+		if start >= 0 {
+			text.WriteString(raw)
+		}
+	}
+	intent := strings.Trim(text.String(), "\r\n")
+	if start < 0 || strings.TrimSpace(intent) == "" {
+		return "", false
+	}
+	return intent, true
 }

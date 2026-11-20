@@ -104,6 +104,12 @@ type StepContext struct {
 	// PublicIntentBrief is the PR-step's bounded rendering of UserIntent when
 	// trusted pr.intent.format is brief. It is never used as review criteria.
 	PublicIntentBrief string
+	// PublishedPRIntent is the PR-step's copy of the Intent section an existing
+	// PR already carries, read from the live body before an ordinary
+	// (regenerate) update. The update republishes it byte for byte instead of
+	// this run's intent, which describes the follow-up, not what the PR was
+	// opened to do. Empty when the PR is new or its body has no Intent section.
+	PublishedPRIntent string
 	// IntentSource records the provenance of UserIntent so steps can weigh
 	// its authority. db.RunIntentSourceAgent ("agent") means the driving
 	// agent supplied it explicitly via `axi run --intent`; db.RunIntentSourceRerun

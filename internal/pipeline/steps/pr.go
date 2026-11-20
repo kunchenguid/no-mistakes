@@ -124,6 +124,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	step := *s
 	s = &step
 	sctx.PublicIntentBrief = ""
+	sctx.PublishedPRIntent = ""
+	defer func() { sctx.PublishedPRIntent = "" }()
 	s.headProofUnavailable = ""
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -213,11 +215,13 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		var live scm.PRContent
+		liveRead := false
 		if reader, ok := host.(scm.PRContentReader); ok {
 			live, err = reader.GetPRContent(ctx, existing)
 			if err != nil {
 				return nil, fmt.Errorf("read existing PR before publication: %w", err)
 			}
+			liveRead = true
 		} else if template != "" || keepsPRUpdateText(sctx) || freshBody {
 			if freshBody {
 				return nil, fmt.Errorf("provider cannot read existing PR content for a supplied description")
@@ -324,6 +328,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 		} else {
+			// The regenerated body owns every other section, but the Intent
+			// states what the PR was opened to do; this run's intent describes
+			// the follow-up, so the live section is republished as written.
+			if intent, ok := liveIntentSection(live.Body); ok {
+				sctx.PublishedPRIntent = intent
+			}
 			drafter := *s
 			drafter.titleReplaced = freshTitle || keepAppliedTitle
 			content, err := drafter.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
@@ -345,12 +355,17 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
-			updated, err = host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
-			if err != nil {
-				// A revalidation cycle may already have pushed a repaired head. Its
-				// attestation is part of delivery, so CI must not run after a failed
-				// update while the existing body still binds the previous head.
-				return nil, fmt.Errorf("update existing pull request: %w", err)
+			// Nothing the pipeline owns changed: leave the PR untouched.
+			if liveRead && content.Title == live.Title && content.Body == live.Body {
+				sctx.Log("pull request title and body are already current; not updating")
+			} else {
+				updated, err = host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
+				if err != nil {
+					// A revalidation cycle may already have pushed a repaired head. Its
+					// attestation is part of delivery, so CI must not run after a failed
+					// update while the existing body still binds the previous head.
+					return nil, fmt.Errorf("update existing pull request: %w", err)
+				}
 			}
 		}
 		if err := verifyClosingIssues(ctx, host, updated, sctx); err != nil {
