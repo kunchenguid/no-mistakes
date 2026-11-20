@@ -301,7 +301,11 @@ Run the pipeline and decide on its findings as they come up:
    - `passed-with-skips` - publication or CI verification automatically skipped.
      Report the missing evidence and its cause from `run.automatic_skips`,
      bound to the full `run.head_sha`. This is neither CI readiness nor a
-     failing code verdict. Explicit per-run skips retain their existing behavior.
+     failing code verdict. Explicit per-run skips retain their existing outcome word.
+   - Whatever the outcome, read `run.validation` when it is present: report every
+     `untested` scenario with its reason and every `exceptions` entry (Test
+     exceptions, CI overrides, operator and automatic skips), and do not describe
+     the run as fully validated while either list is non-empty.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Follow the custody guidance below before fixing whatever the output
      points at (a failing test, a lint error, a finding you skipped). Commit the
