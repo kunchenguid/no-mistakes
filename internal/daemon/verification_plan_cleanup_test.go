@@ -52,7 +52,7 @@ func TestReleaseVerificationPlanPreservesRunOwnership(t *testing.T) {
 			t.Fatal(err)
 		}
 		if owned {
-			_, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "", "", "", "", false, plan)
+			_, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "", "", "", "", false, plan, "")
 			if err != nil {
 				t.Fatal(err)
 			}

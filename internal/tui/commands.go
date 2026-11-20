@@ -95,8 +95,15 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 			return rerunErrMsg{err: err, requestID: requestID}
 		}
 		homes := runenv.CaptureTranscriptHomes()
+		claudeConfigDir, err := runenv.CallerClaudeConfigDir()
+		if err != nil {
+			return rerunErrMsg{err: err, requestID: requestID}
+		}
+		if err := m.client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+			return rerunErrMsg{err: err, requestID: requestID}
+		}
 		var rerun ipc.RerunResult
-		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{CommitIdentity: &identity, TranscriptHomes: homes, RepoID: repoID, Branch: branch, PreviousRunID: previousRunID}, &rerun); err != nil {
+		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{CommitIdentity: &identity, TranscriptHomes: homes, RepoID: repoID, Branch: branch, PreviousRunID: previousRunID, ClaudeConfigDir: claudeConfigDir}, &rerun); err != nil {
 			return rerunErrMsg{err: err, requestID: requestID}
 		}
 		var result ipc.GetRunResult
