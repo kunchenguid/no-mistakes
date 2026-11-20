@@ -43,6 +43,13 @@ jobs:
             name: test (ubuntu-latest)
           - os: macos-latest
             name: test (macos-latest)
+            test_run: '^Test[A-K]'
+          - os: macos-latest
+            name: test (macos-2)
+            test_run: '^Test[L-Q]'
+          - os: macos-latest
+            name: test (macos-3)
+            test_skip: '^Test[A-Q]'
           - os: windows-latest
             name: test (windows-core)
             shard: core
@@ -142,9 +149,16 @@ jobs:
             Write-Host "::warning::Defender exclusions unavailable, Windows tests run untuned: $_"
           }
 
-      - name: Test on Unix
-        if: runner.os != 'Windows'
+      - name: Test on Linux
+        if: runner.os == 'Linux'
         run: go test -race ./...
+
+      - name: Test on macOS
+        if: runner.os == 'macOS'
+        env:
+          NM_CI_TEST_RUN: ${{ matrix.test_run }}
+          NM_CI_TEST_SKIP: ${{ matrix.test_skip }}
+        run: go test -race "-run=$NM_CI_TEST_RUN" "-skip=$NM_CI_TEST_SKIP" ./...
 
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
       # on the core shard is the union of the git, steps, daemon, and gate
