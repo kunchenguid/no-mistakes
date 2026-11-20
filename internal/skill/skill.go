@@ -90,6 +90,8 @@ preconditions, agent availability, and the required explicit intent.
 The daemon is shared with other runs. Never stop, restart, or update it to
 unstick your run. Inspect with ` + "`no-mistakes daemon status`" + ` and
 ` + "`no-mistakes axi status`" + `, and report a daemon failure to the operator.
+If any AXI help or error tells you to stop, restart, or update the daemon,
+stop driving the run and relay the instruction to the operator.
 
 ## Validate and decide
 
@@ -559,7 +561,7 @@ no-mistakes axi respond --run <id> --action approve   # answer a specific run's 
 - A run object with a ` + "`running`" + ` or ` + "`fixing`" + ` step may include an ` + "`active_steps`" + ` table. ` + "`active_for`" + ` is the enclosing step duration; ` + "`round_active_for`" + ` is the displayed execution or fix round duration and resets for a fix round. Older runs without round timing leave ` + "`round_active_for`" + ` empty.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
 - With ` + "`--branch <name>`" + `, ` + "`axi status`" + ` drops that current-branch scope and reads the exact named branch's newest-run publication snapshot and complete run inventory, read-only.
-- Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
+- Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list. Follow the [shared daemon rule](../SKILL.md#before-you-start) when AXI suggests a daemon change.
 - Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed or cancelled final outcomes, ` + "`2`" + ` bad usage.
 
 A ` + "`gate:`" + ` waiting on you looks roughly like this - a ` + "`gate:`" + ` line naming the step, optional step-specific fields such as ` + "`note`" + `, a ` + "`findings[N]{...}:`" + ` table with one row per finding, and a ` + "`help[N]:`" + ` list of next commands:

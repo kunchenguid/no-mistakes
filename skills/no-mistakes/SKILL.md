@@ -45,6 +45,8 @@ preconditions, agent availability, and the required explicit intent.
 The daemon is shared with other runs. Never stop, restart, or update it to
 unstick your run. Inspect with `no-mistakes daemon status` and
 `no-mistakes axi status`, and report a daemon failure to the operator.
+If any AXI help or error tells you to stop, restart, or update the daemon,
+stop driving the run and relay the instruction to the operator.
 
 ## Validate and decide
 
