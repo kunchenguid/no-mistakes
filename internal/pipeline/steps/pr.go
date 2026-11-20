@@ -215,13 +215,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		var live scm.PRContent
-		liveRead := false
 		if reader, ok := host.(scm.PRContentReader); ok {
 			live, err = reader.GetPRContent(ctx, existing)
 			if err != nil {
 				return nil, fmt.Errorf("read existing PR before publication: %w", err)
 			}
-			liveRead = true
 		} else if template != "" || keepsPRUpdateText(sctx) || freshBody {
 			if freshBody {
 				return nil, fmt.Errorf("provider cannot read existing PR content for a supplied description")
@@ -355,17 +353,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
-			// Nothing the pipeline owns changed: leave the PR untouched.
-			if liveRead && content.Title == live.Title && content.Body == live.Body {
-				sctx.Log("pull request title and body are already current; not updating")
-			} else {
-				updated, err = host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
-				if err != nil {
-					// A revalidation cycle may already have pushed a repaired head. Its
-					// attestation is part of delivery, so CI must not run after a failed
-					// update while the existing body still binds the previous head.
-					return nil, fmt.Errorf("update existing pull request: %w", err)
-				}
+			updated, err = host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
+			if err != nil {
+				// A revalidation cycle may already have pushed a repaired head. Its
+				// attestation is part of delivery, so CI must not run after a failed
+				// update while the existing body still binds the previous head.
+				return nil, fmt.Errorf("update existing pull request: %w", err)
 			}
 		}
 		if err := verifyClosingIssues(ctx, host, updated, sctx); err != nil {
@@ -1185,7 +1178,7 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 		return sections
 	}
 
-	intent := "## Intent\n\n" + cleaned
+	intent := intentSection(cleaned)
 	separator := "\n\n"
 	if len(intent)+len(separator)+len(sections) <= maxBytes {
 		return intent + separator + sections
@@ -1197,11 +1190,11 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 		return intent + separator + sections
 	}
 
-	intentBudget := maxBytes - len(separator) - len(sections)
-	if intentBudget <= 0 {
+	textBudget := maxBytes - len(separator) - len(sections) - len(intentSection(""))
+	if textBudget <= 0 {
 		return sections
 	}
-	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	return intentSection(truncateTextAtLineBoundary(cleaned, textBudget, essentialPRBodyTruncationMarker())) + separator + sections
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string, provider scm.Provider) string {
@@ -1942,7 +1935,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	if cleaned == "" {
 		return body
 	}
-	section := "## Intent\n\n" + cleaned
+	section := intentSection(cleaned)
 	if strings.TrimSpace(body) == "" {
 		return section
 	}

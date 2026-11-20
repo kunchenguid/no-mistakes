@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -110,19 +111,29 @@ func prDraftIntentPromptSection(sctx *pipeline.StepContext) string {
 	return userIntentPromptSection(sctx)
 }
 
+// prIntentEndMarker is the line the pipeline writes after every Intent
+// section it publishes. It is a link reference definition, so no provider
+// renders it, and it is the one boundary a re-raise trusts: a heading inside
+// the Intent, even one spelled like a generated section, stays author text.
+const prIntentEndMarker = "[//]: # (no-mistakes-intent-end)"
+
+// intentSection renders a published Intent section ending in its marker.
+func intentSection(text string) string {
+	return "## Intent\n\n" + text + "\n\n" + prIntentEndMarker
+}
+
 // liveIntentSection returns the text of the first top-level "## Intent"
 // section in an existing PR body, exactly as published, without the blank
 // lines that separate it from its neighbours. ok is false when the body has no
-// such section or it is empty. The section ends only where something the
-// pipeline itself generates begins (generatedIntentBoundary), never at a
-// heading the Intent text contains, so an Intent with its own sections is kept
-// whole. Only a CommonMark ATX heading counts (markdownATXHeading): a line
-// indented four or more spaces, or by a tab, is indented code, and a line in a
-// fenced block is never a boundary.
+// such section or it is empty. The section ends at prIntentEndMarker. A body
+// published before that marker existed ends instead where the generator's own
+// exact text begins (legacyIntentBoundary). Only a CommonMark ATX heading
+// counts (markdownATXHeading), and a line in a fenced block is never a
+// boundary.
 func liveIntentSection(body string) (string, bool) {
 	lines := strings.SplitAfter(body, "\n")
 	var fence markdownFence
-	start, end := -1, len(lines)
+	start, end, legacyEnd := -1, -1, -1
 	for i, raw := range lines {
 		line := strings.TrimRight(raw, "\r\n")
 		if fence.marker == 0 {
@@ -131,15 +142,23 @@ func liveIntentSection(body string) (string, bool) {
 					start = i + 1
 					continue
 				}
-			} else if generatedIntentBoundary(lines, i) {
+			} else if line == prIntentEndMarker {
 				end = i
 				break
+			} else if legacyEnd < 0 && legacyIntentBoundary(lines, i) {
+				legacyEnd = i
 			}
 		}
 		fence.consume(line)
 	}
 	if start < 0 {
 		return "", false
+	}
+	if end < 0 {
+		end = legacyEnd
+	}
+	if end < 0 {
+		end = len(lines)
 	}
 	intent := strings.Trim(strings.Join(lines[start:end], ""), "\r\n")
 	if strings.TrimSpace(intent) == "" {
@@ -148,17 +167,18 @@ func liveIntentSection(body string) (string, bool) {
 	return intent, true
 }
 
-// generatedIntentBoundary reports whether lines[i] starts something the
-// pipeline generates after an Intent section: one of its own "## " section
-// headings (What Changed included), the collapsed Validation block, the
-// pipeline introduction, or the minimal appendix's one-line risk assessment
-// directly ahead of that introduction.
-func generatedIntentBoundary(lines []string, i int) bool {
+// legacyGeneratedHeadings are the exact heading lines the generator writes
+// after an Intent section.
+var legacyGeneratedHeadings = []string{"## Intent", "## What Changed", "## Risk Assessment", "## Testing", "## Pipeline", "## Evidence", issuesSectionHeading}
+
+// legacyIntentBoundary reports whether lines[i] starts text the generator
+// wrote after an Intent section published without prIntentEndMarker: one of
+// its exact heading lines, the collapsed Validation block, the pipeline
+// introduction, or the minimal appendix's one-line risk assessment directly
+// ahead of that introduction.
+func legacyIntentBoundary(lines []string, i int) bool {
 	line := strings.TrimRight(lines[i], "\r\n")
-	if level, title, ok := markdownATXHeading(line); ok && level == 2 {
-		return isGeneratedSectionHeading("## "+title) || isWhatChangedTitle(title)
-	}
-	if strings.HasPrefix(line, noMistakesPRSignature) {
+	if slices.Contains(legacyGeneratedHeadings, line) || strings.HasPrefix(line, noMistakesPRSignature) {
 		return true
 	}
 	details := strings.Split(validationDetailsOpen, "\n")
@@ -180,10 +200,6 @@ func generatedIntentBoundary(lines []string, i int) bool {
 		}
 	}
 	return false
-}
-
-func isWhatChangedTitle(title string) bool {
-	return strings.EqualFold(strings.TrimRight(title, ":.!? "), "what changed")
 }
 
 // markdownATXHeading parses line as a CommonMark ATX heading: at most three

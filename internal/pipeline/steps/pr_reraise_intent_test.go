@@ -98,7 +98,7 @@ func TestPRStep_InitialRaiseWritesIntentFromTheTask(t *testing.T) {
 		t.Fatalf("expected a new PR to be created:\n%s", mustRead(t, logFile))
 	}
 	body := string(mustRead(t, bodyFile))
-	if !strings.HasPrefix(body, "## Intent\n\n"+reraiseOriginalIntent+"\n\n## What Changed") {
+	if !strings.HasPrefix(body, "## Intent\n\n"+reraiseOriginalIntent+"\n\n"+prIntentEndMarker+"\n\n## What Changed") {
 		t.Fatalf("created body does not lead with the task's intent:\n%s", body)
 	}
 }
@@ -175,34 +175,6 @@ func TestPRStep_ReRaisePreservesTheOriginalIntent(t *testing.T) {
 	}
 }
 
-func TestPRStep_ReRaiseWithNothingToUpdateLeavesTheBodyAlone(t *testing.T) {
-	t.Parallel()
-	sctx, bodyFile, logFile := reraiseContext(t, "https://github.com/test/repo/pull/42")
-	sctx.UserIntent = reraiseOriginalIntent
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if patchCount(t, logFile) != 1 {
-		t.Fatalf("the first raise must write the body:\n%s", mustRead(t, logFile))
-	}
-	before := string(mustRead(t, bodyFile))
-
-	sctx.UserIntent = reraiseFollowUpIntent
-	outcome, err := (&PRStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := patchCount(t, logFile); got != 1 {
-		t.Fatalf("re-raise with nothing to update wrote the PR (%d PATCH calls):\n%s", got, mustRead(t, logFile))
-	}
-	if after := string(mustRead(t, bodyFile)); after != before {
-		t.Fatalf("body changed without a write:\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-	if outcome.PRURL != "https://github.com/test/repo/pull/42" {
-		t.Fatalf("PR URL = %q, want the existing PR", outcome.PRURL)
-	}
-}
-
 // The tighten-only publication controls still win over a preserved Intent.
 func TestPRStep_ReRaiseOmitIntentStillRemovesIt(t *testing.T) {
 	t.Parallel()
@@ -247,7 +219,7 @@ func TestPRStep_ReRaiseKeepsAHandWrittenClosingLine(t *testing.T) {
 		t.Fatalf("re-raise must write the regenerated body:\n%s", mustRead(t, logFile))
 	}
 	after := string(mustRead(t, bodyFile))
-	if !strings.HasPrefix(after, "## Intent\n\n"+handWritten+"\n\n## What Changed") {
+	if !strings.HasPrefix(after, "## Intent\n\n"+handWritten+"\n\n"+prIntentEndMarker+"\n\n## What Changed") {
 		t.Fatalf("hand-written Intent was not kept byte for byte:\n%s", after)
 	}
 	grammar := closingGrammarFor(scm.ProviderGitHub)
@@ -329,7 +301,11 @@ func TestLiveIntentSection(t *testing.T) {
 		{name: "fence nested in a list item", body: "## Intent\n\n- step:\n\n    ```md\n    ## Example\n    ```\n\n## Pipeline\n", want: "- step:\n\n    ```md\n    ## Example\n    ```", ok: true},
 		{name: "indented intent is not the heading", body: "Notes:\n\n    ## Intent\n    quoted\n\n## Intent\n\nReal goal.\n\n## What Changed\n", want: "Real goal.", ok: true},
 		{name: "indented intent alone", body: "    ## Intent\n\n    quoted\n"},
-		{name: "up to three spaces is a heading", body: "   ## Intent\n\nGoal.\n\n   ## What Changed\n", want: "Goal.", ok: true},
+		{name: "up to three spaces is a heading", body: "   ## Intent\n\nGoal.\n\n## What Changed\n", want: "Goal.", ok: true},
+		{name: "legacy boundary is the generator's exact text", body: "## Intent\n\nGoal.\n\n## What changed\n\n## testing\n\n## Pipeline\n", want: "Goal.\n\n## What changed\n\n## testing", ok: true},
+		{name: "marker keeps generator-spelled author headings", body: "## Intent\n\nGoal.\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- old\n\n" + prIntentEndMarker + "\n\n## What Changed\n\n- new\n\n## Pipeline\n", want: "Goal.\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- old", ok: true},
+		{name: "marker ends the intent before a headingless summary", body: "## Intent\n\nGoal.\n\n" + prIntentEndMarker + "\n\n- A summary bullet.\n", want: "Goal.", ok: true},
+		{name: "fenced marker is content", body: "## Intent\n\n```md\n" + prIntentEndMarker + "\n```\n\nMore.\n\n" + prIntentEndMarker + "\n", want: "```md\n" + prIntentEndMarker + "\n```\n\nMore.", ok: true},
 		{name: "closing hash sequence", body: "## Intent ##\n\nGoal.\n\n## Pipeline\n", want: "Goal.", ok: true},
 		{name: "hash without a space is text", body: "## Intent\n\nGoal.\n\n##not-a-heading\n\n## Pipeline\n", want: "Goal.\n\n##not-a-heading", ok: true},
 	} {
@@ -340,9 +316,9 @@ func TestLiveIntentSection(t *testing.T) {
 	}
 }
 
-// The Intent the PR was opened with may carry its own "## " sections; only the
-// sections the pipeline generates end it.
-const reraiseSectionedIntent = "Ship the original goal.\n\n## Constraints\n\n- must not grow the API\n\n## Out of scope\n\nRefs the first report."
+// The Intent the PR was opened with may carry its own "## " sections, even ones
+// spelled exactly like the generator's; only the generator's end marker ends it.
+const reraiseSectionedIntent = "Ship the original goal.\n\n## Constraints\n\n- must not grow the API\n\n## Testing\n\n- run make e2e\n\n## What Changed\n\n- the author's own plan\n\n## Out of scope\n\nRefs the first report."
 
 // Every update route refreshes the evidence the pipeline owns but republishes
 // the PR's original Intent byte for byte: the ordinary rewrite, the owned
@@ -477,5 +453,50 @@ func TestPRStep_OwnedReRaiseRefusesAnIntentThatCannotFit(t *testing.T) {
 	}
 	if after := string(mustRead(t, bodyFile)); after != seed {
 		t.Fatal("refused re-raise changed the live body")
+	}
+}
+
+// Under pr.intent.format: brief, a re-raise that republishes the live Intent
+// needs no new brief: no brief turn runs, and a draft without one is accepted.
+func TestPRStep_ReRaiseKeepingTheIntentDraftsNoBrief(t *testing.T) {
+	t.Parallel()
+	const prURL = "https://github.com/test/repo/pull/42"
+	for _, tc := range []struct {
+		name string
+		keep bool
+	}{{name: "regenerate"}, {name: "update_text keep", keep: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx, bodyFile, _ := reraiseContext(t, prURL)
+			if tc.keep {
+				sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+				if err := os.WriteFile(bodyFile, []byte(keptAuthorBody), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sctx.UserIntent = reraiseOriginalIntent
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			if intent, ok := publishedPRIntent(string(mustRead(t, bodyFile))); !ok || intent != reraiseOriginalIntent {
+				t.Fatalf("first raise Intent = %q, %v", intent, ok)
+			}
+
+			sctx.Config.PR.Intent.Format = "brief"
+			sctx.UserIntent = reraiseFollowUpIntent
+			ag := sctx.Agent.(*mockAgent)
+			ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				if hasPRIntentBriefSchema(t, opts.JSONSchema) {
+					t.Fatalf("re-raise keeping the live Intent asked for a brief: %s", opts.Prompt)
+				}
+				return &agent.Result{Output: json.RawMessage(`{"title":"` + reraiseTitle + `","body":"## What Changed\n\n- A helper."}`)}, nil
+			}
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			if intent, ok := publishedPRIntent(string(mustRead(t, bodyFile))); !ok || intent != reraiseOriginalIntent {
+				t.Fatalf("re-raise Intent = %q, %v; want the original", intent, ok)
+			}
+		})
 	}
 }

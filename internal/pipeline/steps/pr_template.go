@@ -210,9 +210,9 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 	}
 	parts := []string{}
 	if kept != "" {
-		parts = append(parts, "## Intent\n\n"+kept)
+		parts = append(parts, intentSection(kept))
 	} else if intent := publicPRIntent(sctx); intent != "" {
-		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
+		parts = append(parts, intentSection(neutralizeAttestationMarkers(provider, intent)))
 	}
 	if evidence != "" {
 		parts = append(parts, evidence)
