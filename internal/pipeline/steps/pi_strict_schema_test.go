@@ -197,7 +197,7 @@ func TestPiStrictDeclarationLeavesSummaryLengthToPostValidation(t *testing.T) {
 		{
 			name:   "ci fix conclusion",
 			schema: ciFixConclusionSchema,
-			output: `{"summary":` + string(overLong) + `,"code_change_needed":true}`,
+			output: `{"summary":` + string(overLong) + `,"code_change_needed":true,"verification_passed":true,"verification_ran":"go test"}`,
 			extract: func(result *agent.Result) error {
 				_, err := extractCIFixConclusion(result)
 				return err
