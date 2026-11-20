@@ -63,3 +63,59 @@ func TestRequiredReviewsConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestRequiredReviewsAcceptsCopilot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		value string
+		want  []string
+	}{
+		{"[copilot]", []string{"copilot"}},
+		{"[coderabbit, copilot]", []string{"coderabbit", "copilot"}},
+		{"[copilot, coderabbit]", []string{"copilot", "coderabbit"}},
+	} {
+		data := []byte("ci:\n  required_reviews: " + tc.value + "\n")
+		trusted, err := LoadRepoFromBytes(data)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.value, err)
+		}
+		if _, err := LoadGlobalFromBytes(data); err != nil {
+			t.Fatalf("global %s: %v", tc.value, err)
+		}
+		global, _ := LoadGlobalFromBytes([]byte("{}"))
+		for _, optin := range []bool{false, true} {
+			// A pushed branch can neither add nor remove Copilot; only the
+			// trusted default-branch list counts.
+			pushedOff, _ := LoadRepoFromBytes([]byte("ci:\n  required_reviews: []\n"))
+			got := Merge(global, EffectiveRepoConfig(pushedOff, trusted, optin)).CI.RequiredReviews
+			if len(got) != len(tc.want) {
+				t.Fatalf("%s optin=%v: got %v, want %v", tc.value, optin, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("%s optin=%v: got %v, want %v", tc.value, optin, got, tc.want)
+				}
+			}
+			empty, _ := LoadRepoFromBytes([]byte("{}"))
+			if got := Merge(global, EffectiveRepoConfig(trusted, empty, optin)).CI.RequiredReviews; len(got) != 0 {
+				t.Fatalf("pushed %s enabled a requirement: %v", tc.value, got)
+			}
+		}
+	}
+	// A trusted explicit empty list replaces a global Copilot requirement.
+	global, _ := LoadGlobalFromBytes([]byte("ci:\n  required_reviews: [copilot]\n"))
+	off, _ := LoadRepoFromBytes([]byte("ci:\n  required_reviews: []\n"))
+	pushed, _ := LoadRepoFromBytes([]byte("{}"))
+	if got := Merge(global, EffectiveRepoConfig(pushed, off, false)).CI.RequiredReviews; len(got) != 0 {
+		t.Fatalf("trusted opt-out kept %v", got)
+	}
+	if got := Merge(global, EffectiveRepoConfig(pushed, pushed, false)).CI.RequiredReviews; len(got) != 1 || got[0] != "copilot" {
+		t.Fatalf("omitted repository list did not inherit the global list: %v", got)
+	}
+	for _, bad := range []string{"[copilot, copilot]", "[Copilot]", "[COPILOT]", "[github-copilot]", "[copilot-pull-request-reviewer]"} {
+		data := []byte("ci:\n  required_reviews: " + bad + "\n")
+		if _, err := LoadRepoFromBytes(data); err == nil {
+			t.Errorf("repo accepted %s", bad)
+		}
+	}
+}

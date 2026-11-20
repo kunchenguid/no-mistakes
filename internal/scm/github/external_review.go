@@ -194,6 +194,9 @@ func (h *Host) getExternalReview(ctx context.Context, pr *scm.PR, reviewer strin
 // check/comment adapter used by Greptile. No separate review-provider service,
 // credentials, or findings model is involved.
 func (h *Host) requiredReviewChecks(ctx context.Context, pr *scm.PR, reviewer string, checks []scm.Check) ([]scm.Check, error) {
+	if reviewer == "copilot" {
+		return h.copilotReviewChecks(ctx, pr, checks)
+	}
 	review, err := h.getExternalReview(ctx, pr, reviewer)
 	if err != nil {
 		return nil, err

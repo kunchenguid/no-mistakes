@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -992,5 +993,46 @@ func TestCIResumedRepairFailRerunCancelledSkipsRepair(t *testing.T) {
 				t.Fatalf("agent calls = %d, want none for a cancelled re-run", len(ag.calls))
 			}
 		})
+	}
+}
+
+// Evidence a required-review adapter attached to its own check is rendered
+// once, with its link, and never borrowed by another bot; an adapter-verified
+// instance identity only vouches for its own bot.
+func TestReviewBotFindings_AttachedEvidenceStaysWithItsReviewer(t *testing.T) {
+	t.Parallel()
+	inline := scm.ReviewComment{ID: "1001", Author: "copilot-pull-request-reviewer", AuthorID: scm.CopilotAuthorID, Path: "a.go", Line: 3, Body: "Unchecked error.", URL: "https://github.com/test/repo/pull/42#discussion_r1001"}
+	summary := scm.ReviewComment{ID: "copilot-summary:PRR_1:0", Author: "copilot-pull-request-reviewer[bot]", AuthorID: scm.CopilotAuthorID, Body: "Review summary previously missed issue - " + strings.Repeat("é", 1500), URL: "https://github.com/test/repo/pull/42#pullrequestreview-1"}
+	copilot := scm.Check{Name: "External review: copilot", ProviderID: "external-review:copilot", ExternalReview: "copilot", AppHost: "github.com", HeadSHA: "head", Bucket: scm.CheckBucketFail, State: "UNRESOLVED_FINDINGS", ReviewFindings: []scm.ReviewComment{inline, summary}}
+	copilotBot, ok := scm.ReviewBotForCheck(scm.ReviewBotsFor([]string{"copilot"}), copilot)
+	if !ok {
+		t.Fatal("synthesized Copilot check did not authenticate")
+	}
+	ghes := scm.Check{Name: "External review: coderabbit", ProviderID: "external-review:coderabbit", ExternalReview: "coderabbit", AppID: 987, AppHost: "ghe.example.com", Bucket: scm.CheckBucketFail, State: "UNRESOLVED_FINDINGS"}
+	codeRabbit, ok := scm.ReviewBotForCheck(scm.ReviewBotsFor([]string{"coderabbit", "copilot"}), ghes)
+	if !ok {
+		t.Fatal("GHES CodeRabbit check did not authenticate")
+	}
+	// The separate comment read returns the same inline comment again, and a
+	// GHES-verified CodeRabbit comment that must not land on Copilot.
+	shared := []scm.ReviewComment{inline, {ID: "9", Author: "coderabbitai", AuthorID: 12345, VerifiedAuthor: true, Path: "b.go", Line: 1, Body: "CodeRabbit note."}}
+	findings := reviewBotFindings(scm.ProviderGitHub, []reviewBotCheck{{check: copilot, bot: copilotBot}, {check: ghes, bot: codeRabbit}}, shared)
+	var copilotDescriptions, codeRabbitDescriptions []string
+	for _, finding := range findings {
+		if !utf8.ValidString(finding.Description) {
+			t.Fatalf("clipped description is not valid UTF-8: %q", finding.Description)
+		}
+		switch finding.CheckID {
+		case "external-review:copilot":
+			copilotDescriptions = append(copilotDescriptions, finding.Description)
+		case "external-review:coderabbit":
+			codeRabbitDescriptions = append(codeRabbitDescriptions, finding.Description)
+		}
+	}
+	if len(copilotDescriptions) != 2 || !strings.HasSuffix(copilotDescriptions[0], "#discussion_r1001") || !strings.HasSuffix(copilotDescriptions[1], "#pullrequestreview-1") {
+		t.Fatalf("Copilot findings = %q", copilotDescriptions)
+	}
+	if len(codeRabbitDescriptions) != 1 || !strings.Contains(codeRabbitDescriptions[0], "CodeRabbit note.") {
+		t.Fatalf("CodeRabbit findings = %q", codeRabbitDescriptions)
 	}
 }

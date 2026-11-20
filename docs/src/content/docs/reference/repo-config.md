@@ -111,7 +111,7 @@ ci:
   review_bot_comments: on_failure # or: always
   rebase_behind: false
   carry_review_on_replay: false
-  required_reviews: [] # opt in with: [coderabbit]
+  required_reviews: [] # opt in with: [coderabbit], [copilot], or both
   # instructions: |
   #   Regenerate golden files with `make fixtures`; never hand-edit them.
 
@@ -888,7 +888,7 @@ Reruns are skipped when:
 ### ci.required_reviews
 
 An optional list of external reviewers that must finish before the CI monitor reports `checks-passed`.
-The default is `[]`; `coderabbit` is supported on GitHub.com, GitHub Enterprise Server (GHES) with its instance-local GitHub App ID pinned, and GitLab.
+The default is `[]`; `coderabbit` is supported on GitHub.com, GitHub Enterprise Server (GHES) with its instance-local GitHub App ID pinned, and GitLab; `copilot` (GitHub Copilot code review, see [Copilot](#copilot) below) is supported on GitHub.com only. A repository can require both.
 Enable it in the trusted default branch's `.no-mistakes.yaml`:
 
 ```yaml
@@ -929,6 +929,31 @@ CodeRabbit [documents a passing check titled `Review rate limited`](https://docs
 That name or output title vetoes completion even alongside another successful check at the same head.
 A separately named rate-limit check remains blocking while GitHub still returns it among the latest checks at that head; no-mistakes does not guess from comment text that the limit has cleared.
 The monitor never posts review commands, requests a paid review, or retries a review on the provider's behalf.
+
+#### Copilot
+
+```yaml
+ci:
+  required_reviews: [copilot] # or [coderabbit, copilot]
+```
+
+`copilot` waits for a submitted GitHub Copilot code review of the pull request's current head and reads what it found. It needs no identifier, credential, or extra setting.
+The hosted review must already be configured on GitHub: a repository ruleset that requests Copilot automatically, or a person who requests it. `agent: copilot` only selects the local [Copilot CLI](/no-mistakes/guides/agents/#copilot-cli) as a pipeline agent and requests no hosted review. To have each new push reviewed, enable the ruleset's **Review new pushes** option; for draft pull requests, enable **Review draft pull requests**. Without them the monitor waits, bounded by the idle `ci_timeout`, until a person requests a re-review or marks the draft ready. See GitHub's [Copilot code review](https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review) and [automatic review settings](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/configure-code-review) documentation.
+
+A review counts only when GitHub reports it was authored by a Bot account with Copilot's immutable user ID `175728472` (login `copilot-pull-request-reviewer`); the same login on another account, a different ID, a display name, a check run, or the Copilot coding agent's account never does.
+The latest such review whose commit is the exact current PR head governs: a review of an earlier head is never a fallback, and a newer dismissed review does not let an older one count again. `COMMENTED` and `APPROVED` are completed states; `CHANGES_REQUESTED` always blocks. While Copilot has an outstanding review request on the pull request, even a re-request after a clean review of the same head, the requirement is pending.
+
+Copilot can report issues only in its review summary, with no inline comment, so both are read as one observation:
+
+- The summary's counted issue blocks (for example "2 previously missed issues", "open issues", or "Comments suppressed due to low confidence") become one finding per issue. A "resolved since last review" section and per-file inventories are informational, and a plain overview with no issues is clean.
+- A summary item that links an inline Copilot comment on this pull request is represented by that thread: an open thread is its own finding, a resolved one clears it.
+- Unknown prose, a verdict heading such as "Needs a closer look" (even beside "No open issues"), an issue count that does not match its items, a link that cannot be located, malformed or empty bodies, and a body that may be truncated each become a finding to inspect instead of a clean pass. A notice that the review failed or covered only part of the change keeps it incomplete.
+- Every unresolved Copilot review thread is a finding until it is resolved on GitHub, including one anchored to an earlier head.
+
+The review side is read twice per observation; a new submission, edit, dismissal, re-request, or head change in between leaves the observation unverified and the monitor polls again.
+Findings appear on the `External review: copilot` check as `ask-user` warnings with a link to the review or comment, under the same per-gate bounds as other review bots, and never spend an automatic repair. Selecting one for a fix uses the normal CI repair. no-mistakes never replies to or resolves a thread, requests a review, or changes repository settings, so a summary item clears only when a newer review of the head no longer lists it or a new head receives a clean review. Like CodeRabbit and Greptile, there is no limit on how many Copilot reviews a pull request may receive: each is evaluated the same way.
+Approval is also refused when the live PR head differs from the commit the run delivered, because a review of one commit is not evidence for another.
+GHES and GitLab park with an explicit unsupported finding when `copilot` is enabled.
 
 Bitbucket, Azure DevOps, Gitea, Forgejo, Cursor Origin, and arbitrary provider plugins remain unsupported and park with an explicit unsupported finding when enabled. GitLab comment bodies are never treated as instructions or proof. See [CodeRabbit GitLab docs](https://docs.coderabbit.ai/platforms/gitlab-com) and the [GitLab Discussions API](https://docs.gitlab.com/api/discussions/).
 
