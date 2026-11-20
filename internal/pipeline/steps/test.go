@@ -29,6 +29,7 @@ func (s *TestStep) Name() types.StepName { return types.StepTest }
 const testRepairScopeRules = `
 
 Repair scope:
+- Do not install missing tools or dependencies to repair a configured command. Report the missing setup and recommend putting dependency installation in commands.prepare so every run worktree gets it. In the evidence turn, report this as a setup/environment warning with action "ask-user", rather than an automatic code repair. Do not install and then remove the same dependencies as transient test artifacts.
 - Tests or product code, including shared libraries and prompts, may be fixed when the repair is required by the change under validation and respects its intent.
 - Do not tune product logic or prompts to a single scenario's literal wording or scripted ordering. Derive the expected behavior from the intended product contract, not from the scenario's exact inputs.
 - If the proposed repair would contradict explicit intent, edit a file the intent puts off limits, or change product policy beyond the change under validation, do not apply or commit that repair. Leave the failure unresolved for a human decision. Later recorded human decisions supersede conflicting original intent.
@@ -160,6 +161,7 @@ Previous test findings to address:
 	var baselineFindings []Finding
 	var baselineSummary string
 	var baselineExitCode int
+	var baselineSetupFailure bool
 	var attributionSection string
 	if testCmd != "" || len(sctx.Config.CommandOverrides["test"].Additional) > 0 {
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
@@ -182,11 +184,20 @@ Previous test findings to address:
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
 		if failed := failedChecks(results); len(failed) > 0 {
 			for _, result := range failed {
-				baselineFindings = append(baselineFindings, Finding{
+				finding := Finding{
 					Severity:    "error",
 					Category:    types.FindingCategoryTestCommand,
 					Description: result.description("test"),
-				})
+				}
+				// Shell exit 126/127 means a tool could not execute or was
+				// not found. Classify the owned command result, never an
+				// ecosystem-specific tool name or error-message substring.
+				if testCommandSetupFailure(result) {
+					baselineSetupFailure = true
+					finding.Action = types.ActionAskUser
+					finding.Description += ". Setup/environment failure: a tool could not execute or was not found. Check its installation, PATH and executable permissions. If it is a project dependency, install it in commands.prepare so it is available in each run worktree. Resolve the setup and re-run Test; this failed check is not passed or skipped."
+				}
+				baselineFindings = append(baselineFindings, finding)
 			}
 			baselineSummary = projectedOutput
 			baselineExitCode = failed[0].ExitCode
@@ -366,7 +377,10 @@ Rules:
 	findings.Items = append(findings.Items, unselectedTestFindings(sctx, findings.Items)...)
 
 	needsApproval := hasBlockingFindings(findings.Items)
-	autoFixable := needsApproval
+	// Suppress the executor's automatic fix loop while setup is missing.
+	// Explicit fixes, including --yes and TUI yolo responses, remain allowed.
+	// The unconditional evidence turn never clears the failed configured check.
+	autoFixable := needsApproval && !baselineSetupFailure
 
 	// Record any new test files the agent wrote as informational (no-op)
 	// findings. Their presence alone is not an actionable problem, so they
@@ -389,6 +403,10 @@ Rules:
 		ExitCode:      baselineExitCode,
 		FixSummary:    fixSummary,
 	}, nil
+}
+
+func testCommandSetupFailure(result checkResult) bool {
+	return result.ExitCode == 126 || result.ExitCode == 127
 }
 
 // testAnalyzerMaxAttempts is the number of evidence-analyzer invocations
