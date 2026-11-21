@@ -18,8 +18,7 @@ const MaxFrameBytes = 1024 * 1024
 // JSON-RPC 2.0 method names.
 const (
 	MethodPushReceived              = "push_received"
-	MethodResolvePiProfile          = "resolve_pi_profile"
-	MethodResolveReviewerProfile    = "resolve_reviewer_profile"
+	MethodResolveRunProfile         = "resolve_run_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
 	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodProbeTranscriptHomes      = "probe_transcript_homes"
@@ -96,9 +95,8 @@ type PushReceivedParams struct {
 	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
 	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
 	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
 	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	RunProfile         *agentcfg.RunProfile       `json:"run_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -136,9 +134,8 @@ type StartFreshRunParams struct {
 	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
 	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
 	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
 	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	RunProfile         *agentcfg.RunProfile       `json:"run_profile,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -207,8 +204,7 @@ type ProbeTranscriptHomesResult struct {
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
-	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	PiProfile       *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	RunProfile *agentcfg.RunProfile `json:"run_profile,omitempty"`
 
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
@@ -282,9 +278,8 @@ type RerunParams struct {
 	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
 	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
 	FreshLaunch        bool                       `json:"fresh_launch,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
 	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	RunProfile         *agentcfg.RunProfile       `json:"run_profile,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -384,13 +379,7 @@ type GateContextParams struct {
 // AdmitPushParams asks whether a local receive hook's authenticated process
 // ancestry is allowed to mutate a managed gate ref.
 type AdmitPushParams struct {
-	Gate            string                    `json:"gate"`
-	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-}
-
-type ResolveReviewerProfileParams struct {
-	RepoID          string                    `json:"repo_id"`
-	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile"`
+	Gate string `json:"gate"`
 }
 
 // HealthParams has no fields but exists for consistency.
@@ -448,8 +437,7 @@ type PushReceivedResult struct {
 // selected one durable run before the caller drives it. The validation
 // generation and intent digest are persisted; raw intent is never included.
 type LaunchReceipt struct {
-	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	PiProfile       *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	RunProfile *agentcfg.RunProfile `json:"run_profile,omitempty"`
 
 	RunID                string `json:"run_id"`
 	Disposition          string `json:"disposition"`
@@ -591,9 +579,8 @@ type ShutdownResult struct {
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
 	CallerRestrictionsDigest string                     `json:"caller_restrictions_digest,omitempty"`
-	ReviewerProfile          *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
 	VerificationPlan         *verificationplan.Snapshot `json:"verification_plan"`
-	PiProfile                *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	RunProfile               *agentcfg.RunProfile       `json:"run_profile,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`

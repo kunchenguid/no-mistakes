@@ -139,11 +139,8 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 			prBaseBranch = strings.TrimSpace(*source.PRBaseBranch)
 		}
 		var profiles []agentcfg.RunSelection
-		if source.PiProfile != nil {
-			profiles = append(profiles, source.PiProfile)
-		}
-		if source.ReviewerProfile != nil {
-			profiles = append(profiles, agentcfg.InheritReviewerProfile(source.ReviewerProfile))
+		if source.RunProfile != nil {
+			profiles = append(profiles, source.RunProfile)
 		}
 		ctx = callerrestrictions.WithLaunchRecord(ctx, source.CallerRestrictions)
 		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, inheritRunPRText(source, db.RunPRText{}), launch, source.TranscriptHomes, profiles...)
@@ -339,13 +336,13 @@ func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo,
 	if err != nil {
 		return config.IntentCheck{}, fmt.Errorf("load global config: %w", err)
 	}
-	if source.PiProfile != nil {
-		resolved, err := globalCfg.ResolvePiProfile(source.PiProfile)
+	if source.RunProfile != nil {
+		resolved, err := globalCfg.ResolveRunProfile(source.RunProfile)
 		if err != nil {
 			return config.IntentCheck{}, fmt.Errorf("the run's model profile no longer resolves: %w", err)
 		}
-		if *resolved != *source.PiProfile {
-			return config.IntentCheck{}, fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.PiProfile.Model, source.PiProfile.Effort)
+		if *resolved != *source.RunProfile {
+			return config.IntentCheck{}, fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.RunProfile.Model, source.RunProfile.Effort)
 		}
 	}
 	cfg, currentRepoCfg, err := m.effectiveConfigBeforeRun(ctx, repo, source.HeadSHA, globalCfg, "retry configuration")
@@ -363,9 +360,6 @@ func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo,
 // the configuration the continuation run actually loaded, so a change between
 // the proof and the launch cannot carry a Review approval.
 func (m *RunManager) proveConfigurationMatches(ctx context.Context, source *db.Run, globalCfg *config.GlobalConfig, cfg *config.Config, currentRepoCfg *config.RepoConfig, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) error {
-	if err := cfg.ApplyReviewerProfile(source.ReviewerProfile); err != nil {
-		return err
-	}
 	current, err := config.MarshalGates(cfg.Gates)
 	if err != nil {
 		return fmt.Errorf("resolve the repository's gates: %w", err)
@@ -464,7 +458,7 @@ func changedSettings(recorded, current []byte) ([]string, error) {
 // live in the run that first executed it. A run pinned to a Pi profile is
 // proven by the profile instead.
 func (m *RunManager) proveCarriedAgent(ctx context.Context, source *db.Run, cfg *config.Config, carried []*db.StepResult) error {
-	if source.PiProfile != nil {
+	if source.RunProfile != nil {
 		return nil
 	}
 	byRun := map[string][]db.AgentInvocation{}
@@ -521,36 +515,11 @@ func (m *RunManager) proveCarriedAgent(ctx context.Context, source *db.Run, cfg 
 	return nil
 }
 
-// configsForInvocation returns the configurations eligible to serve inv in a new run,
-// selecting a review_agents role from the call's Purpose and Round the way
-// newPipelineAgent routes it.
+// configsForInvocation returns the configuration eligible to serve inv in a new
+// run. One omp configuration serves every pipeline step, so there is no role
+// routing to reproduce.
 func configsForInvocation(cfg *config.Config, inv db.AgentInvocation) []*config.Config {
-	var role, lateRole string
-	switch inv.Purpose {
-	case "review", "review-coverage":
-		role, lateRole = config.RoleReviewer, config.RoleReviewerAfterRound
-	case "review-fix":
-		role, lateRole = config.RoleFixer, config.RoleFixerAfterRound
-	default:
-		return []*config.Config{cfg}
-	}
-	if late, ok := cfg.ReviewAgents[lateRole]; ok {
-		if from := cfg.ReviewAgentTakeoverRound(lateRole); from > 0 && inv.Round >= from {
-			return reviewCandidateConfigs(cfg, late)
-		}
-	}
-	if entry, ok := cfg.ReviewAgents[role]; ok {
-		return reviewCandidateConfigs(cfg, entry)
-	}
 	return []*config.Config{cfg}
-}
-
-func reviewCandidateConfigs(cfg *config.Config, entry config.ReviewAgent) []*config.Config {
-	configs := []*config.Config{cfg.ForReviewAgent(entry)}
-	for _, candidate := range entry.Fallback {
-		configs = append(configs, cfg.ForReviewAgent(candidate))
-	}
-	return configs
 }
 
 // proveAtLaunch repeats the configuration proof against the configuration the

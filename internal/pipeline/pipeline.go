@@ -137,10 +137,6 @@ type StepContext struct {
 	// such run, or when the uncertified-range channel already carries the same
 	// run's rounds.
 	PreviousRunReviewRounds []*db.StepRound
-	// Sessions manages the run's durable review-loop sessions: the fixer's,
-	// which spans its fix turns, and the reviewer's, which spans one review
-	// pass and is dropped before any fix round. Nil runs every invocation cold.
-	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
@@ -176,17 +172,6 @@ type StepContext struct {
 	// All validation steps share the actual diff-base pin; runs.base_sha is
 	// the previous push, not necessarily the base resolved by a fresh fetch.
 	crashRetryBaseSHA *string
-}
-
-// RunAgentSession executes one turn of a durable review-loop role session,
-// running cold when sessions are unavailable. The invocation is bounded by
-// RunAgent's deadline. Only the review step uses it: its fixer turns, and the
-// asking/finalize pair of one review pass. A review turn that judges changed
-// code - every post-fix rereview - passes an empty role so it stays isolated
-// from the session that prescribed the fixes under review. Every other agent
-// invocation goes through RunAgent.
-func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(sctx.Ctx, opts, role, 0, 0, nil)
 }
 
 // StepOutcome is the result of executing a pipeline step.

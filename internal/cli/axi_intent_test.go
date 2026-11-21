@@ -251,9 +251,8 @@ func TestAxiRunIntentStrictClaimUsesResolvedBytes(t *testing.T) {
 // A synthetic no-op gate push reaches AXI's existing rerun fallback. The fake
 // server records the request and returns a completed run; no agent or forge runs.
 func TestNoMistakesBinary_IntentTransport(t *testing.T) {
-	wantHomes := runenv.TranscriptHomes{ClaudeConfigDir: filepath.Join(t.TempDir(), "claude account"), CodexHome: filepath.Join(t.TempDir(), "codex account")}
-	t.Setenv("CLAUDE_CONFIG_DIR", wantHomes.ClaudeConfigDir)
-	t.Setenv("CODEX_HOME", wantHomes.CodexHome)
+	wantHomes := runenv.TranscriptHomes{OMPHome: filepath.Join(t.TempDir(), "omp account")}
+	t.Setenv("OMP_HOME", wantHomes.OMPHome)
 	bin := buildNoMistakesBinary(t)
 	requests := make(chan ipc.RerunParams, 8)
 	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
@@ -328,9 +327,9 @@ func TestNoMistakesBinary_IntentTransport(t *testing.T) {
 	t.Run("invalid home with explicit intent", func(t *testing.T) {
 		original := wantHomes
 		defer func() { wantHomes = original }()
-		for _, selection := range []string{".codex-work", "~/account"} {
-			t.Setenv("CODEX_HOME", selection)
-			wantHomes.CodexHome = selection
+		for _, selection := range []string{".omp-work", "~/account"} {
+			t.Setenv("OMP_HOME", selection)
+			wantHomes.OMPHome = selection
 			run(t, []string{"--intent", text}, "", "", text)
 		}
 	})

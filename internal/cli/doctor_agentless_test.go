@@ -23,38 +23,10 @@ func TestDoctorReportsGateCannotValidateWithoutAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"gate validation", "no runnable agent", "gate cannot validate", "some checks failed"} {
+	for _, want := range []string{"gate validation", "omp binary", "not found", "some checks failed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output should contain %q, got:\n%s", want, out)
 		}
-	}
-}
-
-func TestDoctorAcceptsConfiguredACPBridge(t *testing.T) {
-	restore := telemetry.SetDefaultForTesting(&telemetryRecorder{})
-	defer restore()
-
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-	if err := os.WriteFile(filepath.Join(nmHome, "config.yaml"), []byte("agent: acp:gemini\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	binDir := t.TempDir()
-	writeDoctorGitBinary(t, binDir)
-	writeDoctorStubBinary(t, binDir, "acpx")
-	t.Setenv("PATH", binDir)
-
-	out, err := executeCmd("doctor")
-	if err != nil {
-		t.Fatalf("doctor failed: %v\n%s", err, out)
-	}
-	for _, want := range []string{"acpx", "gate validation", "acp:gemini is runnable"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("doctor output should contain %q, got:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "some checks failed") {
-		t.Errorf("doctor should accept configured ACP bridge, got:\n%s", out)
 	}
 }
 

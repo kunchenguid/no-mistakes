@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -49,9 +48,6 @@ func newStatsCmd() *cobra.Command {
 				}
 
 				fmt.Fprintln(cmd.OutOrStdout(), renderStatsDashboard(stats))
-				for _, routing := range stats.QuotaRouting {
-					fmt.Fprintf(cmd.OutOrStdout(), "run %s\n%s", routing.RunID, axiDoc(quotaRoutingField(routing.Record)))
-				}
 				return nil
 			})
 		},
@@ -126,22 +122,8 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 	}
 
 	fmt.Fprintf(w, "run %s (%s), parked at gates %s total\n", run.ID, run.Status, formatMS(run.ParkedMS))
-	if run.PiProfile != nil {
-		scope := "requested for every invocation"
-		if run.ReviewerProfile != nil {
-			scope = "primary; reviewer pinned separately"
-		}
-		fmt.Fprintf(w, "pinned Pi profile: model=%s effort=%s (%s; MODEL below is served evidence)\n", run.PiProfile.Model, run.PiProfile.Effort, scope)
-	}
-	if run.ReviewerProfile != nil {
-		fmt.Fprintf(w, "pinned reviewer: agent=%s model=%s effort=%s (reviewer only)\n", run.ReviewerProfile.Agent, run.ReviewerProfile.Model, run.ReviewerProfile.Effort)
-	}
-	record, err := quotarouting.ParseRecord(run.QuotaRouting)
-	if err != nil {
-		return fmt.Errorf("quota routing for run %s: %w", run.ID, err)
-	}
-	if record != nil {
-		fmt.Fprint(w, axiDoc(quotaRoutingField(record)))
+	if run.RunProfile != nil {
+		fmt.Fprintf(w, "pinned omp profile: model=%s effort=%s (requested for every invocation; MODEL below is served evidence)\n", run.RunProfile.Model, run.RunProfile.Effort)
 	}
 	if len(invocations) == 0 {
 		fmt.Fprintln(w, "no agent invocations recorded for this run")

@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -21,7 +20,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 	"gopkg.in/yaml.v3"
 )
@@ -210,10 +208,10 @@ type GlobalConfig struct {
 	// global-only for the same reason: it decides which credential pool a
 	// run's quota evidence is read from.
 	QuotaProviders map[string]string `yaml:"-"`
-	// ReviewAgents selects independent review-loop harnesses and profiles.
-	// Operator-only: a repository_overrides entry may replace roles for its
-	// remote, but repository config can never select credential/model profiles.
-	ReviewAgents map[string]ReviewAgent `yaml:"review_agents"`
+	// ReviewAgents is a parse-only tombstone for the removed reviewer/fixer
+	// role split. It configures nothing; the single omp configuration serves
+	// every pipeline step.
+	ReviewAgents map[string]any `yaml:"review_agents"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
 	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
@@ -308,7 +306,7 @@ type globalConfigRaw struct {
 	AgentArgsOverride         map[string][]string        `yaml:"agent_args_override"`
 	AgentConfig               map[string]agentProfileRaw `yaml:"agent_config"`
 	QuotaRouting              QuotaRoutingRaw            `yaml:"quota_routing"`
-	ReviewAgents              map[string]ReviewAgent     `yaml:"review_agents"`
+	ReviewAgents              map[string]any             `yaml:"review_agents"`
 	WorktreeRoots             map[string]string          `yaml:"worktree_roots"`
 	Worktree                  WorktreeRaw                `yaml:"worktree"`
 	CITimeout                 string                     `yaml:"ci_timeout"`
@@ -393,7 +391,7 @@ type RepositoryOverride struct {
 	Review       OperatorReviewRaw          `yaml:"review"`
 	Document     DocumentRaw                `yaml:"document"`
 	Test         RepositoryTestRaw          `yaml:"test"`
-	ReviewAgents map[string]ReviewAgent     `yaml:"review_agents"`
+	ReviewAgents map[string]any             `yaml:"review_agents"`
 }
 
 // RepositoryTestRaw is the test block a repository_overrides entry may set:
@@ -1001,7 +999,7 @@ type Config struct {
 	// GlobalConfig.QuotaRouting); no repository layer can set either.
 	QuotaRouting              QuotaRouting
 	QuotaProviders            map[string]string
-	ReviewAgents              map[string]ReviewAgent
+	ReviewAgents              map[string]any
 	CITimeout                 time.Duration
 	StepQuietWarning          time.Duration
 	AgentTimeout              time.Duration
@@ -1516,13 +1514,13 @@ type QuotaRouting struct {
 // QuotaProviderFor returns the agent's declared quota-axi provider id from
 // its agent_config entry, "" when none.
 func (c *GlobalConfig) QuotaProviderFor(agent types.AgentName) string {
-	return agentSettingFor(c.QuotaProviders, agent)
+	return c.QuotaProviders[string(agent)]
 }
 
 // QuotaProviderFor is the effective-config accessor for the same map (see
 // GlobalConfig.QuotaProviderFor).
 func (c *Config) QuotaProviderFor(agent types.AgentName) string {
-	return agentSettingFor(c.QuotaProviders, agent)
+	return c.QuotaProviders[string(agent)]
 }
 
 // retiredJev names exactly the two retired jev subkeys so a global config
@@ -1666,28 +1664,13 @@ func resolvePathInstructions(entries []PathInstruction) []PathInstruction {
 // defaultConfigYAML is the template written when no global config file exists.
 const defaultConfigYAML = `# no-mistakes global configuration
 
-# Agent to use for code generation. This may also be an ordered fallback list,
-# for example: agent: [codex, grok]
-# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, acp:<target>
-# "auto" detects the first available native agent or ACP alias on your system
-# "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
-# "acp:cursor" also uses that Cursor default command
-# "devin" is an ACP alias for acp:devin using devin acp via acpx
-# "acp:devin" also uses that Devin default command
-# Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
-agent: auto
-
-# Optional path to the user-installed acpx binary for acp:<target> agents and ACP aliases
-# acpx_path: acpx
+# Agent to use for code generation. This build supports exactly one harness:
+# the native omp (Oh My Pi) CLI. Every pipeline step uses this one
+# configuration; there is no separate reviewer/fixer agent.
+agent: omp
 
 # forgejo-axi executable used for Forgejo provider operations
 forgejo_axi_path: forgejo-axi
-
-# Optional ACP target command overrides for acp:<target> agents and ACP aliases
-# acp_registry_overrides:
-#   local-gemini: node /opt/mock-acp-agent.mjs
-#   cursor: cursor-agent acp
-#   devin: devin acp
 
 # Idle timeout for the CI monitor: the wait for checks to finish and the merge
 # watch it keeps afterwards. Each base-branch advance re-arms this timer.
@@ -1757,87 +1740,35 @@ branch_sync_remote_timeout: "60s"
 gate_reconcile_interval: "2m"
 gate_reconcile_timeout: "30s"
 
-# Reuse one durable fixer session per run across review-fix turns. Review turns
-# always run session-free so a rereview never resumes the session that prescribed
-# its fixes. Supported for claude, codex, grok, and pi; other agents run cold.
-# Set false to force every agent invocation cold.
+# Reuse durable agent sessions. This build runs every omp invocation cold;
+# the setting is accepted for configuration compatibility and has no effect.
 session_reuse: true
-
-# Quota-aware agent routing (optional, global only, off by default). When
-# enabled, no-mistakes reads one snapshot from the local quota-axi tool at the
-# start of each run and reorders the resolved agent list by quota evidence:
-# agents whose subscription is exhausted now or at 0% move to the back, an
-# agent projected to run out of quota inside expected_run_length is treated the
-# same, and otherwise agents rank by quota-axi's own spendPriority (ties keep
-# your configured order). Each agent keeps its agent_config model and effort -
-# only the order changes. A missing, slow, or unreadable quota-axi keeps your
-# configured order, logs why, and never blocks a run. Mid-run, a recognised
-# quota error moves the run once to the next agent in the chosen order with a
-# fresh session. claude and codex map to their quota-axi providers
-# automatically. Other agents can declare quota_provider under agent_config.
-# An unmapped pi disables routing for the run with one warning; other unmapped
-# agents rank as unknown quota below agents with known headroom.
-# quota_routing:
-#   enabled: true
-#   # Runway floor: an agent projected to run out inside this window is not
-#   # chosen first. Default 90m.
-#   expected_run_length: 90m
-#   # Bound on one quota-axi read at run start. Default 15s.
-#   read_timeout: 15s
-#   # Executable to run. Default: quota-axi on PATH.
-#   quota_axi_path: quota-axi
 
 # Log level for daemon output
 # Options: debug, info, warn, error
 log_level: info
 
-# Override native agent binary paths (optional)
+# Override the omp binary path (optional).
 # agent_path_override:
-#   claude: /usr/local/bin/claude
-#   codex: /opt/codex
-#   grok: /Users/you/.grok/bin/grok
+#   omp: /Users/you/.bun/bin/omp
 
-# Model and reasoning effort per agent, in one common spelling (optional, global
-# only). no-mistakes maps these down to whatever the harness actually uses:
-# --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
-# codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
-# session-message body for opencode (its model needs the provider/model form),
-# and acpx --model for cursor, devin, and acp:<target>. Effort is one of
-# minimal, low, medium, high, xhigh, max; a harness rejects any level it does not
-# implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
-# agent_config is refused for them; agent_args_override remains an escape hatch
-# only if your installed CLI build accepts a suitable flag.
+# Model and reasoning effort for omp, in one common spelling (optional, global
+# only). no-mistakes maps these to omp's --model and --thinking flags. Effort
+# is one of minimal, low, medium, high, xhigh, max.
 # agent_config:
-#   codex:
-#     model: gpt-5.4
-#     effort: low
-#   claude:
-#     model: sonnet
-#     effort: high
-#   claude:
-#     model: sonnet
-#     effort: high
-#   opencode:
-#     model: openai/gpt-5
-#   # quota_provider names the quota-axi provider id quota-aware routing reads
-#   # this agent's evidence from (only read when quota_routing is enabled).
-#   # claude and codex never need it; pi always requires an explicit provider,
-#   # including when its model names a Codex account.
-#   pi:
-#     quota_provider: codex
+#   omp:
+#     model: dashscope/qwen4-max
+#     effort: xhigh
 #
-# Extra native agent CLI flags (optional, global only)
-# Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
-# A flag here always wins over the same knob in agent_config, so an existing
-# override keeps its exact behavior.
+# Extra omp CLI flags (optional, global only). A flag here always wins over the
+# same knob in agent_config, and no-mistakes-managed flags (--mode,
+# --no-session, session resume flags) are refused.
 # agent_args_override:
-#   codex:
-#     - -m
-#     - gpt-5.4
-#     - -c
-#     - service_tier="priority"
-#     - -c
-#     - model_reasoning_effort="low"
+#   omp:
+#     - --model
+#     - dashscope/qwen4-max
+#     - --thinking
+#     - xhigh
 #
 # Where a repository's pipeline run worktrees are created (optional). By
 # default they live under <NM_HOME>/worktrees/<repo id>, which inherits no
@@ -1956,15 +1887,13 @@ ci:
 #     - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 # User-intent extraction. When you push a branch, no-mistakes can read recent
-# transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
-# Copilot CLI), pick the session that produced the change, summarize the user
+# omp transcripts, pick the session that produced the change, summarize the user
 # intent, and feed it to review, test, document, lint, and PR agents so they
 # understand what you were trying to do - not just the diff.
 intent:
   enabled: true
   threshold: 0.2
   slack_days: 3
-  # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept on local
@@ -2047,342 +1976,51 @@ eval:
 `
 
 // defaultBinary maps agent names to their default binary names.
-var defaultBinary = map[types.AgentName]string{
-	types.AgentClaude:      "claude",
-	types.AgentCodex:       "codex",
-	types.AgentGrok:        "grok",
-	types.AgentRovoDev:     "acli",
-	types.AgentOpenCode:    "opencode",
-	types.AgentPi:          "pi",
-	types.AgentCopilot:     "copilot",
-	types.AgentAntigravity: "agy",
-}
-
-var nativeAgentProbeOrder = []types.AgentName{
-	types.AgentClaude,
-	types.AgentCodex,
-	types.AgentGrok,
-	types.AgentOpenCode,
-	types.AgentRovoDev,
-	types.AgentPi,
-	types.AgentCopilot,
-	types.AgentAntigravity,
-}
-
-func isACPAgent(name types.AgentName) bool {
-	_, ok := types.ACPTargetFor(name)
-	return ok
-}
-
-var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
-	winproc.Harden(cmd)
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return false, fmt.Errorf("probe rovodev support via %q timed out", bin)
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		text := strings.ToLower(string(output))
-		if strings.Contains(text, "unknown command") ||
-			strings.Contains(text, "unknown subcommand") ||
-			strings.Contains(text, "unrecognized command") ||
-			strings.Contains(text, "no help topic for") {
-			return false, nil
-		}
-		return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
-	}
-	return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
-}
-
-// ResolveAgent resolves configured agent names to available agents. A single
-// explicit agent must be runnable; auto probes native agents, then ACP aliases;
-// an ordered list is filtered to available agents, deduplicated by resolved
-// identity, and kept as fallbacks. The lookPath function should behave like
-// exec.LookPath.
+// ResolveAgent validates the single supported harness and its configured
+// binary. This build supports only the native omp CLI; every other name fails
+// closed with a migration-shaped error instead of silently falling back.
+// The lookPath function should behave like exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
-	candidates := c.configuredAgents()
-	if len(candidates) <= 1 {
-		c.Agent = firstAgent(candidates)
-		c.Agents = copyAgents(candidates)
-		if c.Agent == types.AgentAuto {
-			name, err := c.resolveAutoAgent(ctx, lookPath)
-			if err != nil {
-				return err
-			}
-			c.Agent = name
-			c.Agents = []types.AgentName{name}
-			return nil
-		}
-		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return noRunnableAgentError([]types.AgentName{c.Agent}, []string{probe})
-		}
-		c.Agent = name
-		c.Agents = []types.AgentName{name}
-		return nil
+	name := c.Agent
+	if name == "" {
+		name = types.AgentOMP
 	}
-
-	resolved, err := c.resolveAgentList(ctx, candidates, lookPath)
-	if err != nil {
-		return err
+	if name != types.AgentOMP {
+		return fmt.Errorf("unsupported agent %q; this build supports only %q (set 'agent' in ~/.no-mistakes/config.yaml)", name, types.AgentOMP)
 	}
-	c.Agent = resolved[0]
-	c.Agents = resolved
+	c.Agent = types.AgentOMP
+	c.Agents = []types.AgentName{types.AgentOMP}
+	bin := c.AgentPath()
+	if _, err := lookPath(bin); err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("omp binary %q not found; install omp or set agent_path_override.omp in ~/.no-mistakes/config.yaml", bin)
+		}
+		return fmt.Errorf("resolve omp binary %q: %w", bin, err)
+	}
 	return nil
 }
 
-func (c *Config) configuredAgents() []types.AgentName {
-	if len(c.Agents) > 0 {
-		return copyAgents(c.Agents)
-	}
-	if c.Agent != "" {
-		return []types.AgentName{c.Agent}
-	}
-	return []types.AgentName{types.AgentAuto}
-}
-
-func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (string, error)) (types.AgentName, error) {
-	probed := make([]string, 0, len(nativeAgentProbeOrder)+len(types.ACPAliases())+1)
-	for _, name := range nativeAgentProbeOrder {
-		bin := string(name)
-		if b, ok := defaultBinary[name]; ok {
-			bin = b
-		}
-		if c.AgentPathOverride != nil {
-			if p, ok := c.AgentPathOverride[string(name)]; ok {
-				bin = p
-			}
-		}
-		probed = append(probed, bin)
-		resolvedBin, err := lookPath(bin)
-		if err == nil {
-			if name == types.AgentRovoDev {
-				ok, probeErr := probeRovoDevSupport(ctx, resolvedBin)
-				if probeErr != nil {
-					return "", probeErr
-				}
-				if !ok {
-					continue
-				}
-			}
-			return name, nil
-		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
-		}
-	}
-	for _, alias := range types.ACPAliases() {
-		available, bins, err := c.acpAvailable(alias.Name, lookPath)
-		probed = append(probed, bins...)
-		if err != nil {
-			return "", err
-		}
-		if available {
-			return alias.Name, nil
-		}
-	}
-	return "", noRunnableAgentError([]types.AgentName{types.AgentAuto}, probed)
-}
-
-func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentName, lookPath func(string) (string, error)) ([]types.AgentName, error) {
-	resolved := make([]types.AgentName, 0, len(candidates))
-	seen := map[types.AgentName]bool{}
-	probed := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		name, ok, probe, err := c.resolveConfiguredAgent(ctx, candidate, lookPath)
-		if probe != "" {
-			probed = append(probed, probe)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		identity := types.CanonicalAgentName(name)
-		if seen[identity] {
-			continue
-		}
-		seen[identity] = true
-		resolved = append(resolved, name)
-	}
-	if len(resolved) == 0 {
-		return nil, noRunnableAgentError(candidates, probed)
-	}
-	return resolved, nil
-}
-
-func noRunnableAgentError(configured []types.AgentName, probed []string) error {
-	names := make([]string, 0, len(configured))
-	for _, name := range configured {
-		names = append(names, string(name))
-	}
-	return fmt.Errorf(
-		"no runnable agent found for configured agent %s (looked for: %s); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed",
-		strings.Join(names, ", "),
-		strings.Join(probed, ", "),
-	)
-}
-
-func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentName, lookPath func(string) (string, error)) (types.AgentName, bool, string, error) {
-	if name == types.AgentAuto {
-		resolved, err := c.resolveAutoAgent(ctx, lookPath)
-		if err != nil && strings.HasPrefix(err.Error(), "no runnable agent found") {
-			return "", false, "auto", nil
-		}
-		return resolved, err == nil, "auto", err
-	}
-	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
-	}
-	if isACPAgent(name) {
-		available, bins, err := c.acpAvailable(name, lookPath)
-		probe := strings.Join(bins, ", ")
-		if err != nil {
-			return "", false, probe, err
-		}
-		return name, available, probe, nil
-	}
-	bin := c.AgentPathFor(name)
-	resolvedBin, err := lookPath(bin)
-	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-			return "", false, bin, nil
-		}
-		return "", false, bin, fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
-	}
-	if name == types.AgentRovoDev {
-		ok, probeErr := probeRovoDevSupport(ctx, resolvedBin)
-		if probeErr != nil {
-			return "", false, bin, probeErr
-		}
-		if !ok {
-			return "", false, bin, nil
-		}
-	}
-	return name, true, bin, nil
-}
-
-// AgentPath returns the binary path for the configured agent.
-// ACP agents and ACP aliases use acpx_path if set, otherwise acpx.
-// Native agents use agent_path_override if set, otherwise the default binary name.
+// AgentPath returns the binary path for omp.
 func (c *Config) AgentPath() string {
-	return c.AgentPathFor(c.Agent)
+	return c.AgentPathFor(types.AgentOMP)
 }
 
 func (c *Config) AgentPathFor(name types.AgentName) string {
-	if isACPAgent(name) {
-		if c.ACPXPath != "" {
-			return c.ACPXPath
-		}
-		return "acpx"
+	if name != types.AgentOMP {
+		return string(name)
 	}
 	if c.AgentPathOverride != nil {
-		if p, ok := c.AgentPathOverride[string(name)]; ok {
+		if p := strings.TrimSpace(c.AgentPathOverride[string(name)]); p != "" {
 			return p
 		}
 	}
-	if b, ok := defaultBinary[name]; ok {
-		return b
-	}
-	return string(name)
+	return "omp"
 }
 
 // acpAvailable reports whether the acpx shim and any probeable raw-command
 // executable can be resolved. Only bare command names and clean absolute paths
 // are probeable; relative, quoted, or escaped raw commands are left for acpx to
 // execute from the worktree. It returns the binaries it considered for diagnostics.
-func (c *Config) acpAvailable(name types.AgentName, lookPath func(string) (string, error)) (bool, []string, error) {
-	bins := c.acpBinaries(name)
-	for _, bin := range bins {
-		if _, err := lookPath(bin); err != nil {
-			if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-				return false, bins, nil
-			}
-			return false, bins, fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
-		}
-	}
-	return true, bins, nil
-}
-
-func (c *Config) acpBinaries(name types.AgentName) []string {
-	bins := make([]string, 0, 2)
-	if target, ok := types.ACPTargetFor(name); ok {
-		if bin, probeable := acpCommandBinaryForProbe(types.ACPRawCommand(target, c.ACPRegistryOverrides)); probeable {
-			bins = append(bins, bin)
-		}
-	}
-	return append(bins, c.AgentPathFor(name))
-}
-
-func acpCommandBinaryForProbe(command string) (string, bool) {
-	return acpCommandBinaryForProbeForOS(command, runtime.GOOS)
-}
-
-func acpCommandBinaryForProbeForOS(command, goos string) (string, bool) {
-	if strings.ContainsAny(command, `"'`) {
-		return "", false
-	}
-	if goos != "windows" && strings.ContainsRune(command, '\\') {
-		return "", false
-	}
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return "", false
-	}
-	bin := fields[0]
-	if isAbsolutePathForProbe(bin, goos) {
-		return bin, true
-	}
-	if containsPathSeparatorForProbe(bin, goos) {
-		return "", false
-	}
-	return bin, true
-}
-
-func isAbsolutePathForProbe(path, goos string) bool {
-	if goos == runtime.GOOS {
-		return filepath.IsAbs(path)
-	}
-	if goos == "windows" {
-		return isWindowsAbsolutePath(path)
-	}
-	return strings.HasPrefix(path, "/")
-}
-
-func isWindowsAbsolutePath(path string) bool {
-	if len(path) >= 3 && isASCIILetter(path[0]) && path[1] == ':' && isWindowsPathSeparator(path[2]) {
-		return true
-	}
-	return len(path) >= 3 && isWindowsPathSeparator(path[0]) && isWindowsPathSeparator(path[1])
-}
-
-func isASCIILetter(value byte) bool {
-	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
-}
-
-func isWindowsPathSeparator(value byte) bool {
-	return value == '\\' || value == '/'
-}
-
-func containsPathSeparatorForProbe(path, goos string) bool {
-	if goos == "windows" {
-		return strings.ContainsAny(path, `/\`)
-	}
-	return strings.ContainsRune(path, '/')
-}
 
 // AgentArgs returns extra CLI args for the configured native agent, as declared in
 // agent_args_override. Returns nil when no override is set for this agent.
@@ -2405,23 +2043,10 @@ func (c *Config) AgentProfile() agentcfg.Profile {
 }
 
 func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
-	return agentSettingFor(c.AgentConfig, name)
-}
-
-func agentSettingFor[T any](settings map[string]T, name types.AgentName) T {
-	if value, ok := settings[string(name)]; ok {
-		return value
+	if name != types.AgentOMP {
+		return agentcfg.Profile{}
 	}
-	if alias, ok := types.ACPAliasFor(name); ok {
-		return settings["acp:"+alias.Target]
-	}
-	if target, ok := types.ACPTargetFor(name); ok {
-		if alias, ok := types.ACPAliasForTarget(target); ok {
-			return settings[string(alias.Name)]
-		}
-	}
-	var zero T
-	return zero
+	return c.AgentConfig[string(types.AgentOMP)]
 }
 
 // agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort
@@ -2436,44 +2061,27 @@ type agentProfileRaw struct {
 	QuotaProvider string `yaml:"quota_provider"`
 }
 
-// parseAgentConfig validates the agent_config map and resolves it to
-// harness-neutral profiles plus the per-agent quota_provider routing map.
-// Every knob is checked against what the named harness can actually express, so
-// an unmappable request fails at load rather than being silently dropped at
-// run time.
+// parseAgentConfig resolves the omp model/effort profile. Legacy entries for
+// removed harnesses remain parseable so an existing global config still loads,
+// but they configure nothing.
 func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, map[string]string, error) {
-	profiles := make(map[string]agentcfg.Profile, len(raw))
-	providers := make(map[string]string, len(raw))
-	for name, entry := range raw {
-		agentName := types.AgentName(name)
-		if !agentcfg.Known(agentName) {
-			return nil, nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, devin, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
-		}
-		effort, err := agentcfg.ParseEffort(entry.Effort)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
-		}
-		profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
-		if err := agentcfg.Validate(agentName, profile); err != nil {
-			return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
-		}
-		if provider := strings.TrimSpace(entry.QuotaProvider); provider != "" {
-			providers[name] = provider
-		} else if entry.QuotaProvider != "" {
-			return nil, nil, fmt.Errorf("invalid agent_config.%s: quota_provider must not be blank", name)
-		}
-		if profile.IsZero() {
-			continue
-		}
-		profiles[name] = profile
+	profiles := make(map[string]agentcfg.Profile, 1)
+	entry, ok := raw[string(types.AgentOMP)]
+	if !ok {
+		return nil, nil, nil
 	}
-	if len(providers) == 0 {
-		providers = nil
+	effort, err := agentcfg.ParseEffort(entry.Effort)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", types.AgentOMP, err)
 	}
-	if len(profiles) == 0 {
-		return nil, providers, nil
+	profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
+	if err := agentcfg.Validate(types.AgentOMP, profile); err != nil {
+		return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", types.AgentOMP, err)
 	}
-	return profiles, providers, nil
+	if !profile.IsZero() {
+		profiles[string(types.AgentOMP)] = profile
+	}
+	return profiles, nil, nil
 }
 
 func agentNamesText(names []types.AgentName) []string {
@@ -2484,132 +2092,38 @@ func agentNamesText(names []types.AgentName) []string {
 	return out
 }
 
-// agentArgsOverrideAgents lists native agent names accepted as keys in
-// agent_args_override.
-var agentArgsOverrideAgents = map[string]bool{
-	string(types.AgentClaude):      true,
-	string(types.AgentCodex):       true,
-	string(types.AgentGrok):        true,
-	string(types.AgentRovoDev):     true,
-	string(types.AgentOpenCode):    true,
-	string(types.AgentPi):          true,
-	string(types.AgentCopilot):     true,
-	string(types.AgentAntigravity): true,
+// ompReservedAgentArgs lists omp flags that no-mistakes manages internally and
+// that users cannot override through agent_args_override. A flag is matched by
+// its bare form as well as the "--flag=value" form.
+var ompReservedAgentArgs = map[string]bool{
+	"--mode":        true,
+	"--no-session":  true,
+	"-c":            true,
+	"--continue":    true,
+	"-r":            true,
+	"--resume":      true,
+	"--session":     true,
+	"--session-dir": true,
+	"--fork":        true,
 }
 
-// reservedAgentArgs lists flags that no-mistakes manages internally and that
-// users cannot override through agent_args_override. A flag is matched by its
-// bare form (e.g. "--color") as well as the "--color=value" form.
-var reservedAgentArgs = map[string]map[string]bool{
-	string(types.AgentAntigravity): {
-		"--dangerously-skip-permissions": true,
-		"--print":                        true,
-		"--json-schema":                  true,
-		"--output-format":                true,
-		"--conversation":                 true,
-		"-c":                             true,
-		"--continue":                     true,
-	},
-	string(types.AgentClaude): {
-		"-p":              true,
-		"--print":         true,
-		"--verbose":       true,
-		"--output-format": true,
-		"--json-schema":   true,
-		"-r":              true,
-		"--resume":        true,
-		"--session-id":    true,
-		"-c":              true,
-		"--continue":      true,
-		"--fork-session":  true,
-	},
-	string(types.AgentCodex): {
-		"exec":         true,
-		"resume":       true,
-		"--resume":     true,
-		"--session":    true,
-		"--session-id": true,
-		"--thread":     true,
-		"--thread-id":  true,
-		"--last":       true,
-		"--json":       true,
-		"--color":      true,
-	},
-	string(types.AgentGrok): {
-		"-p":                       true,
-		"--single":                 true,
-		"--prompt-file":            true,
-		"--prompt-json":            true,
-		"--output-format":          true,
-		"--json-schema":            true,
-		"-r":                       true,
-		"--resume":                 true,
-		"-c":                       true,
-		"--continue":               true,
-		"--fork-session":           true,
-		"--session-id":             true,
-		"--system-prompt-override": true,
-		"--system-prompt":          true,
-		"--rules":                  true,
-		"--append-system-prompt":   true,
-		"--agent":                  true,
-		"--agents":                 true,
-		"--verbatim":               true,
-		"--no-subagents":           true,
-		"--no-auto-update":         true,
-		"--cwd":                    true,
-		"--restore-code":           true,
-		"--worktree":               true,
-		"--worktree-ref":           true,
-	},
-	string(types.AgentRovoDev): {
-		"rovodev":                 true,
-		"serve":                   true,
-		"--disable-session-token": true,
-	},
-	string(types.AgentOpenCode): {
-		"serve":        true,
-		"--hostname":   true,
-		"--port":       true,
-		"--print-logs": true,
-	},
-	string(types.AgentPi): {
-		"--mode":       true,
-		"--no-session": true,
-		"-c":           true,
-		"--continue":   true,
-		"-r":           true,
-		"--resume":     true,
-		"--session":    true,
-		"--session-id": true,
-		"--fork":       true,
-	},
-	string(types.AgentCopilot): {
-		"-p":              true,
-		"--prompt":        true,
-		"--output-format": true,
-		"--no-color":      true,
-	},
-}
-
-// validateAgentArgsOverride ensures each agent key is a known agent name and
-// that no reserved flag appears. Empty args are rejected to catch trivially
-// broken YAML.
+// validateAgentArgsOverride checks every override for empty args and refuses a
+// managed omp flag. Legacy non-omp keys are accepted for configuration
+// compatibility but never select or configure another harness.
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
-		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, grok, rovodev, opencode, pi, copilot, antigravity)", name)
-		}
-		reserved := reservedAgentArgs[name]
 		for i, arg := range args {
 			if strings.TrimSpace(arg) == "" {
 				return fmt.Errorf("invalid agent_args_override.%s[%d]: empty arg", name, i)
+			}
+			if name != string(types.AgentOMP) {
+				continue
 			}
 			base := arg
 			if idx := strings.Index(arg, "="); idx > 0 {
 				base = arg[:idx]
 			}
-			if reserved[base] {
+			if ompReservedAgentArgs[base] {
 				return fmt.Errorf("invalid agent_args_override.%s[%d]: %q is managed by no-mistakes and cannot be overridden", name, i, arg)
 			}
 		}
@@ -2698,8 +2212,8 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:                   types.AgentAuto,
-		Agents:                  []types.AgentName{types.AgentAuto},
+		Agent:                   types.AgentOMP,
+		Agents:                  []types.AgentName{types.AgentOMP},
 		ForgejoAXIPath:          "forgejo-axi",
 		CITimeout:               DefaultCITimeout,
 		StepQuietWarning:        DefaultStepQuietWarning,
@@ -2963,10 +2477,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		cfg.AgentConfig = profiles
 		cfg.QuotaProviders = providers
 	}
-	if err := validateReviewAgents(raw.ReviewAgents); err != nil {
-		return nil, err
+	if raw.ReviewAgents != nil {
+		cfg.ReviewAgents = raw.ReviewAgents
 	}
-	cfg.ReviewAgents = raw.ReviewAgents
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
 			return nil, err
@@ -4492,11 +4005,8 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		cfg.Document.RepositoryInstructions = strings.TrimSpace(override.Document.Instructions)
 		cfg.Test.RepositoryInstructions = strings.TrimSpace(override.Test.Instructions)
 		if len(override.ReviewAgents) > 0 {
-			// Per role: a named role replaces the global entry, the rest keep it.
-			roles := make(map[string]ReviewAgent, len(global.ReviewAgents)+len(override.ReviewAgents))
-			maps.Copy(roles, global.ReviewAgents)
-			maps.Copy(roles, override.ReviewAgents)
-			cfg.ReviewAgents = roles
+			// Parse-only tombstone: the removed role split configures nothing.
+			cfg.ReviewAgents = nil
 		}
 	}
 

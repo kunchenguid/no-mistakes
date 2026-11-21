@@ -221,9 +221,6 @@ func (e *Executor) executeWithCrashRetry(step Step, sctx *StepContext, remaining
 			return outcome, err
 		}
 		*remaining--
-		if sctx.Sessions != nil {
-			sctx.Sessions.Forget(SessionRoleReviewer)
-		}
 		sctx.Log(fmt.Sprintf("agent_invocation: retrying %s in the same run (%d retries remaining)", step.Name(), *remaining))
 	}
 }

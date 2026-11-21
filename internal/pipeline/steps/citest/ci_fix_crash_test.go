@@ -50,7 +50,7 @@ func TestCIStep_FixAgentCrashesSurviveGreenChecks(t *testing.T) {
 			prURL := "https://github.com/test/repo/pull/42"
 			sctx.Run.PRURL = &prURL
 			sctx.Repo.UpstreamURL = upstream
-			sctx.Config.Agent = types.AgentCodex
+			sctx.Config.Agent = types.AgentOMP
 			sctx.Config.CITimeout = time.Minute
 			sctx.Config.CI.ReleaseAfterChecksPass = true
 			sctx.Config.AutoFix = config.AutoFix{CI: 2}

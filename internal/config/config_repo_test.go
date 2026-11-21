@@ -36,7 +36,7 @@ func TestLoadRepo_Defaults(t *testing.T) {
 func TestLoadRepo_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
-	data := `agent: codex
+	data := `agent: omp
 commands:
   lint: "golangci-lint run ./..."
   test: "go test -race ./..."
@@ -53,8 +53,8 @@ ignore_patterns:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.Commands.Lint != "golangci-lint run ./..." {
 		t.Errorf("lint = %q", cfg.Commands.Lint)
@@ -182,7 +182,7 @@ func TestLoadRepo_GateReconcileTimingsAreNotRepoSettings(t *testing.T) {
 
 func TestLoadRepo_AgentAcceptsList(t *testing.T) {
 	dir := t.TempDir()
-	data := `agent: [codex, claude]
+	data := `agent: [omp]
 `
 	if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -192,10 +192,10 @@ func TestLoadRepo_AgentAcceptsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
-	want := []types.AgentName{types.AgentCodex, types.AgentClaude}
+	want := []types.AgentName{types.AgentOMP}
 	if len(cfg.Agents) != len(want) {
 		t.Fatalf("agents = %v, want %v", cfg.Agents, want)
 	}
@@ -208,7 +208,7 @@ func TestLoadRepo_AgentAcceptsList(t *testing.T) {
 
 func TestLoadRepo_AgentStringPreservesSingleAgent(t *testing.T) {
 	dir := t.TempDir()
-	data := `agent: codex
+	data := `agent: omp
 `
 	if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -218,10 +218,10 @@ func TestLoadRepo_AgentStringPreservesSingleAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
-	if len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentCodex {
+	if len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentOMP {
 		t.Fatalf("agents = %v, want [codex]", cfg.Agents)
 	}
 }

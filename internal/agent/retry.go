@@ -135,37 +135,10 @@ func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, star
 		Err:             err,
 		StartedAt:       startedAt,
 		CompletedAt:     completedAt,
-		Session:         cloneSessionRef(opts.Session),
-		SessionFallback: opts.SessionFallback,
 	})
 }
 
-func cloneSessionRef(session *SessionRef) *SessionRef {
-	if session == nil {
-		return nil
-	}
-	copy := *session
-	return &copy
-}
-
-// claudeRetryClassifier retries both transient API errors and the
-// no-structured-output case that the existing loop already handled. When the
-// CLI reported the API error it ended on, that record alone decides: the
-// reported HTTP status takes precedence; without one, only the record's
-// terminal diagnostic is classified, never surrounding assistant or stderr text.
-func claudeRetryClassifier(err error) (string, bool) {
-	if errors.Is(err, errNoStructuredOutput) {
-		return "missing structured output", true
-	}
-	var apiErr *claudeAPIError
-	if errors.As(err, &apiErr) {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", false
-		}
-		return apiErr.classify()
-	}
-	return classifyTransient(err)
-}
+// claudeRetryClassifier was removed with the multi-harness adapters.
 
 var transientStatusRE = regexp.MustCompile(`\b(429|503|529)\b`)
 
@@ -254,24 +227,16 @@ func classifyTransient(err error) (string, bool) {
 	if isTerminalRetryError(msg) {
 		return "", false
 	}
-	const piMissingOutputPrefix = "pi did not finish by calling no_mistakes_output alone"
-	if strings.HasPrefix(msg, piMissingOutputPrefix) {
-		stderr := strings.TrimSpace(strings.TrimPrefix(msg[len(piMissingOutputPrefix):], ":"))
-		if isPiPermanentStderr(stderr) {
-			return "", false
-		}
-		return "pi missing output tool", true
-	}
-	const piExitPrefix = "pi exited: "
-	if strings.HasPrefix(msg, piExitPrefix) {
-		if separator := strings.Index(msg[len(piExitPrefix):], ": "); separator >= 0 {
-			separator += len(piExitPrefix)
+	const ompExitPrefix = "omp exited: "
+	if strings.HasPrefix(msg, ompExitPrefix) {
+		if separator := strings.Index(msg[len(ompExitPrefix):], ": "); separator >= 0 {
+			separator += len(ompExitPrefix)
 			stderr := strings.TrimSpace(msg[separator+2:])
 			if strings.Contains(stderr, "fetch failed") {
-				if isPiPermanentStderr(stderr) {
+				if isPermanentStderr(stderr) {
 					return "", false
 				}
-				return "pi fetch failed", true
+				return "omp fetch failed", true
 			}
 		}
 	}
@@ -286,7 +251,7 @@ func classifyTransient(err error) (string, bool) {
 	return "", false
 }
 
-func isPiPermanentStderr(stderr string) bool {
+func isPermanentStderr(stderr string) bool {
 	for _, sig := range terminalNeedles {
 		if strings.Contains(stderr, sig.needle) {
 			return true
@@ -319,24 +284,16 @@ func isTerminalRetryError(msg string) bool {
 }
 
 // IsQuotaExhaustionError reports whether an error is a recognised
-// subscription-quota exhaustion: the same terminal needle set the retry
-// layer has always classified (free usage limit, insufficient quota, quota
-// exceeded/exhausted) plus claude's typed usage-limit response. Only these
-// concrete shapes may trigger the quota-aware mid-run switch - transient
-// overload, unavailability, and parse failures never do.
+// subscription-quota exhaustion: the terminal needle set the retry layer has
+// always classified (free usage limit, insufficient quota, quota
+// exceeded/exhausted). Transient overload, unavailability, and parse failures
+// never count.
 func IsQuotaExhaustionError(err error) bool {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
-	}
-	var apiErr *claudeAPIError
-	if errors.As(err, &apiErr) {
-		if apiErr.UsageLimitReached() {
-			return true
-		}
-		return isTerminalRetryError(strings.ToLower(apiErr.Message))
 	}
 	return isTerminalRetryError(strings.ToLower(err.Error()))
 }

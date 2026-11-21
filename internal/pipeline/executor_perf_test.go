@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -13,30 +12,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// usageAgent is a minimal agent that reports token usage and echoes session
-// starts, for perf-recording tests.
-type usageAgent struct{ resumable bool }
+type usageAgent struct{}
 
-func (u *usageAgent) Name() string                { return "usage-agent" }
-func (u *usageAgent) Close() error                { return nil }
-func (u *usageAgent) SupportsSessionResume() bool { return u.resumable }
+func (u *usageAgent) Name() string { return "usage-agent" }
+func (u *usageAgent) Close() error { return nil }
 
 func (u *usageAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	result := &agent.Result{
+	return &agent.Result{
 		Output:        json.RawMessage(`{}`),
 		Model:         "test-model-1",
 		Usage:         agent.TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 60, Reported: true},
 		UsageReported: true,
-	}
-	if opts.Session != nil {
-		if opts.Session.ID != "" {
-			result.SessionID = opts.Session.ID
-			result.Resumed = true
-		} else {
-			result.SessionID = "sess-new"
-		}
-	}
-	return result, nil
+	}, nil
 }
 
 type fallbackUsageAgent struct {
@@ -64,7 +51,7 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			if _, err := sctx.RunAgentSession(SessionRoleReviewer, agent.RunOpts{Prompt: "review", Purpose: "review"}); err != nil {
+			if _, err := sctx.RunAgent(agent.RunOpts{Prompt: "review", Purpose: "review"}); err != nil {
 				return nil, err
 			}
 			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "evidence"}); err != nil {
@@ -74,8 +61,8 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 		},
 	}
 
-	cfg := &config.Config{Agent: types.AgentClaude, SessionReuse: true}
-	exec := NewExecutor(database, p, cfg, &usageAgent{resumable: true}, []Step{step}, nil)
+	cfg := &config.Config{Agent: types.AgentOMP}
+	exec := NewExecutor(database, p, cfg, &usageAgent{}, []Step{step}, nil)
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -92,11 +79,11 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	if review.Purpose != "review" || review.StepName != "review" || review.Round != 1 {
 		t.Fatalf("review row = %+v", review)
 	}
-	if review.SessionMode != db.InvocationModeStarted {
-		t.Fatalf("review session mode = %q, want started", review.SessionMode)
+	if review.SessionMode != db.InvocationModeCold {
+		t.Fatalf("review session mode = %q, want cold", review.SessionMode)
 	}
-	if review.SessionKey == "" || review.SessionKey == "sess-new" {
-		t.Fatalf("session key must be a fingerprint, not empty or the raw id: %q", review.SessionKey)
+	if review.SessionKey != "" {
+		t.Fatalf("cold invocation must not carry a session key: %q", review.SessionKey)
 	}
 	if review.Agent != "usage-agent" || review.Model != "test-model-1" {
 		t.Fatalf("agent/model = %q/%q", review.Agent, review.Model)
@@ -115,71 +102,6 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	evidence := invocations[1]
 	if evidence.SessionMode != db.InvocationModeCold || evidence.Purpose != "review" {
 		t.Fatalf("evidence row = %+v", evidence)
-	}
-}
-
-func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
-	database, _, run, _ := setupTest(t)
-	wrapped := &perfRecordingAgent{
-		inner: agent.NewFallback([]agent.Agent{
-			&fallbackUsageAgent{name: "codex", err: errors.New("codex start: executable not found")},
-			&fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "test-model-2"}},
-		}),
-		db:       database,
-		runID:    run.ID,
-		stepName: types.StepReview,
-		round:    func() int { return 1 },
-	}
-
-	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	invocations, err := database.GetAgentInvocationsByRun(run.ID)
-	if err != nil {
-		t.Fatalf("get invocations: %v", err)
-	}
-	if len(invocations) != 2 {
-		t.Fatalf("got %d invocation rows, want 2", len(invocations))
-	}
-	byAgent := map[string]db.AgentInvocation{}
-	for _, invocation := range invocations {
-		byAgent[invocation.Agent] = invocation
-	}
-	if got := byAgent["codex"]; got.ExitStatus != "error" || got.FailureCategory != "spawn" {
-		t.Fatalf("codex invocation = %+v", got)
-	}
-	if got := byAgent["claude"]; got.ExitStatus != "ok" || got.Model != "test-model-2" {
-		t.Fatalf("claude invocation = %+v", got)
-	}
-}
-
-func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T) {
-	database, _, run, _ := setupTest(t)
-	wrapped := &perfRecordingAgent{
-		inner: agent.NewFallback([]agent.Agent{
-			&fallbackUsageAgent{name: "pi", result: &agent.Result{Model: "pi-model"}},
-			&usageAgent{resumable: true},
-		}),
-		db:       database,
-		runID:    run.ID,
-		stepName: types.StepReview,
-		round:    func() int { return 1 },
-	}
-
-	sessions := NewRunSessions(database, run.ID, wrapped, true)
-	if _, err := sessions.Run(context.Background(), wrapped, SessionRoleReviewer, agent.RunOpts{Purpose: "review"}, nil); err != nil {
-		t.Fatalf("run session: %v", err)
-	}
-
-	invocations, err := database.GetAgentInvocationsByRun(run.ID)
-	if err != nil {
-		t.Fatalf("get invocations: %v", err)
-	}
-	if len(invocations) != 1 {
-		t.Fatalf("got %d invocation rows, want 1", len(invocations))
-	}
-	if got := invocations[0]; got.Agent != "pi" || got.SessionMode != db.InvocationModeCold {
-		t.Fatalf("invocation = %+v, want pi cold", got)
 	}
 }
 
@@ -220,34 +142,5 @@ func TestExecutor_AccumulatesParkedDuration(t *testing.T) {
 	}
 	if got.AwaitingAgentSince != nil {
 		t.Fatal("awaiting marker must be clear after resume")
-	}
-}
-
-func TestPerfRecordingReviewerFallbackConfiguredModels(t *testing.T) {
-	database, _, run, _ := setupTest(t)
-	chain := agent.NewFallback([]agent.Agent{
-		&fallbackUsageAgent{name: "pi", err: errors.New("insufficient_quota")},
-		&fallbackUsageAgent{name: "pi", result: &agent.Result{Text: "reviewed", Model: "reported-model", ModelProvider: "reported-provider"}},
-	}, agent.WithReviewerQuotaFallback("provider-one/exhausted", "provider-two/available"))
-	defer chain.Close()
-	wrapped := &perfRecordingAgent{inner: chain, db: database, runID: run.ID, stepName: types.StepReview, round: func() int { return 1 }}
-	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := database.GetAgentInvocationsByRun(run.ID)
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("rows = %+v, error = %v", rows, err)
-	}
-	for i, row := range rows {
-		want := []string{"provider-one/exhausted", "provider-two/available"}[i]
-		if row.Agent != "pi" || row.ConfiguredModel == nil || *row.ConfiguredModel != want {
-			t.Fatalf("row %d lost configured identity: %+v", i, row)
-		}
-	}
-	if rows[0].Model != "" || rows[0].ModelProvider != nil || rows[0].ExitStatus != "error" {
-		t.Fatalf("failed row invented a served identity: %+v", rows[0])
-	}
-	if rows[1].Model != "reported-model" || rows[1].ModelProvider == nil || *rows[1].ModelProvider != "reported-provider" || rows[1].ExitStatus != "ok" {
-		t.Fatalf("successful row lost served identity: %+v", rows[1])
 	}
 }

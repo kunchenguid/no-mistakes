@@ -36,7 +36,7 @@ func startTestDaemonWithMaxConcurrentRuns(t *testing.T, maxConcurrent int, sf St
 	}
 
 	mockClaude := writeMockClaude(t, t.TempDir())
-	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + fmt.Sprintf("\nmax_concurrent_runs: %d\n", maxConcurrent)
+	configYAML := "agent: omp\nagent_path_override:\n  omp: " + mockClaude + fmt.Sprintf("\nmax_concurrent_runs: %d\n", maxConcurrent)
 	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestMaxConcurrentRuns_CapReloadsWithoutRestart(t *testing.T) {
 		{name: "increased", content: "max_concurrent_runs: 2\n", want: 2},
 		{name: "explicit unlimited", content: "max_concurrent_runs: 0\n", want: 0},
 		{name: "restored cap", content: "max_concurrent_runs: 1\n", want: 1},
-		{name: "unset in valid config", content: "agent: claude\n", want: 0},
+		{name: "unset in valid config", content: "agent: omp\n", want: 0},
 	} {
 		t.Run(change.name, func(t *testing.T) {
 			if change.content == "" {

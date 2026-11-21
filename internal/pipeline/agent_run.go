@@ -52,12 +52,12 @@ func (sctx *StepContext) RunAgent(opts agent.RunOpts) (*agent.Result, error) {
 	if sctx != nil {
 		parent = sctx.Ctx
 	}
-	return sctx.runAgent(parent, opts, "", 0, 0, nil)
+	return sctx.runAgent(parent, opts, 0, 0, nil)
 }
 
 // RunAgentContext is RunAgent with an explicit parent.
 func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, "", 0, 0, nil)
+	return sctx.runAgent(parent, opts, 0, 0, nil)
 }
 
 // RunAgentBudget is RunAgentContext with a step-specific silent budget,
@@ -66,22 +66,10 @@ func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunO
 // extension cannot run. A working cap equal to timeout does not extend the
 // turn.
 func (sctx *StepContext) RunAgentBudget(parent context.Context, timeout, working time.Duration, cause error, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, "", timeout, working, cause)
+	return sctx.runAgent(parent, opts, timeout, working, cause)
 }
 
-// RunAgentSessionContext is RunAgentSession with an explicit parent.
-func (sctx *StepContext) RunAgentSessionContext(parent context.Context, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, role, 0, 0, nil)
-}
-
-// RunAgentSessionBudget is RunAgentSessionContext with a step-specific silent
-// budget and optional still-working cap so a fixer turn can use
-// review_agent_timeout without installing an absolute parent deadline.
-func (sctx *StepContext) RunAgentSessionBudget(parent context.Context, timeout, working time.Duration, cause error, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, role, timeout, working, cause)
-}
-
-func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, sessionRole SessionRole, timeout, working time.Duration, cause error) (*agent.Result, error) {
+func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, timeout, working time.Duration, cause error) (*agent.Result, error) {
 	var ag agent.Agent
 	if timeout <= 0 {
 		timeout = AgentTimeout(nil)
@@ -99,9 +87,6 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(parent, timeout, working, cause, activity, func(ctx context.Context) (*agent.Result, error) {
-		if sessionRole != "" && sctx != nil && sctx.Sessions != nil {
-			return sctx.Sessions.Run(ctx, ag, sessionRole, opts, sctx.Log)
-		}
 		if ag == nil {
 			return nil, errors.New("nil agent")
 		}
@@ -661,14 +646,6 @@ func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Resu
 	return invokeAgent(ctx, a.timeout, a.working, ErrAgentTimeout, activity, func(runCtx context.Context) (*agent.Result, error) {
 		return a.inner.Run(runCtx, opts)
 	})
-}
-
-func (a *timeoutAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *timeoutAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
 }
 
 func (a *timeoutAgent) ReportsAgentAttempts() bool {

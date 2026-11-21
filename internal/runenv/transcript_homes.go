@@ -9,39 +9,28 @@ import (
 	"strings"
 )
 
-// TranscriptHomes pins discovery roots, independently of agent authentication.
-// Both roots are resolved by the caller, including defaults, so the daemon's
-// environment cannot select a different account. Nil denotes a legacy launch.
+// TranscriptHomes pins the omp discovery root independently of agent
+// authentication. The caller resolves it, including the default, so the
+// daemon's environment cannot select a different account. Nil denotes a legacy
+// launch.
 type TranscriptHomes struct {
-	ClaudeConfigDir string `json:"claude_config_dir"`
-	CodexHome       string `json:"codex_home"`
+	OMPHome string `json:"omp_home"`
 }
 
 func CaptureTranscriptHomes() *TranscriptHomes {
 	home, _ := os.UserHomeDir()
-	claude := os.Getenv("CLAUDE_CONFIG_DIR")
-	if claude == "" && home != "" {
-		claude = filepath.Join(home, ".claude")
+	ompHome := os.Getenv("OMP_HOME")
+	if ompHome == "" && home != "" {
+		ompHome = filepath.Join(home, ".omp")
 	}
-	codex := os.Getenv("CODEX_HOME")
-	if codex == "" && home != "" {
-		codex = filepath.Join(home, ".codex")
-	}
-	return &TranscriptHomes{ClaudeConfigDir: claude, CodexHome: codex}
+	return &TranscriptHomes{OMPHome: ompHome}
 }
 
-func (h *TranscriptHomes) ValidateClaude() error {
+func (h *TranscriptHomes) Validate() error {
 	if h == nil {
 		return nil
 	}
-	return validateTranscriptHome("CLAUDE_CONFIG_DIR", h.ClaudeConfigDir)
-}
-
-func (h *TranscriptHomes) ValidateCodex() error {
-	if h == nil {
-		return nil
-	}
-	return validateTranscriptHome("CODEX_HOME", h.CodexHome)
+	return validateTranscriptHome("OMP_HOME", h.OMPHome)
 }
 
 func validateTranscriptHome(name, path string) error {

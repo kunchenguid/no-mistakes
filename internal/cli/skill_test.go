@@ -58,7 +58,7 @@ func TestSkillInstallFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	if err := os.WriteFile(filepath.Join(home, ".claude"), []byte("blocked"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".agents"), []byte("blocked"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

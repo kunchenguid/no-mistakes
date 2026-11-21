@@ -252,7 +252,7 @@ func NewTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 		EvidenceDir: filepath.Join(t.TempDir(), "evidence", "run-1"),
 		WorkDir:     workDir,
 		Agent:       ag,
-		Config:      &config.Config{Agent: types.AgentClaude, Commands: cmds},
+		Config:      &config.Config{Agent: types.AgentOMP, Commands: cmds},
 		DB:          database,
 		Log:         func(s string) {},
 		LogChunk:    func(s string) {},

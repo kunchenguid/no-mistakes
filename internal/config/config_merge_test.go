@@ -9,7 +9,7 @@ import (
 
 func TestMerge_GlobalOnly(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:              types.AgentClaude,
+		Agent:              types.AgentOMP,
 		CITimeout:          4 * time.Hour,
 		ReviewAgentTimeout: 2 * time.Hour,
 		AgentTimeout:       15 * time.Minute,
@@ -19,8 +19,8 @@ func TestMerge_GlobalOnly(t *testing.T) {
 	repo := &RepoConfig{}
 
 	cfg := Merge(global, repo)
-	if cfg.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.CITimeout != 4*time.Hour {
 		t.Errorf("ci_timeout = %v", cfg.CITimeout)
@@ -37,7 +37,7 @@ func TestMerge_GlobalOnly(t *testing.T) {
 }
 
 func TestMergeLeavesEvalProvenanceDisabledUntilExplicitlyEnabled(t *testing.T) {
-	global := &GlobalConfig{SourceYAML: []byte("agent: claude\n"), Agent: types.AgentClaude}
+	global := &GlobalConfig{SourceYAML: []byte("agent: claude\n"), Agent: types.AgentOMP}
 	repo := &RepoConfig{IgnorePatterns: []string{"vendor/**"}}
 	cfg := Merge(global, repo)
 	if cfg.CaptureEvalProvenance || len(cfg.ReplayGlobalYAML) != 0 || len(cfg.ReplayRepoYAML) != 0 {
@@ -53,21 +53,21 @@ func TestMergeLeavesEvalProvenanceDisabledUntilExplicitlyEnabled(t *testing.T) {
 
 func TestMerge_RepoOverridesAgent(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:             types.AgentClaude,
+		Agent:             types.AgentOMP,
 		AgentPathOverride: map[string]string{"claude": "/usr/bin/claude"},
 		CITimeout:         4 * time.Hour,
 		LogLevel:          "info",
 	}
 	repo := &RepoConfig{
-		Agent: types.AgentCodex,
+		Agent: types.AgentOMP,
 		Commands: Commands{
 			Test: "make test",
 		},
 	}
 
 	cfg := Merge(global, repo)
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q (repo override)", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q (repo override)", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.AgentPathOverride["claude"] != "/usr/bin/claude" {
 		t.Errorf("agent path override lost during merge")
@@ -82,7 +82,7 @@ func TestMerge_RepoOverridesAgent(t *testing.T) {
 
 func TestMerge_RepoDoesNotOverrideWhenEmpty(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:     types.AgentRovoDev,
+		Agent:     types.AgentOMP,
 		CITimeout: 2 * time.Hour,
 		LogLevel:  "debug",
 	}
@@ -94,8 +94,8 @@ func TestMerge_RepoDoesNotOverrideWhenEmpty(t *testing.T) {
 	}
 
 	cfg := Merge(global, repo)
-	if cfg.Agent != types.AgentRovoDev {
-		t.Errorf("agent = %q, want %q (empty repo should not override)", cfg.Agent, types.AgentRovoDev)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q (empty repo should not override)", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.Commands.Lint != "eslint ." {
 		t.Errorf("lint = %q", cfg.Commands.Lint)
@@ -103,7 +103,7 @@ func TestMerge_RepoDoesNotOverrideWhenEmpty(t *testing.T) {
 }
 
 func TestMerge_AutoFixDefaults(t *testing.T) {
-	global := &GlobalConfig{Agent: types.AgentClaude, CITimeout: 4 * time.Hour, LogLevel: "info"}
+	global := &GlobalConfig{Agent: types.AgentOMP, CITimeout: 4 * time.Hour, LogLevel: "info"}
 	repo := &RepoConfig{}
 
 	cfg := Merge(global, repo)
@@ -131,7 +131,7 @@ func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
 	five := 5
 	zero := 0
 	global := &GlobalConfig{
-		Agent:     types.AgentClaude,
+		Agent:     types.AgentOMP,
 		CITimeout: 4 * time.Hour,
 		LogLevel:  "info",
 		AutoFix:   AutoFixRaw{Lint: &five, CI: &zero},
@@ -158,7 +158,7 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 	one := 1
 	zero := 0
 	global := &GlobalConfig{
-		Agent:     types.AgentClaude,
+		Agent:     types.AgentOMP,
 		CITimeout: 4 * time.Hour,
 		LogLevel:  "info",
 		AutoFix:   AutoFixRaw{Lint: &five},

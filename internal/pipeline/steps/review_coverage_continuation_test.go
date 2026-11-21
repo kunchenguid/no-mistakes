@@ -150,7 +150,7 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sctx := &pipeline.StepContext{DB: database, Run: run, Repo: repo, WorkDir: dir, EvidenceDir: p.RunEvidenceDir("", run.ID), Config: &config.Config{Agent: types.AgentClaude, TrustedConfigSHA: base}}
+	sctx := &pipeline.StepContext{DB: database, Run: run, Repo: repo, WorkDir: dir, EvidenceDir: p.RunEvidenceDir("", run.ID), Config: &config.Config{Agent: types.AgentOMP, TrustedConfigSHA: base}}
 	if mode == "new question" {
 		withReviewConversation(sctx)
 		conversationDir = reviewConversationDir(sctx)

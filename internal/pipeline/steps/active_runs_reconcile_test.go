@@ -35,7 +35,7 @@ func TestCIGateReconciliationClearsActiveRunAfterPRBecomesTerminal(t *testing.T)
 	for _, terminalState := range []string{"MERGED", "CLOSED"} {
 		t.Run(terminalState, func(t *testing.T) {
 			database, p, run, repo, dir, statePath, env := setupCIGateReconcileTest(t)
-			exec := pipeline.NewExecutor(database, p, &config.Config{Agent: types.AgentClaude, CITimeout: 80 * time.Millisecond}, &mockAgent{name: "test"}, []pipeline.Step{
+			exec := pipeline.NewExecutor(database, p, &config.Config{Agent: types.AgentOMP, CITimeout: 80 * time.Millisecond}, &mockAgent{name: "test"}, []pipeline.Step{
 				reconcileEnvStep{step: &PRStep{}, env: env},
 				reconcileEnvStep{step: &CIStep{pollIntervalOverride: 10 * time.Millisecond}, env: env},
 			}, nil)
@@ -76,7 +76,7 @@ func TestCIGateReconciliationPreservesOpenErrorAndUnknownStates(t *testing.T) {
 	for _, state := range []string{"OPEN", "ERROR", "UNKNOWN"} {
 		t.Run(state, func(t *testing.T) {
 			database, p, run, repo, dir, statePath, env := setupCIGateReconcileTest(t)
-			exec := pipeline.NewExecutor(database, p, &config.Config{Agent: types.AgentClaude, CITimeout: 80 * time.Millisecond}, &mockAgent{name: "test"}, []pipeline.Step{
+			exec := pipeline.NewExecutor(database, p, &config.Config{Agent: types.AgentOMP, CITimeout: 80 * time.Millisecond}, &mockAgent{name: "test"}, []pipeline.Step{
 				reconcileEnvStep{step: &PRStep{}, env: env},
 				reconcileEnvStep{step: &CIStep{pollIntervalOverride: 10 * time.Millisecond}, env: env},
 			}, nil)

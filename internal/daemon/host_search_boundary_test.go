@@ -14,14 +14,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// writeStdinCapturingPiAgent writes a fake pi binary that copies its stdin -
+// writeStdinCapturingOMPAgent writes a fake omp binary that copies its stdin -
 // the prompt the adapter pipes to the process - into capturePath, then returns
-// a minimal agent_end payload so the invocation succeeds. It mirrors
-// writeCapturingPiAgent, which captures argv instead.
-func writeStdinCapturingPiAgent(t *testing.T, dir, capturePath string) string {
+// a minimal agent_end payload so the invocation succeeds.
+func writeStdinCapturingOMPAgent(t *testing.T, dir, capturePath string) string {
 	t.Helper()
 	const response = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}`
-	bin := filepath.Join(dir, "pi")
+	bin := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\ncat >" + shellQuoteForTest(capturePath) + "\nprintf '%s\\n' '" + response + "'\n"
 	if runtime.GOOS == "windows" {
 		bin += ".cmd"
@@ -56,10 +55,11 @@ func TestNewPipelineAgent_SteersHostSearchBoundary(t *testing.T) {
 	dir := t.TempDir()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence")
 	capturePath := filepath.Join(t.TempDir(), "prompt.txt")
-	piBin := writeStdinCapturingPiAgent(t, dir, capturePath)
+	ompBin := writeStdinCapturingOMPAgent(t, dir, capturePath)
 
-	cfg := &config.Config{Agent: types.AgentPi, AgentPathOverride: map[string]string{"pi": piBin}}
-	ag, _, err := newPipelineAgent(context.Background(), cfg, evidenceRoot, fakeLookPath, runenv.Overlay{}, nil)
+	cfg := &config.Config{Agent: types.AgentOMP, AgentPathOverride: map[string]string{"omp": ompBin}}
+	lookPath := func(string) (string, error) { return ompBin, nil }
+	ag, err := newPipelineAgent(context.Background(), cfg, evidenceRoot, lookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatal(err)
 	}

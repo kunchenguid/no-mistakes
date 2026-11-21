@@ -111,17 +111,11 @@ type Run struct {
 	// the repository's trusted pr.publish_intent is enforced independently
 	// by the PR step.
 	OmitIntent bool
-	// PiProfile is immutable launch selection; nil retains legacy live config.
-	PiProfile       *agentcfg.PiProfile
-	ReviewerProfile *agentcfg.ReviewerProfile
+	// RunProfile is immutable launch selection; nil retains live config.
+	RunProfile       *agentcfg.RunProfile
+	VerificationPlan *verificationplan.Snapshot
 	// TranscriptHomes is immutable caller context, local to discovery.
-	TranscriptHomes *runenv.TranscriptHomes `json:"-"`
-	// QuotaRouting is the run's quota-aware agent ordering record (the
-	// quotarouting.Record JSON), written at run setup when the feature is on
-	// and appended to when a mid-run quota switch moves the run. Empty for
-	// runs from before the feature and whenever it is off. It is local-only.
-	QuotaRouting       string
-	VerificationPlan   *verificationplan.Snapshot
+	TranscriptHomes    *runenv.TranscriptHomes `json:"-"`
 	CallerRestrictions *callerrestrictions.Record
 	// ClosingIssueRefs are the explicit issues (axi run --closes) the generated
 	// PR should close, canonicalized by internal/closingissues.
@@ -145,7 +139,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, quota_routing, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, pr_title_fresh, pr_body_fresh, pr_text_applied_at, evidence_dir, transcript_homes, created_at, updated_at, reviewer_profile, integration_destination`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, ci_ready_no_ci, ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, push_active, terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, parked_ms, intent, intent_source, intent_session_id, intent_score, intent_check_json, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, omit_intent, pi_profile, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, pr_title_fresh, pr_body_fresh, pr_text_applied_at, evidence_dir, transcript_homes, created_at, updated_at, integration_destination`
 
 func (d *DB) runColumns() (string, error) {
 	return d.readProjection("runs", runColumns+", caller_restrictions", runScanTargets(&Run{}, &sql.NullString{})...)
@@ -160,11 +154,10 @@ func runScanTargets(r *Run, storedClosingIssues *sql.NullString) []any {
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
+		&r.PRBaseBranch, &r.OmitIntent, &r.RunProfile, &r.VerificationPlan,
 		storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.PRTitle, &r.PRBody, &r.PRTitleFresh, &r.PRBodyFresh, &r.PRTextAppliedAt, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
-		&r.ReviewerProfile,
 		&r.Integration,
 		&r.CallerRestrictions,
 	}
@@ -288,12 +281,8 @@ func (d *DB) InsertRunWithDestinationAndCallerRestrictions(repoID, branch, headS
 	if err := restrictions.Validate(); err != nil {
 		return nil, err
 	}
-	pin := agentcfg.OptionalPiProfile(profiles)
+	pin := agentcfg.OptionalRunProfile(profiles)
 	if err := pin.Validate(); err != nil {
-		return nil, err
-	}
-	reviewer := agentcfg.OptionalReviewerProfile(profiles)
-	if err := reviewer.Validate(); err != nil {
 		return nil, err
 	}
 	ts := now()
@@ -308,8 +297,7 @@ func (d *DB) InsertRunWithDestinationAndCallerRestrictions(repoID, branch, headS
 		SubmittedHeadSHA:   &headSHA,
 		NoMistakesVersion:  &version,
 		NoMistakesBuildSHA: &buildSHA,
-		PiProfile:          pin,
-		ReviewerProfile:    reviewer,
+		RunProfile:         pin,
 		TranscriptHomes:    homes,
 		CallerRestrictions: restrictions,
 		Integration:        destination,
@@ -346,8 +334,8 @@ func (d *DB) InsertRunWithDestinationAndCallerRestrictions(repoID, branch, headS
 		r.PRBodyFresh = !prText.InheritedBody
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, pr_title_fresh, pr_body_fresh, transcript_homes, created_at, updated_at, reviewer_profile, integration_destination, caller_restrictions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.PRTitleFresh, r.PRBodyFresh, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile, r.Integration, r.CallerRestrictions,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, pr_title_fresh, pr_body_fresh, transcript_homes, created_at, updated_at, integration_destination, caller_restrictions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.RunProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.PRTitleFresh, r.PRBodyFresh, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.Integration, r.CallerRestrictions,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -548,21 +536,13 @@ func (d *DB) ClaimLaunchReceiptWithDestination(repoID, branch, launchNonce, subm
 // ClaimLaunchReceiptWithDestinationAndCallerRestrictions verifies both immutable
 // request bindings before consuming the receipt for the exact stored row.
 func (d *DB) ClaimLaunchReceiptWithDestinationAndCallerRestrictions(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest, baseRemote, restrictionsDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
-	request := agentcfg.OptionalPiProfile(profiles)
+	request := agentcfg.OptionalRunProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
 	}
 	model, effort := "", ""
 	if request != nil {
 		model, effort = request.Model, string(request.Effort)
-	}
-	reviewer := agentcfg.OptionalReviewerProfile(profiles)
-	if err := reviewer.ValidateRequest(); err != nil {
-		return nil, false, err
-	}
-	rAgent, rModel, rEffort := "", "", ""
-	if reviewer != nil {
-		rAgent, rModel, rEffort = string(reviewer.Agent), reviewer.Model, string(reviewer.Effort)
 	}
 	prBaseBranch = strings.TrimSpace(prBaseBranch)
 	existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
@@ -591,12 +571,9 @@ func (d *DB) ClaimLaunchReceiptWithDestinationAndCallerRestrictions(repoID, bran
 		   AND (? = 0 OR omit_intent = ?)
 		   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
 		   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
-		   AND (? = '' OR json_extract(reviewer_profile, '$.agent') = ?)
-		   AND (? = '' OR json_extract(reviewer_profile, '$.model') = ?)
-		   AND (? = '' OR json_extract(reviewer_profile, '$.effort') = ?)
 		   AND launch_receipt_claimed_at IS NULL
 		 RETURNING `+columns,
-		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort, rAgent, rAgent, rModel, rModel, rEffort, rEffort,
+		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
 	), r)
 	if err == nil {
 		return r, true, nil
@@ -1693,33 +1670,6 @@ func (d *DB) SetRunGates(id, gates string) error {
 		return fmt.Errorf("set run gates: %w", err)
 	}
 	return nil
-}
-
-// SetRunQuotaRouting records (or amends) one run's quota-aware agent
-// ordering payload. The daemon owns the read-modify-write: it reads the run's
-// record, appends a mid-run switch, and writes the whole record back, so the
-// database stores an opaque JSON blob exactly as it does for the CI rerun
-// state.
-func (d *DB) SetRunQuotaRouting(id, payload string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET quota_routing = ?, updated_at = ? WHERE id = ?`, payload, now(), id)
-	if err != nil {
-		return fmt.Errorf("set run quota routing: %w", err)
-	}
-	return nil
-}
-
-// GetRunQuotaRouting returns the run's stored quota-routing payload, or the
-// empty string when the run has none (feature off, or a pre-feature run).
-func (d *DB) GetRunQuotaRouting(id string) (string, error) {
-	var payload sql.NullString
-	err := d.sql.QueryRow(`SELECT quota_routing FROM runs WHERE id = ?`, id).Scan(&payload)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("get run quota routing: %w", err)
-	}
-	return payload.String, nil
 }
 
 // GetRunCIRerunState returns the CI step's persisted rerun budget for a run, or

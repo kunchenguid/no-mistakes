@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +32,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
-	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -235,29 +233,13 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, fmt.Errorf("resolve forge profile: %w", err)
 	}
-	// A recovered run replays the quota-routing record its original setup
-	// persisted: an unusable one fails recovery closed, because silently
-	// resuming on the configured order would resume a different run than the
-	// one that was parked.
-	quotaRecord, err := storedQuotaRoutingRecord(run.QuotaRouting)
-	if err != nil {
-		return nil, err
-	}
-	if quotaRecord == nil {
-		cfg.QuotaRouting.Enabled = false
-	}
+	// A run uses one omp configuration; no agent-order record is replayed.
 	if _, err := m.db.RunCommitIdentity(run.ID); err != nil {
 		return nil, err
 	}
-	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
+	ag, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		return nil, err
-	}
-	if cfg.SessionReuse {
-		if err := validateRecoveredSessionProviders(m.db, run.ID, ag); err != nil {
-			_ = ag.Close()
-			return nil, err
-		}
 	}
 	return &recoveredRunPlan{
 		run:     run,
@@ -269,25 +251,6 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		steps:   execSteps,
 		forge:   forgeCtx,
 	}, nil
-}
-
-func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.Agent) error {
-	sessions, err := database.GetRunAgentSessions(runID)
-	if err != nil {
-		return fmt.Errorf("get run sessions: %w", err)
-	}
-	for _, session := range sessions {
-		if session.Role != string(pipeline.SessionRoleReviewer) && session.Role != string(pipeline.SessionRoleFixer) {
-			return fmt.Errorf("recovered run has unknown session role %q", session.Role)
-		}
-		if session.Agent == "" || session.SessionID == "" {
-			return fmt.Errorf("recovered run has incomplete session metadata")
-		}
-		if session.Role == string(pipeline.SessionRoleFixer) && !agent.SupportsSessionProvider(ag, session.Agent) {
-			return fmt.Errorf("session provider %q is no longer configured", session.Agent)
-		}
-	}
-	return nil
 }
 
 func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) (*config.Config, error) {
@@ -337,10 +300,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		return nil, err
 	}
 	cfg.Gates = gates
-	if err := cfg.ApplyPiProfile(run.PiProfile); err != nil {
-		return nil, err
-	}
-	if err := cfg.ApplyReviewerProfile(run.ReviewerProfile); err != nil {
+	if err := cfg.ApplyRunProfile(run.RunProfile); err != nil {
 		return nil, err
 	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
@@ -372,131 +332,35 @@ func (m *RunManager) pinnedRunGates(runID string) ([]config.Gate, error) {
 	return gates, nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, quota *quotarouting.Record) (agent.Agent, *quotarouting.Record, error) {
+func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if steps.IsDemoMode() {
-		return agent.NewNoop(), nil, nil
+		return agent.NewNoop(), nil
 	}
-	primary, record, err := newConfiguredAgent(ctx, cfg, evidenceRoot, lookPath, environment, quota)
-	if err != nil {
-		return nil, nil, err
-	}
-	roles := make(map[string]agent.Agent, len(cfg.ReviewAgents))
-	for _, role := range config.ReviewAgentRoles {
-		entry, ok := cfg.ReviewAgents[role]
-		if !ok {
-			continue
-		}
-		next, err := newReviewRoleAgent(ctx, cfg, entry, evidenceRoot, lookPath, environment)
-		if err != nil {
-			_ = primary.Close()
-			for _, existing := range roles {
-				_ = existing.Close()
-			}
-			return nil, nil, fmt.Errorf("create review_agents.%s: %w", role, err)
-		}
-		roles[role] = next
-	}
-	return agent.WithReviewRoles(primary, agent.ReviewRoles{
-		Reviewer: agent.RoundedRole{
-			Agent:    roles[config.RoleReviewer],
-			Late:     roles[config.RoleReviewerAfterRound],
-			LateFrom: cfg.ReviewAgentTakeoverRound(config.RoleReviewerAfterRound),
-		},
-		Fixer: agent.RoundedRole{
-			Agent:    roles[config.RoleFixer],
-			Late:     roles[config.RoleFixerAfterRound],
-			LateFrom: cfg.ReviewAgentTakeoverRound(config.RoleFixerAfterRound),
-		},
-	}), record, nil
+	return newConfiguredAgent(ctx, cfg, evidenceRoot, lookPath, environment)
 }
 
-func newReviewRoleAgent(ctx context.Context, cfg *config.Config, entry config.ReviewAgent, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
-	var created []agent.Agent
-	var models []string
-	for _, candidate := range append([]config.ReviewAgent{entry}, entry.Fallback...) {
-		roleConfig := cfg.ForReviewAgent(candidate)
-		roleConfig.QuotaRouting.Enabled = false
-		next, _, err := newConfiguredAgent(ctx, roleConfig, evidenceRoot, lookPath, environment, nil)
-		if err != nil {
-			for _, existing := range created {
-				_ = existing.Close()
-			}
-			return nil, err
-		}
-		created = append(created, next)
-		models = append(models, roleConfig.AgentProfileFor(candidate.Agent).Model)
-	}
-	if len(entry.Fallback) == 0 {
-		return created[0], nil
-	}
-	return agent.NewFallback(created, agent.WithReviewerQuotaFallback(models...)), nil
-}
-
-func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, quota *quotarouting.Record) (agent.Agent, *quotarouting.Record, error) {
+func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	agents := cfg.Agents
-	if len(agents) == 0 {
-		agents = []types.AgentName{cfg.Agent}
+	next, err := agent.NewWithOptions(cfg.Agent, cfg.AgentPath(), cfg.AgentArgs(), agent.Options{
+		DisableProjectSettings: cfg.DisableProjectSettings,
+		Profile:                cfg.AgentProfile(),
+		Environment:            environment,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create agent %s: %w", cfg.Agent, err)
 	}
-	// Quota routing reorders the resolved list exactly once per run: either a
-	// stored record is applied (a recovered run keeps its original choice) or,
-	// when the feature is on and no record was supplied, one fresh quota-axi
-	// read selects the order. An enabled record also turns on the mid-run
-	// quota switch; the feature being off leaves today's chain byte-for-byte.
-	record := quota
-	switchActive := false
-	if record != nil {
-		agents, switchActive = applyQuotaRoutingRecord(record, agents)
-	} else {
-		record = quotaRoutingRecordForRun(ctx, cfg, agents)
-		agents, switchActive = applyQuotaRoutingRecord(record, agents)
-	}
-	if switchActive {
-		found := false
-		for _, name := range agents {
-			found = found || types.CanonicalAgentName(name) == types.CanonicalAgentName(types.AgentName(record.CurrentAgent()))
-		}
-		if !found {
-			return nil, nil, fmt.Errorf("quota routing agent %q is no longer available", record.CurrentAgent())
-		}
-	}
-	created := make([]agent.Agent, 0, len(agents))
-	for _, name := range agents {
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
-			DisableProjectSettings: cfg.DisableProjectSettings,
-			Profile:                cfg.AgentProfileFor(name),
-			Environment:            environment,
-		})
-		if err != nil {
-			for _, existing := range created {
-				_ = existing.Close()
-			}
-			return nil, nil, fmt.Errorf("create agent %s: %w", name, err)
-		}
-		created = append(created, agent.WithSteering(next, evidenceRoot))
-	}
-	var fallbackOpts []agent.FallbackOption
-	if switchActive {
-		start := ""
-		if len(record.Switches) > 0 {
-			start = record.CurrentAgent()
-		}
-		fallbackOpts = append(fallbackOpts, agent.WithQuotaSwitch(start))
-	}
-	ag := agent.NewFallback(created, fallbackOpts...)
-	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
-	// unverified harness when the repo disabled project settings; otherwise run
-	// every adapter as before.
+	ag := agent.WithSteering(next, evidenceRoot)
+	// Fail closed ONLY under the trusted opt-out: refuse an agent that cannot
+	// prove it suppresses the target repo's project instructions.
 	if cfg.DisableProjectSettings {
 		if err := agent.EnsureGateNeutralized(ag); err != nil {
 			_ = ag.Close()
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	return ag, record, nil
+	return ag, nil
 }
 
 func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
@@ -1064,7 +928,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
 	}
 	if params.LaunchNonce != "" {
-		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile, params.ReviewerProfile)
+		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.RunProfile)
 		if err != nil {
 			return "", err
 		}
@@ -1073,7 +937,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 	if m.restart.beforeStartRun != nil {
 		m.restart.beforeStartRun()
 	}
-	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile, params.ReviewerProfile)
+	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.RunProfile)
 	if errors.Is(err, errRestartPending) {
 		// The restart was scheduled while this push waited for its branch:
 		// hold it rather than drop it, since the hook never retries. A
@@ -1112,14 +976,14 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartF
 	if repo == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo %s", params.RepoID)
 	}
-	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile, params.ReviewerProfile)
+	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.RunProfile)
 }
 
 // startFreshLaunch owns proof identity under the branch lock. A nonce may
 // replay only its immutable submitted-head, generation, and persisted-intent
 // digest. It must never fall back to ordinary same-head reattachment.
 func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (ipc.LaunchReceipt, error) {
-	request := agentcfg.OptionalPiProfile(profiles)
+	request := agentcfg.OptionalRunProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return ipc.LaunchReceipt{}, err
 	}
@@ -1162,11 +1026,8 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			if planID != "" && (existing.VerificationPlan == nil || existing.VerificationPlan.ID != planID) {
 				return "", fmt.Errorf("verification plan cannot replace an existing run attachment")
 			}
-			if !existing.PiProfile.Matches(request) {
-				return "", fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
-			}
-			if !existing.ReviewerProfile.Matches(agentcfg.OptionalReviewerProfile(profiles)) {
-				return "", fmt.Errorf("conflicting launch_nonce: reviewer differs from run pin")
+			if !existing.RunProfile.Matches(request) {
+				return "", fmt.Errorf("conflicting launch_nonce: run profile differs from run pin")
 			}
 			if !launchPRBaseBranchMatches(existing, storedPRBaseBranch) {
 				return "", conflictingLaunchPRBaseBranch(launchNonce)
@@ -1357,8 +1218,7 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 		disposition = "created"
 	}
 	return ipc.LaunchReceipt{
-		PiProfile:            run.PiProfile,
-		ReviewerProfile:      run.ReviewerProfile,
+		RunProfile:           run.RunProfile,
 		RunID:                run.ID,
 		Disposition:          disposition,
 		LaunchNonce:          *run.LaunchNonce,
@@ -1476,10 +1336,6 @@ func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRu
 	// Closing references are structured run metadata and survive reruns: an
 	// explicit request is added to, never replaces, what the selected run carried.
 	closingIssues = append(append([]string(nil), selectedRun.ClosingIssueRefs...), closingIssues...)
-	// A rerun inherits the reviewer unless the caller explicitly replaces it.
-	if !freshLaunch && agentcfg.OptionalReviewerProfile(profiles) == nil && selectedRun.ReviewerProfile != nil {
-		profiles = append(profiles, agentcfg.InheritReviewerProfile(selectedRun.ReviewerProfile))
-	}
 	if homes == nil {
 		homes = selectedRun.TranscriptHomes
 	}
@@ -1630,24 +1486,16 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 	return sha, nil
 }
 
-// validatePiProfileAgentsBeforeCancel loads the effective trusted repo agent
-// selection (and, when allow_repo_commands is set, the pushed copy) from the
-// gate and runs the same check ValidatePiProfileAgents will run after merge.
-// A trusted default-branch Claude or mixed fallback list must fail here, not
-// after cancelActiveRuns has already stopped a healthy validation. This is also
-// the first point where a trusted repository Pi override can replace a global
-// auto or non-Pi selection, so profile resolution must not reject it earlier.
-func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, reviewers ...*agentcfg.ReviewerProfile) error {
-	cfg, _, err := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "Pi run profile")
+// validateRunProfileAgentsBeforeCancel loads the effective trusted repo agent
+// selection from the gate and runs the same check ValidateRunProfileAgents will
+// run after merge. A trusted non-omp selection must fail here, not after
+// cancelActiveRuns has already stopped a healthy validation.
+func (m *RunManager) validateRunProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) error {
+	cfg, _, err := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "run profile")
 	if err != nil {
 		return err
 	}
-	if len(reviewers) > 0 && reviewers[0] != nil {
-		cfg.ReviewAgents = maps.Clone(cfg.ReviewAgents)
-		delete(cfg.ReviewAgents, config.RoleReviewer)
-		delete(cfg.ReviewAgents, config.RoleReviewerAfterRound)
-	}
-	return cfg.ValidatePiProfileAgents()
+	return cfg.ValidateRunProfileAgents()
 }
 
 // applyPinnedIntentCheck makes an existing run keep the policy under which it
@@ -1842,7 +1690,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 
 	// Resolve before cancellation, row creation or any pipeline work. A bad
 	// dispatch request must not supersede a healthy active validation.
-	// ResolvePiProfile pins model/effort from global-only defaults. Agent
+	// ResolveRunProfile pins model/effort from global-only defaults. Agent
 	// eligibility is checked next against the effective freshly fetched trusted
 	// repository selection, which may replace the global agent or fallback list.
 	//
@@ -1856,25 +1704,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		storedIntent = strings.TrimSpace(storedIntent)
 	}
 	globalCfg, globalCfgErr := config.LoadGlobal(m.paths.ConfigFile())
-	var reviewer *agentcfg.ReviewerProfile
-	if request := agentcfg.OptionalReviewerProfile(profiles); request != nil {
-		if globalCfgErr != nil {
-			return "", fmt.Errorf("load global config: %w", globalCfgErr)
-		}
-		var err error
-		if agentcfg.ReviewerProfileInherited(profiles) {
-			resolved := *request
-			reviewer, err = &resolved, resolved.Validate()
-		} else {
-			reviewer, err = globalCfg.ResolveReviewerProfile(request)
-		}
-		if err != nil {
-			return "", err
-		}
-		if err := m.validateReviewerBeforeCancel(ctx, repo, headSHA, globalCfg, reviewer); err != nil {
-			return "", err
-		}
-	}
 	if globalCfgErr != nil && strings.Contains(globalCfgErr.Error(), "intent.check") {
 		trackStartFailure("intent_check_config")
 		return "", fmt.Errorf("load intent check policy: %w", globalCfgErr)
@@ -1924,19 +1753,19 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		intentCheckJSON = string(policy)
 	}
 
-	var pin *agentcfg.PiProfile
-	if request := agentcfg.OptionalPiProfile(profiles); request != nil {
+	var pin *agentcfg.RunProfile
+	if request := agentcfg.OptionalRunProfile(profiles); request != nil {
 		if globalCfgErr != nil {
 			trackStartFailure("load_global_config")
 			return "", fmt.Errorf("load global config: %w", globalCfgErr)
 		}
 		var err error
-		pin, err = globalCfg.ResolvePiProfile(request)
+		pin, err = globalCfg.ResolveRunProfile(request)
 		if err != nil {
 			trackStartFailure("invalid_pi_profile")
 			return "", err
 		}
-		if err := m.validatePiProfileAgentsBeforeCancel(ctx, repo, headSHA, globalCfg, reviewer); err != nil {
+		if err := m.validateRunProfileAgentsBeforeCancel(ctx, repo, headSHA, globalCfg); err != nil {
 			trackStartFailure("invalid_pi_profile")
 			return "", err
 		}
@@ -1995,7 +1824,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithDestinationAndCallerRestrictions(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, destination, restrictions, pin, reviewer)
+	run, err := m.db.InsertRunWithDestinationAndCallerRestrictions(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, destination, restrictions, pin)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -2218,24 +2047,15 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			return "", err
 		}
 	}
-	if run.PiProfile != nil {
-		if run.ReviewerProfile != nil {
-			cfg.ReviewAgents = maps.Clone(cfg.ReviewAgents)
-			delete(cfg.ReviewAgents, config.RoleReviewer)
-			delete(cfg.ReviewAgents, config.RoleReviewerAfterRound)
-		}
-		if err := cfg.ValidatePiProfileAgents(); err != nil {
+	if run.RunProfile != nil {
+		if err := cfg.ValidateRunProfileAgents(); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			return "", err
 		}
-		if err := cfg.ApplyPiProfile(run.PiProfile); err != nil {
+		if err := cfg.ApplyRunProfile(run.RunProfile); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			return "", err
 		}
-	}
-	if err := cfg.ApplyReviewerProfile(run.ReviewerProfile); err != nil {
-		m.db.UpdateRunError(run.ID, err.Error())
-		return "", err
 	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
@@ -2261,19 +2081,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}
 
 	// Create agent. In demo mode, newPipelineAgent returns a no-op agent, and it
-	// wires review-role routing plus the trusted-opt-out gate-neutralization
-	// fail-closed check. The quota-aware record is fresh-read here (a nil
-	// input) and persisted beside the gates pin below.
-	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), nil)
+	// wires the trusted-opt-out gate-neutralization fail-closed check.
+	ag, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")
-		return "", err
-	}
-	if err := persistQuotaRoutingRecord(m.db, run.ID, quotaRecord); err != nil {
-		_ = ag.Close()
-		m.db.UpdateRunError(run.ID, err.Error())
-		trackStartFailure("record_quota_routing")
 		return "", err
 	}
 

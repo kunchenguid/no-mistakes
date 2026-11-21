@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -232,7 +231,7 @@ func TestCallerRestrictionsPrivateDaemonStartupRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	mock := writeMockClaude(t, t.TempDir())
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mock+"\n"), 0600); err != nil {
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: omp\nagent_path_override:\n  omp: "+mock+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	d, err := db.Open(p.DB())
@@ -310,46 +309,5 @@ func TestCallerRestrictionsPrivateDaemonStartupRecovery(t *testing.T) {
 	}
 	if final := waitForRunTerminalState(t, d, run.ID); final.Status != types.RunCompleted {
 		t.Fatalf("recovered run failed: %+v", final)
-	}
-}
-
-func TestCallerRestrictionsRetryInheritsTheFailedRunsRecord(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("provider-outage fixture uses a POSIX script")
-	}
-	review := &correctingReviewStep{}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepRebase}, review}
-	})
-	repo, head := setupTestGitRepo(t, p, d, "restrictions-retry")
-	flag := filepath.Join(t.TempDir(), "outage")
-	if err := os.WriteFile(flag, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	writeProviderOutageClaude(t, p, flag)
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	record := daemonCallerRestrictions(t, "Only the synthetic fixture may be changed.\n")
-	var first ipc.PushReceivedResult
-	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", New: head, Old: head, Intent: "fixture", CallerRestrictions: record}, &first); err != nil {
-		t.Fatal(err)
-	}
-	failed := waitForRunTerminalState(t, d, first.RunID)
-	if failed.Status != types.RunFailed {
-		t.Fatalf("outage not exercised: %+v", failed)
-	}
-	if err := os.Remove(flag); err != nil {
-		t.Fatal(err)
-	}
-	var retried ipc.RetryRunResult
-	if err := client.Call(ipc.MethodRetryRun, &ipc.RetryRunParams{RepoID: repo.ID, Branch: "main", RunID: failed.ID, CallerHeadSHA: failed.HeadSHA}, &retried); err != nil {
-		t.Fatal(err)
-	}
-	final := waitForRunTerminalState(t, d, retried.RunID)
-	if final.Status != types.RunCompleted || final.CallerRestrictions == nil || *final.CallerRestrictions != *record {
-		t.Fatalf("retry changed restrictions: %+v", final)
 	}
 }

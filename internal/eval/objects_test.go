@@ -146,7 +146,7 @@ func TestPruneKeepsCasesReservedByAReplaySession(t *testing.T) {
 	for i, id := range []string{"a", "b", "c"} {
 		seedCase(t, store, id, int64(i))
 	}
-	_, session, err := store.prepareReplay(ctx, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1})
+	_, session, err := store.prepareReplay(ctx, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

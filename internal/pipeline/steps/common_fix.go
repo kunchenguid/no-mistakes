@@ -30,10 +30,6 @@ type fixExecutionOptions struct {
 	// post-agent commit work on the step context. Review uses it to apply a
 	// fresh review_agent_timeout stall budget at the instant each fixer starts.
 	RunAgent func(agent.RunOpts) (*agent.Result, error)
-	// SessionRole, when set, runs the fix turn in that durable review-loop
-	// session (the review step's fixer role). Steps outside the review loop
-	// leave it empty and stay session-isolated.
-	SessionRole pipeline.SessionRole
 	// Purpose labels the invocation for local performance telemetry.
 	Purpose string
 	// Workload records the bounded size of the change under fix for local
@@ -645,7 +641,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.RunAgent != nil {
 		result, err = opts.RunAgent(runOpts)
 	} else {
-		result, err = sctx.RunAgentSessionContext(sctx.Ctx, opts.SessionRole, runOpts)
+		result, err = sctx.RunAgentContext(sctx.Ctx, runOpts)
 	}
 	if err != nil {
 		if opts.ErrorPrefix == "" {

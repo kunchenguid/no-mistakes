@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -24,33 +23,6 @@ import (
 )
 
 // --- RunManager integration tests ---
-
-func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *testing.T) {
-	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	repo, err := database.InsertRepo("/tmp/repo", "https://example.com/repo.git", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := database.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleFixer), "codex", "fixer-session"); err != nil {
-		t.Fatal(err)
-	}
-	claude, err := agent.New(types.AgentClaude, "claude", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer claude.Close()
-	if err := validateRecoveredSessionProviders(database, run.ID, claude); err == nil || !strings.Contains(err.Error(), `session provider "codex" is no longer configured`) {
-		t.Fatalf("validate recovered fixer provider error = %v", err)
-	}
-}
 
 func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	recorder := &telemetryRecorder{}
@@ -93,8 +65,8 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	if got := started.fields["trigger"]; got != "push" {
 		t.Fatalf("started trigger = %v, want push", got)
 	}
-	if got := started.fields["agent"]; got != string(types.AgentClaude) {
-		t.Fatalf("started agent = %v, want %q", got, types.AgentClaude)
+	if got := started.fields["agent"]; got != string(types.AgentOMP) {
+		t.Fatalf("started agent = %v, want %q", got, types.AgentOMP)
 	}
 	if got := started.fields["branch_role"]; got != "default" {
 		t.Fatalf("started branch_role = %v, want default", got)
@@ -1503,7 +1475,7 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	})
 
 	slowClaude := writeSlowMockClaude(t, t.TempDir())
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+slowClaude+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: omp\nagent_path_override:\n  omp: "+slowClaude+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1632,7 +1604,7 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 		return []pipeline.Step{step}
 	})
 
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: /path/that/does/not/exist\n"), 0o644); err != nil {
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: omp\nagent_path_override:\n  omp: /path/that/does/not/exist\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

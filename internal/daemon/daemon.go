@@ -1343,8 +1343,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if strings.TrimSpace(p.Gate) == "" {
 			return nil, fmt.Errorf("gate path is required")
 		}
-		repoID, err := ownedGateRepoID(mgr.paths, p.Gate)
-		if err != nil {
+		if _, err := ownedGateRepoID(mgr.paths, p.Gate); err != nil {
 			return nil, err
 		}
 		result, err := classify(ctx, "", false, true)
@@ -1352,15 +1351,6 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, err
 		}
 		admission := &ipc.AdmitPushResult{Context: gateContextResult(result)}
-		if !result.Nested && p.ReviewerProfile != nil {
-			// Trusted project-instruction suppression can make an installed
-			// reviewer unrunnable, so admission needs the same fresh-policy
-			// check as AXI preflight rather than a binary-presence check alone.
-			if _, err := mgr.resolveReviewerProfile(ctx, repoID, p.ReviewerProfile); err != nil {
-				return nil, err
-			}
-			admission.ReviewerValidated = true
-		}
 		return admission, nil
 	})
 
@@ -1379,7 +1369,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceiptWithDestinationAndCallerRestrictions(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.BaseRemote, p.CallerRestrictionsDigest, p.PiProfile, p.ReviewerProfile)
+		run, claimed, err := d.ClaimLaunchReceiptWithDestinationAndCallerRestrictions(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.BaseRemote, p.CallerRestrictionsDigest, p.RunProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1389,11 +1379,8 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := matchingIntegrationRequest(integration.WithRemote(ctx, p.BaseRemote), run); err != nil {
 			return nil, err
 		}
-		if !run.PiProfile.Matches(p.PiProfile) {
-			return nil, fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
-		}
-		if !run.ReviewerProfile.Matches(p.ReviewerProfile) {
-			return nil, fmt.Errorf("conflicting launch_nonce: reviewer differs from run pin")
+		if !run.RunProfile.Matches(p.RunProfile) {
+			return nil, fmt.Errorf("conflicting launch_nonce: run profile differs from run pin")
 		}
 		if !launchPRBaseBranchMatches(run, prBaseBranch) {
 			return nil, conflictingLaunchPRBaseBranch(p.LaunchNonce)
@@ -1477,23 +1464,16 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return nil, err
 	})
 
-	srv.Handle(ipc.MethodResolvePiProfile, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
-		var request agentcfg.PiProfile
+	srv.Handle(ipc.MethodResolveRunProfile, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var request agentcfg.RunProfile
 		if err := json.Unmarshal(params, &request); err != nil {
-			return nil, fmt.Errorf("invalid Pi profile request")
+			return nil, fmt.Errorf("invalid run profile request")
 		}
 		cfg, err := config.LoadGlobal(mgr.paths.ConfigFile())
 		if err != nil {
 			return nil, fmt.Errorf("load global config: %w", err)
 		}
-		return cfg.ResolvePiProfile(&request)
-	})
-	srv.Handle(ipc.MethodResolveReviewerProfile, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
-		var request ipc.ResolveReviewerProfileParams
-		if err := json.Unmarshal(params, &request); err != nil {
-			return nil, fmt.Errorf("invalid reviewer selection")
-		}
-		return mgr.resolveReviewerProfile(ctx, request.RepoID, request.ReviewerProfile)
+		return cfg.ResolveRunProfile(&request)
 	})
 
 	srv.Handle(ipc.MethodProbeBaseRemote, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1527,7 +1507,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, err
 		}
 		ctx = callerrestrictions.WithLaunchRecord(ctx, p.CallerRestrictions)
-		runID, err := mgr.handleRerun(integration.WithRemote(ctx, p.BaseRemote), p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
+		runID, err := mgr.handleRerun(integration.WithRemote(ctx, p.BaseRemote), p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.RunProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1727,9 +1707,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		OmitIntent:               r.OmitIntent,
 		PRTitleFresh:             r.PRTitleFresh,
 		PRBodyFresh:              r.PRBodyFresh,
-		QuotaRouting:             r.QuotaRouting,
-		PiProfile:                r.PiProfile,
-		ReviewerProfile:          r.ReviewerProfile,
+		RunProfile:               r.RunProfile,
 		VerificationPlan:         r.VerificationPlan,
 		AwaitingAgent:            r.AwaitingAgentSince != nil,
 		AwaitingAgentSince:       r.AwaitingAgentSince,
