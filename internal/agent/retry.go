@@ -227,24 +227,16 @@ func classifyTransient(err error) (string, bool) {
 	if isTerminalRetryError(msg) {
 		return "", false
 	}
-	const piMissingOutputPrefix = "pi did not finish by calling no_mistakes_output alone"
-	if strings.HasPrefix(msg, piMissingOutputPrefix) {
-		stderr := strings.TrimSpace(strings.TrimPrefix(msg[len(piMissingOutputPrefix):], ":"))
-		if isPiPermanentStderr(stderr) {
-			return "", false
-		}
-		return "pi missing output tool", true
-	}
-	const piExitPrefix = "pi exited: "
-	if strings.HasPrefix(msg, piExitPrefix) {
-		if separator := strings.Index(msg[len(piExitPrefix):], ": "); separator >= 0 {
-			separator += len(piExitPrefix)
+	const ompExitPrefix = "omp exited: "
+	if strings.HasPrefix(msg, ompExitPrefix) {
+		if separator := strings.Index(msg[len(ompExitPrefix):], ": "); separator >= 0 {
+			separator += len(ompExitPrefix)
 			stderr := strings.TrimSpace(msg[separator+2:])
 			if strings.Contains(stderr, "fetch failed") {
-				if isPiPermanentStderr(stderr) {
+				if isPermanentStderr(stderr) {
 					return "", false
 				}
-				return "pi fetch failed", true
+				return "omp fetch failed", true
 			}
 		}
 	}
@@ -259,7 +251,7 @@ func classifyTransient(err error) (string, bool) {
 	return "", false
 }
 
-func isPiPermanentStderr(stderr string) bool {
+func isPermanentStderr(stderr string) bool {
 	for _, sig := range terminalNeedles {
 		if strings.Contains(stderr, sig.needle) {
 			return true

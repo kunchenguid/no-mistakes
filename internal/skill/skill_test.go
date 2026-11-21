@@ -147,7 +147,6 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	wantRel := []string{
-		filepath.Join(".claude", "skills", Name, "SKILL.md"),
 		filepath.Join(".agents", "skills", Name, "SKILL.md"),
 	}
 	if len(written) != len(wantRel) {
@@ -202,7 +201,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if _, err := Install(root); err != nil {
 		t.Fatalf("second install: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".claude", "skills", Name, "SKILL.md"))
+	data, err := os.ReadFile(filepath.Join(root, ".agents", "skills", Name, "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,92 +216,13 @@ func TestInstallIsIdempotent(t *testing.T) {
 // other way. In every case Install must succeed and the skill must be
 // reachable via both logical bases - including when the symlink target dir
 // does not exist yet.
-func TestInstallSymlinkLayouts(t *testing.T) {
-	tests := []struct {
-		name  string
-		setup func(t *testing.T, root string)
-	}{
-		{
-			name: "claude_skills_link_target_exists",
-			setup: func(t *testing.T, root string) {
-				mkdirAll(t, filepath.Join(root, ".agents", "skills"))
-				mkdirAll(t, filepath.Join(root, ".claude"))
-				symlink(t, filepath.Join("..", ".agents", "skills"), filepath.Join(root, ".claude", "skills"))
-			},
-		},
-		{
-			name: "claude_skills_link_target_missing",
-			setup: func(t *testing.T, root string) {
-				mkdirAll(t, filepath.Join(root, ".claude"))
-				symlink(t, filepath.Join("..", ".agents", "skills"), filepath.Join(root, ".claude", "skills"))
-			},
-		},
-		{
-			name: "claude_dir_link",
-			setup: func(t *testing.T, root string) {
-				mkdirAll(t, filepath.Join(root, ".agents"))
-				symlink(t, ".agents", filepath.Join(root, ".claude"))
-			},
-		},
-		{
-			name: "agents_skills_link_reverse",
-			setup: func(t *testing.T, root string) {
-				mkdirAll(t, filepath.Join(root, ".claude", "skills"))
-				mkdirAll(t, filepath.Join(root, ".agents"))
-				symlink(t, filepath.Join("..", ".claude", "skills"), filepath.Join(root, ".agents", "skills"))
-			},
-		},
-		{
-			name: "agents_dir_link_reverse",
-			setup: func(t *testing.T, root string) {
-				mkdirAll(t, filepath.Join(root, ".claude"))
-				symlink(t, ".claude", filepath.Join(root, ".agents"))
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			tt.setup(t, root)
-
-			written, err := Install(root)
-			if err != nil {
-				t.Fatalf("Install: %v", err)
-			}
-
-			// Every reported path must be readable with current content.
-			for _, rel := range written {
-				data, err := os.ReadFile(filepath.Join(root, rel))
-				if err != nil {
-					t.Fatalf("read reported %s: %v", rel, err)
-				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", rel)
-				}
-			}
-
-			// The skill must be discoverable via both logical bases no matter
-			// which side carries the symlink.
-			for _, base := range InstallBases {
-				p := filepath.Join(root, base, Name, "SKILL.md")
-				data, err := os.ReadFile(p)
-				if err != nil {
-					t.Fatalf("skill not reachable via %s: %v", base, err)
-				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", base)
-				}
-			}
-		})
-	}
-}
 
 // TestInstallOverwritesStaleContent guards the upgrade path: an older SKILL.md
 // left by a previous binary version must be refreshed to current content when
 // Install runs again.
 func TestInstallOverwritesStaleContent(t *testing.T) {
 	root := t.TempDir()
-	stale := filepath.Join(root, ".claude", "skills", Name, "SKILL.md")
+	stale := filepath.Join(root, ".agents", "skills", Name, "SKILL.md")
 	mkdirAll(t, filepath.Dir(stale))
 	if err := os.WriteFile(stale, []byte("---\nname: "+Name+"\n---\nstale body\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -316,16 +236,6 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	}
 	if string(data) != Markdown() {
 		t.Errorf("stale SKILL.md was not refreshed to current content")
-	}
-}
-
-func TestInstallRejectsSymlinkCycle(t *testing.T) {
-	root := t.TempDir()
-	symlink(t, ".agents", filepath.Join(root, ".claude"))
-	symlink(t, ".claude", filepath.Join(root, ".agents"))
-
-	if _, err := Install(root); err == nil {
-		t.Fatalf("Install succeeded with cyclic skill directory symlinks")
 	}
 }
 
@@ -348,7 +258,6 @@ func TestVendored(t *testing.T) {
 			}
 		}
 		want := []string{
-			filepath.Join(".claude", "skills", Name, "SKILL.md"),
 			filepath.Join(".agents", "skills", Name, "SKILL.md"),
 		}
 		got := Vendored(root)
@@ -377,7 +286,7 @@ func TestVendored(t *testing.T) {
 
 	t.Run("unrelated_skill_ignored", func(t *testing.T) {
 		root := t.TempDir()
-		dir := filepath.Join(root, ".claude", "skills", "other-skill")
+		dir := filepath.Join(root, ".agents", "skills", "other-skill")
 		mkdirAll(t, dir)
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("other"), 0o644); err != nil {
 			t.Fatal(err)

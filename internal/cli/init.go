@@ -122,7 +122,7 @@ func newInitCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
 	cmd.Flags().StringVar(&worktreeRoot, "worktree-root", "", "Directory to create this repository's run worktrees in, so directory-scoped toolchain config (mise, direnv) reaches them; prints the worktree_roots entry to add to the global config")
-	cmd.Flags().BoolVar(&skipUserSkill, "skip-user-skill", false, "Do not install or refresh the /no-mistakes agent skill at user level (~/.claude/skills and ~/.agents/skills)")
+	cmd.Flags().BoolVar(&skipUserSkill, "skip-user-skill", false, "Do not install or refresh the /no-mistakes agent skill at user level (~/.agents/skills)")
 	return cmd
 }
 
