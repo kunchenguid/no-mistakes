@@ -442,12 +442,8 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	}
 
 	parkedStarted := time.Now()
-	plans := mgr.recoverableParkedRuns(context.Background())
-	preserved := make(map[string]struct{}, len(plans))
-	for _, plan := range plans {
-		preserved[plan.run.ID] = struct{}{}
-	}
-	logStartupPhase("parked_runs", parkedStarted, "preserved", len(plans))
+	plans, preserved := mgr.recoverableParkedRuns(context.Background())
+	logStartupPhase("parked_runs", parkedStarted, "preserved", len(preserved))
 
 	// Read while the runs that were executing when this daemon started still say
 	// so: recovery below turns them terminal, and they are the ones whose
