@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
-	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 	"github.com/spf13/cobra"
@@ -115,19 +113,15 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	PiProfile        *agentcfg.PiProfile
-	ReviewerProfile  *agentcfg.ReviewerProfile
+	RunProfile       *agentcfg.RunProfile
 	VerificationPlan *verificationplan.Snapshot
-	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
-	// the feature was off for this run.
-	QuotaRouting *quotarouting.Record
-	ID           string
-	Branch       string
-	Status       string
-	HeadSHA      string
-	PRURL        string
-	CIReady      bool
-	CIReadyNoCI  bool
+	ID               string
+	Branch           string
+	Status           string
+	HeadSHA          string
+	PRURL            string
+	CIReady          bool
+	CIReadyNoCI      bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -154,16 +148,10 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
-		PiProfile:          r.PiProfile,
-		ReviewerProfile:    r.ReviewerProfile,
+		RunProfile:         r.RunProfile,
 		VerificationPlan:   r.VerificationPlan,
 		RetryOf:            r.RetryOf,
 		RetriedBy:          r.RetriedBy,
-	}
-	if payload, err := quotarouting.ParseRecord(r.QuotaRouting); err != nil {
-		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
-	} else if payload != nil {
-		rv.QuotaRouting = payload
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -201,19 +189,13 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
-		PiProfile:          r.PiProfile,
-		ReviewerProfile:    r.ReviewerProfile,
+		RunProfile:         r.RunProfile,
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
-	}
-	if payload, err := quotarouting.ParseRecord(r.QuotaRouting); err != nil {
-		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
-	} else if payload != nil {
-		rv.QuotaRouting = payload
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -532,21 +514,10 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	} else {
 		fields = append(fields, toon.Field{Key: "verification_plan", Value: "none"})
 	}
-	if rv.PiProfile != nil {
-		fields = append(fields, toon.Field{Key: "pi_profile", Value: toon.NewObject(
-			toon.Field{Key: "model", Value: rv.PiProfile.Model},
-			toon.Field{Key: "effort", Value: string(rv.PiProfile.Effort)},
-		)})
-	}
-	if rv.QuotaRouting != nil {
-		// The primary's quota selection remains independent of the reviewer.
-		fields = append(fields, quotaRoutingField(rv.QuotaRouting))
-	}
-	if rv.ReviewerProfile != nil {
-		fields = append(fields, toon.Field{Key: "reviewer_profile", Value: toon.NewObject(
-			toon.Field{Key: "agent", Value: string(rv.ReviewerProfile.Agent)},
-			toon.Field{Key: "model", Value: rv.ReviewerProfile.Model},
-			toon.Field{Key: "effort", Value: string(rv.ReviewerProfile.Effort)},
+	if rv.RunProfile != nil {
+		fields = append(fields, toon.Field{Key: "run_profile", Value: toon.NewObject(
+			toon.Field{Key: "model", Value: rv.RunProfile.Model},
+			toon.Field{Key: "effort", Value: string(rv.RunProfile.Effort)},
 		)})
 	}
 	if rv.PRURL != "" {
@@ -579,75 +550,6 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 // choice, why the order is what it is, the per-candidate evidence table, and
 // any mid-run switches. Everything here is local-only data the daemon already
 // holds; nothing in the record names a prompt, output, or credential.
-func quotaRoutingField(record *quotarouting.Record) toon.Field {
-	fields := []toon.Field{
-		{Key: "enabled", Value: record.Enabled},
-		{Key: "choice", Value: record.Choice},
-		{Key: "reason", Value: record.Reason},
-	}
-	if len(record.Order) > 0 {
-		fields = append(fields, toon.Field{Key: "order", Value: strings.Join(record.Order, ", ")})
-	}
-	candidates := make([]quotaCandidateRow, 0, len(record.Candidates))
-	for _, c := range record.Candidates {
-		row := quotaCandidateRow{
-			Agent:    string(c.Agent),
-			Provider: c.Provider,
-			Account:  c.Account,
-			Scope:    c.Scope,
-			Runway:   c.Runway,
-			Status:   quotaCandidateStatus(c),
-			Reason:   c.Reason,
-		}
-		if c.Remaining != nil {
-			row.Remaining = fmt.Sprintf("%.0f%%", *c.Remaining)
-		}
-		if c.SpendPriority != nil {
-			row.SpendPriority = fmt.Sprintf("%.2f", *c.SpendPriority)
-		}
-		candidates = append(candidates, row)
-	}
-	if len(candidates) > 0 {
-		fields = append(fields, toon.Field{Key: "candidates", Value: candidates})
-	}
-	if len(record.Switches) > 0 {
-		switches := make([]quotaSwitchRow, 0, len(record.Switches))
-		for _, s := range record.Switches {
-			switches = append(switches, quotaSwitchRow{From: s.From, To: s.To, Reason: s.Reason})
-		}
-		fields = append(fields, toon.Field{Key: "switches", Value: switches})
-	}
-	return toon.Field{Key: "quota_routing", Value: toon.NewObject(fields...)}
-}
-
-func quotaCandidateStatus(c quotarouting.Evidence) string {
-	switch {
-	case !c.Eligible:
-		return "ineligible"
-	case c.Rankable:
-		return "ranked"
-	default:
-		return "unranked"
-	}
-}
-
-type quotaCandidateRow struct {
-	Agent         string `toon:"agent"`
-	Provider      string `toon:"provider"`
-	Account       string `toon:"account"`
-	Scope         string `toon:"scope"`
-	Remaining     string `toon:"remaining"`
-	SpendPriority string `toon:"spend_priority"`
-	Runway        string `toon:"runway"`
-	Status        string `toon:"status"`
-	Reason        string `toon:"reason"`
-}
-
-type quotaSwitchRow struct {
-	From   string `toon:"from"`
-	To     string `toon:"to"`
-	Reason string `toon:"reason"`
-}
 
 func (rv runView) automaticSkips() []automaticSkipRow {
 	var rows []automaticSkipRow

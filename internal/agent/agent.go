@@ -48,27 +48,13 @@ type RunOpts struct {
 	JSONSchema  json.RawMessage      // structured output schema (optional)
 	OnChunk     func(text string)    // streaming text callback (optional)
 	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
-	// Session, when non-nil, asks a session-capable adapter (see
-	// SessionResumer) to start or resume a durable native session. Adapters
-	// without session support ignore it and run cold; the caller detects the
-	// fallback via an empty Result.SessionID.
-	Session *SessionRef
-	// SessionFallback marks this invocation as the fresh-session retry after
-	// a failed resume. Instrumentation only; adapters ignore it.
-	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
-	// review-fix, test-evidence, ...). The review-role router uses review and
-	// review-fix to select a harness; concrete adapters ignore it.
+	// review-fix, test-evidence, ...). Instrumentation only; the adapter
+	// ignores it.
 	Purpose string
 	// Round is the 1-based review-loop round this invocation belongs to, or 0
-	// when the caller does not number rounds. The review-role router uses it to
-	// apply an operator-configured later-round role override; concrete adapters
-	// ignore it. An unknown round always keeps the primary role selection.
+	// when the caller does not number rounds. Instrumentation only.
 	Round int
-	// SessionFallbackReason is the low-cardinality reason a failed resume forced
-	// this fresh-session retry (see db.FallbackReason*). Set only when
-	// SessionFallback is true. Instrumentation only; adapters ignore it.
-	SessionFallbackReason string
 	// Workload, when non-nil, records the bounded size of the change this
 	// invocation is working over (files and net lines), so review/fix telemetry
 	// can be normalized without external git archaeology. Instrumentation only;
@@ -134,53 +120,10 @@ type Attempt struct {
 	Err             error
 	StartedAt       time.Time
 	CompletedAt     time.Time
-	Session         *SessionRef
-	SessionFallback bool
-}
-
-// SessionRef identifies a durable adapter-native session for RunOpts.Session.
-type SessionRef struct {
-	// ID is the adapter-native session identity to resume. Empty starts a
-	// new resumable session whose identity is reported via Result.SessionID.
-	ID    string
-	Agent string
-}
-
-// SessionResumer is the optional adapter capability for durable native
-// session resume across invocations. Decorators must forward it; callers use
-// SupportsSessionResume so wrapping never hides the capability.
-type SessionResumer interface {
-	SupportsSessionResume() bool
-}
-
-// SupportsSessionResume reports whether a (possibly wrapped) agent can start
-// and resume durable native sessions.
-func SupportsSessionResume(a Agent) bool {
-	r, ok := a.(SessionResumer)
-	return ok && r.SupportsSessionResume()
-}
-
-// SessionProviderMatcher reports whether an agent can resume sessions minted
-// by a particular provider. Fallback wrappers implement it so callers do not
-// mistake the wrapper's name for the provider that owns a session identity.
-type SessionProviderMatcher interface {
-	SupportsSessionProvider(string) bool
-}
-
-// SupportsSessionProvider reports whether a (possibly wrapped) agent can
-// resume a session minted by provider.
-func SupportsSessionProvider(a Agent, provider string) bool {
-	if provider == "" {
-		return false
-	}
-	if matcher, ok := a.(SessionProviderMatcher); ok {
-		return matcher.SupportsSessionProvider(provider)
-	}
-	return a != nil && a.Name() == provider && SupportsSessionResume(a)
 }
 
 // AttemptReporter is the optional adapter capability for reporting every
-// concrete attempt, including internal retries and fallback providers.
+// concrete attempt, including internal retries.
 type AttemptReporter interface {
 	ReportsAgentAttempts() bool
 }
@@ -227,8 +170,8 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex, claude, pi, and acp:omp have
-// a verified neutralization knob today.
+// unneutralized in the target checkout. Native omp has a verified neutralization
+// knob: --no-context-files plus the gate overlay.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -238,9 +181,7 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex, claude, pi, and acp:omp have a verified neutralization knob (and only "+
-		"when it is not overridden by agent_args_override or an acp_registry_overrides entry); set "+
-		"'agent' to codex, claude, pi, or acp:omp in ~/.no-mistakes/config.yaml", a.Name())
+		"checkout. Set 'agent' to omp in ~/.no-mistakes/config.yaml", a.Name())
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -267,12 +208,6 @@ type Result struct {
 	// Usage tracks token consumption for the invocation.
 	Usage         TokenUsage
 	UsageReported bool
-	// SessionID is the adapter-native session identity of this invocation
-	// when the adapter reports one. Callers persist it to resume later.
-	SessionID string
-	// Resumed reports whether this invocation resumed opts.Session.ID.
-	Resumed         bool
-	ResumeRetryable *bool
 	// Model is the model the adapter reported serving this invocation, when
 	// available. Instrumentation records it, and eval replay validates it
 	// against the requested candidate.
@@ -281,8 +216,7 @@ type Result struct {
 	// "anthropic"), when the adapter can report it. Instrumentation records it
 	// as telemetry; eval model identity matching deliberately ignores it.
 	ModelProvider string
-	// Provider is the adapter provider that served this invocation. It lets
-	// fallback wrappers persist a session against the provider that minted it.
+	// Provider is the adapter provider that served this invocation.
 	Provider string
 	// Metrics is the bounded per-invocation activity evidence the adapter
 	// extracted from its event stream (round-trips, tool calls + categories,
@@ -290,14 +224,8 @@ type Result struct {
 	// recorded as unknown (NULL) rather than a fabricated zero.
 	Metrics *InvocationMetrics
 	// CacheCreationReported reports whether Usage.CacheCreationTokens is a
-	// meaningful value. Adapters whose provider does not surface cache-creation
-	// cost (codex) leave it false so the field is recorded as unknown instead of
-	// a fabricated zero.
+	// meaningful value.
 	CacheCreationReported bool
-	// SessionUsageCumulative reports that Usage accumulates across a resumed
-	// durable session, so round N's counters include rounds 1..N-1. The pipeline
-	// uses it to record correct per-round token deltas (see PerRoundTokens).
-	SessionUsageCumulative bool
 }
 
 // TokenUsage tracks token consumption for an agent invocation.
@@ -323,26 +251,16 @@ type InvocationWorkload struct {
 	Lines int
 }
 
-// Options configures backend-specific agent construction behavior.
-// ACPRegistryOverrides maps acpx target names, including first-class alias
-// targets, to raw ACP agent commands.
+// Options configures agent construction behavior.
 type Options struct {
-	ACPRegistryOverrides map[string]string
-	Environment          runenv.Overlay
-	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude, pi, and the acp:omp target) to launch with the target repo's
+	Environment runenv.Overlay
+	// DisableProjectSettings, when true, launches omp with the target repo's
 	// project-level agent settings/instructions suppressed. It is the resolved,
-	// trusted-only opt-out from config.Config; adapters without a verified
-	// suppression knob ignore it and are refused separately by
-	// EnsureGateNeutralized when the opt-out is on.
+	// trusted-only opt-out from config.Config.
 	DisableProjectSettings bool
-	// Profile is the harness-neutral model/effort selection (see
-	// internal/agentcfg). NewWithOptions maps it down to whatever mechanism the
-	// named harness actually uses - injected argv flags for most CLIs, the
-	// session-message body for opencode, acpx's own --model for ACP targets -
-	// and refuses a knob the harness cannot express. A zero Profile leaves every
-	// harness on its own defaults, which is what every configuration that
-	// predates the common layer resolves to.
+	// Profile is the omp model/effort selection (see internal/agentcfg).
+	// NewWithOptions maps it to --model/--thinking. A zero Profile leaves omp on
+	// its own defaults.
 	Profile agentcfg.Profile
 }
 
@@ -362,20 +280,9 @@ func resultFromUsage(usage TokenUsage) *Result {
 }
 
 // failedResult returns the Result a failed turn should carry: the adapter's
-// parsed usage, plus the session the turn actually ran in. The served session
-// justifies a Result on its own, because one that differs from the requested
-// session is proof of a silent replacement whether or not the turn failed, and
-// resultFromUsage returns nil when the adapter reported no usage at all.
-func failedResult(usage TokenUsage, sessionID string) *Result {
-	res := resultFromUsage(usage)
-	if sessionID == "" {
-		return res
-	}
-	if res == nil {
-		res = &Result{}
-	}
-	res.SessionID = sessionID
-	return res
+// parsed usage. Nil when the adapter reported no usage.
+func failedResult(usage TokenUsage) *Result {
+	return resultFromUsage(usage)
 }
 
 func textResult(text string, usage TokenUsage) *Result {
@@ -1119,6 +1026,55 @@ func allowOptionalSchemaNulls(value any) {
 	}
 }
 
+func requiredSet(schema map[string]any) map[string]bool {
+	required := make(map[string]bool)
+	items, _ := schema["required"].([]any)
+	for _, item := range items {
+		if name, ok := item.(string); ok {
+			required[name] = true
+		}
+	}
+	return required
+}
+
+func allowSchemaNull(value any) {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	if enum, ok := schema["enum"].([]any); ok && !containsNil(enum) {
+		schema["enum"] = append(enum, nil)
+	}
+	switch typ := schema["type"].(type) {
+	case string:
+		if typ != "null" {
+			schema["type"] = []any{typ, "null"}
+		}
+	case []any:
+		if !containsString(typ, "null") {
+			schema["type"] = append(typ, "null")
+		}
+	}
+}
+
+func containsNil(items []any) bool {
+	for _, item := range items {
+		if item == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(items []any, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func decodeJSONValue(raw []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -1340,62 +1296,45 @@ func (u *TokenUsage) Add(other TokenUsage) {
 }
 
 // New creates an agent by name with the given binary path.
-// For native agents, extraArgs are user CLI flags from agent_args_override that
-// are injected into the underlying tool's argv ahead of no-mistakes' managed flags.
-// ACP agents and aliases ignore extraArgs; use NewWithOptions to provide
-// registry overrides and the harness-neutral model/effort Profile.
+// extraArgs are user CLI flags from agent_args_override that are injected into
+// omp's argv ahead of no-mistakes' managed flags.
 func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	return NewWithOptions(name, bin, extraArgs, Options{})
 }
 
-// NewWithOptions creates an agent by name with additional backend-specific options.
+// NewWithOptions creates the omp agent with additional options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
-	// Fail closed on a knob this harness cannot express. Config load performs
-	// the same check, but this is the funnel every caller reaches - including
-	// eval replay and programmatic callers that build a profile directly - so a
-	// run can never report a model or effort it did not actually use.
+	// Fail closed on an unsupported harness or knob. Config load performs the
+	// same check, but this is the funnel every caller reaches.
 	if err := agentcfg.Validate(name, opts.Profile); err != nil {
 		return nil, err
 	}
-	if target, ok := types.ACPTargetFor(name); ok {
-		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
+	if name != types.AgentOMP {
+		return nil, fmt.Errorf("unsupported agent %q; this build supports only %q (set 'agent' in ~/.no-mistakes/config.yaml)", name, types.AgentOMP)
 	}
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
-	// still precede no-mistakes' managed flags in every adapter's argv. A knob
-	// the raw args already pin natively is not emitted at all (see agentcfg),
-	// which is what keeps pre-existing configurations byte-identical.
+	// still precede no-mistakes' managed flags. A knob the raw args already pin
+	// natively is not emitted.
 	if mapped := agentcfg.NativeArgs(name, opts.Profile, extraArgs); len(mapped) > 0 {
 		merged := make([]string, 0, len(extraArgs)+len(mapped))
 		merged = append(merged, extraArgs...)
 		merged = append(merged, mapped...)
 		extraArgs = merged
 	}
-	switch name {
-	case types.AgentClaude:
-		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	case types.AgentCodex:
-		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	case types.AgentGrok:
-		return &grokAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	case types.AgentRovoDev:
-		return &rovodevAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin, extraArgs: extraArgs, profile: opts.Profile, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	case types.AgentPi:
-		return &piAgent{
-			bin:                    bin,
-			extraArgs:              extraArgs,
-			disableProjectSettings: opts.DisableProjectSettings,
-			subprocessContext:      newSubprocessContext(opts.Environment),
-		}, nil
-	case types.AgentCopilot:
-		return &copilotAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	case types.AgentAntigravity:
-		return &antigravityAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
-	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+	created := &ompAgent{
+		bin:                    bin,
+		extraArgs:              extraArgs,
+		disableProjectSettings: opts.DisableProjectSettings,
+		subprocessContext:      newSubprocessContext(opts.Environment),
 	}
+	if opts.DisableProjectSettings {
+		overlay, err := writeOMPGateOverlay()
+		if err != nil {
+			return nil, err
+		}
+		created.overlayPath = overlay
+	}
+	return created, nil
 }
 
 // NewNoop returns an agent that does nothing. Used for demo mode where

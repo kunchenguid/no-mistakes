@@ -52,7 +52,7 @@ func TestReplayPiModelIdentityComparison(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, evaluations, err := Replay(ctx, store, ReplayOptions{
 				Set:       "all",
-				Candidate: Candidate{Agent: types.AgentPi, Model: tt.model},
+				Candidate: Candidate{Agent: types.AgentOMP, Model: tt.model},
 				Repeats:   1,
 			})
 			if len(evaluations) != 1 {
@@ -99,7 +99,7 @@ func TestReplayPiAcceptsRequestedModelWithDifferentProviderSidecar(t *testing.T)
 	const requested = "meta/muse-spark-1.3-contributor"
 	_, evaluations, err := Replay(ctx, store, ReplayOptions{
 		Set:       "all",
-		Candidate: Candidate{Agent: types.AgentPi, Model: requested},
+		Candidate: Candidate{Agent: types.AgentOMP, Model: requested},
 		Repeats:   1,
 	})
 	if err != nil {

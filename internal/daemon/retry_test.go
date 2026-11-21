@@ -200,8 +200,7 @@ type retryFixture struct {
 
 type retryFixtureOptions struct {
 	beforeSource func(t *testing.T, f *retryFixture)
-	profile      *agentcfg.PiProfile
-	reviewer     *agentcfg.ReviewerProfile
+	profile      *agentcfg.RunProfile
 	plan         *verificationplan.Snapshot
 	failInTest   bool
 	twoHop       bool
@@ -232,9 +231,6 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	var profiles []agentcfg.RunSelection
 	if opts.profile != nil {
 		profiles = append(profiles, opts.profile)
-	}
-	if opts.reviewer != nil {
-		profiles = append(profiles, opts.reviewer)
 	}
 	source, err := d.InsertRunWithPRText(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, profiles...)
 	if err != nil {
@@ -514,7 +510,7 @@ func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {
 		{name: "a verification plan", proof: "compatible configuration",
 			opts: retryFixtureOptions{plan: &verificationplan.Snapshot{ID: "plan-bound-run", Path: "plan.md", SourcePath: "plan.md", SHA256: "abc", CapturedAt: 1}}},
 		{name: "a model profile that no longer resolves", proof: "compatible configuration",
-			opts: retryFixtureOptions{profile: &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}},
+			opts: retryFixtureOptions{profile: &agentcfg.RunProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}},
 			breakProof: func(t *testing.T, f *retryFixture) string {
 				if err := os.WriteFile(f.p.ConfigFile(), []byte("agent: pi\nagent_args_override:\n  pi: [\"--\"]\n"), 0o644); err != nil {
 					t.Fatal(err)

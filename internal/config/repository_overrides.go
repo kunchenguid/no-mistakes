@@ -33,9 +33,7 @@ func normalizeRepositoryOverrides(raw RepositoryOverrides) (RepositoryOverrides,
 		if err := validatePRUpdateText(override.PR.UpdateText); err != nil {
 			return nil, fmt.Errorf("invalid repository_overrides.%s.pr: %w", key, err)
 		}
-		if err := validateReviewAgents(override.ReviewAgents); err != nil {
-			return nil, fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
-		}
+		_ = override.ReviewAgents // parse-only tombstone for the removed role split
 		overrides[key] = override
 	}
 	return overrides, nil

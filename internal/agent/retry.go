@@ -135,37 +135,10 @@ func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, star
 		Err:             err,
 		StartedAt:       startedAt,
 		CompletedAt:     completedAt,
-		Session:         cloneSessionRef(opts.Session),
-		SessionFallback: opts.SessionFallback,
 	})
 }
 
-func cloneSessionRef(session *SessionRef) *SessionRef {
-	if session == nil {
-		return nil
-	}
-	copy := *session
-	return &copy
-}
-
-// claudeRetryClassifier retries both transient API errors and the
-// no-structured-output case that the existing loop already handled. When the
-// CLI reported the API error it ended on, that record alone decides: the
-// reported HTTP status takes precedence; without one, only the record's
-// terminal diagnostic is classified, never surrounding assistant or stderr text.
-func claudeRetryClassifier(err error) (string, bool) {
-	if errors.Is(err, errNoStructuredOutput) {
-		return "missing structured output", true
-	}
-	var apiErr *claudeAPIError
-	if errors.As(err, &apiErr) {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", false
-		}
-		return apiErr.classify()
-	}
-	return classifyTransient(err)
-}
+// claudeRetryClassifier was removed with the multi-harness adapters.
 
 var transientStatusRE = regexp.MustCompile(`\b(429|503|529)\b`)
 
@@ -319,24 +292,16 @@ func isTerminalRetryError(msg string) bool {
 }
 
 // IsQuotaExhaustionError reports whether an error is a recognised
-// subscription-quota exhaustion: the same terminal needle set the retry
-// layer has always classified (free usage limit, insufficient quota, quota
-// exceeded/exhausted) plus claude's typed usage-limit response. Only these
-// concrete shapes may trigger the quota-aware mid-run switch - transient
-// overload, unavailability, and parse failures never do.
+// subscription-quota exhaustion: the terminal needle set the retry layer has
+// always classified (free usage limit, insufficient quota, quota
+// exceeded/exhausted). Transient overload, unavailability, and parse failures
+// never count.
 func IsQuotaExhaustionError(err error) bool {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
-	}
-	var apiErr *claudeAPIError
-	if errors.As(err, &apiErr) {
-		if apiErr.UsageLimitReached() {
-			return true
-		}
-		return isTerminalRetryError(strings.ToLower(apiErr.Message))
 	}
 	return isTerminalRetryError(strings.ToLower(err.Error()))
 }

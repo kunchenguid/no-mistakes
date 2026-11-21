@@ -23,14 +23,6 @@ func (a *roundStampingAgent) Name() string { return a.inner.Name() }
 
 func (a *roundStampingAgent) Close() error { return a.inner.Close() }
 
-func (a *roundStampingAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *roundStampingAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
-}
-
 func (a *roundStampingAgent) ReportsAgentAttempts() bool {
 	return agent.ReportsAgentAttempts(a.inner)
 }

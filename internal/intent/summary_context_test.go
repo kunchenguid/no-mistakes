@@ -92,7 +92,7 @@ func TestAgentSummarizer_PiMessageTimes(t *testing.T) {
 					t.Fatal(err)
 				}
 				sess := &Session{startedAtPath: path}
-				if err := NewPiReader().Load(context.Background(), sess); err != nil {
+				if err := NewOMPReader().Load(context.Background(), sess); err != nil {
 					t.Fatal(err)
 				}
 				if len(sess.Messages) != 4 {

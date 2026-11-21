@@ -97,7 +97,7 @@ func TestReplayTokensCoverEveryReviewAttempt(t *testing.T) {
 
 			_, evaluations, err := Replay(ctx, store, ReplayOptions{
 				Set:       "all",
-				Candidate: Candidate{Agent: types.AgentPi, Model: "grok-4.6"},
+				Candidate: Candidate{Agent: types.AgentOMP, Model: "grok-4.6"},
 				Repeats:   1,
 			})
 			if err != nil {

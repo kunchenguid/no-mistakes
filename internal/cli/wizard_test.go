@@ -91,7 +91,7 @@ func TestWizardAgentSuggester_IsLazy(t *testing.T) {
 	t.Helper()
 
 	lookups := 0
-	suggester := newWizardAgentSuggester(&config.Config{Agent: types.AgentAuto}, "/tmp/repo", func(context.Context, *config.Config) error {
+	suggester := newWizardAgentSuggester(&config.Config{Agent: types.AgentOMP}, "/tmp/repo", func(context.Context, *config.Config) error {
 		lookups++
 		return errors.New("no supported agent found")
 	}, nil)
@@ -116,22 +116,20 @@ func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
 		gotName types.AgentName
 		gotBin  string
 		gotArgs []string
-		gotOpts agent.Options
 	)
 	suggester := newWizardAgentSuggester(
 		&config.Config{
-			Agent: types.AgentClaude,
+			Agent: types.AgentOMP,
 			AgentArgsOverride: map[string][]string{
-				"claude": {"--permission-mode", "acceptEdits"},
+				"omp": {"--model", "x"},
 			},
 		},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
-		func(name types.AgentName, bin string, args []string, opts agent.Options) (agent.Agent, error) {
+		func(name types.AgentName, bin string, args []string, _ agent.Options) (agent.Agent, error) {
 			gotName = name
 			gotBin = bin
 			gotArgs = append([]string(nil), args...)
-			gotOpts = opts
 			return &fakeSuggesterAgent{}, nil
 		},
 	)
@@ -140,41 +138,14 @@ func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
 	if err := suggester.ensure(context.Background()); err != nil {
 		t.Fatalf("ensure failed: %v", err)
 	}
-	if gotName != types.AgentClaude {
-		t.Fatalf("new agent name = %q, want %q", gotName, types.AgentClaude)
+	if gotName != types.AgentOMP {
+		t.Fatalf("new agent name = %q, want %q", gotName, types.AgentOMP)
 	}
-	if gotBin != "claude" {
-		t.Fatalf("new agent bin = %q, want %q", gotBin, "claude")
+	if gotBin != "omp" {
+		t.Fatalf("new agent bin = %q, want %q", gotBin, "omp")
 	}
-	if want := []string{"--permission-mode", "acceptEdits"}; !reflect.DeepEqual(gotArgs, want) {
+	if want := []string{"--model", "x"}; !reflect.DeepEqual(gotArgs, want) {
 		t.Fatalf("new agent args = %v, want %v", gotArgs, want)
-	}
-	if gotOpts.ACPRegistryOverrides != nil {
-		t.Fatalf("new agent options = %+v, want zero options", gotOpts)
-	}
-}
-
-func TestWizardAgentSuggester_ForwardsACPRegistryOverrides(t *testing.T) {
-	var gotOpts agent.Options
-	suggester := newWizardAgentSuggester(
-		&config.Config{
-			Agent:                "acp:local-gemini",
-			ACPRegistryOverrides: map[string]string{"local-gemini": "node /tmp/mock-acp.mjs"},
-		},
-		"/tmp/repo",
-		func(context.Context, *config.Config) error { return nil },
-		func(_ types.AgentName, _ string, _ []string, opts agent.Options) (agent.Agent, error) {
-			gotOpts = opts
-			return &fakeSuggesterAgent{}, nil
-		},
-	)
-	defer suggester.Close()
-
-	if err := suggester.ensure(context.Background()); err != nil {
-		t.Fatalf("ensure failed: %v", err)
-	}
-	if got := gotOpts.ACPRegistryOverrides["local-gemini"]; got != "node /tmp/mock-acp.mjs" {
-		t.Fatalf("ACPRegistryOverrides[local-gemini] = %q", got)
 	}
 }
 
@@ -246,7 +217,7 @@ func (f *fakeSuggesterResponseAgent) callCount() int {
 func newFakeSuggester(t *testing.T, ag *fakeSuggesterAgent) *wizardAgentSuggester {
 	t.Helper()
 	return newWizardAgentSuggester(
-		&config.Config{Agent: types.AgentClaude},
+		&config.Config{Agent: types.AgentOMP},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
 		func(types.AgentName, string, []string, agent.Options) (agent.Agent, error) { return ag, nil },
@@ -367,7 +338,7 @@ func TestWizardAgentSuggester_EmptyRetryClearsCachedCommit(t *testing.T) {
 		commitOutput: `{"subject":"feat(cli): standalone"}`,
 	}
 	s := newWizardAgentSuggester(
-		&config.Config{Agent: types.AgentClaude},
+		&config.Config{Agent: types.AgentOMP},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
 		func(types.AgentName, string, []string, agent.Options) (agent.Agent, error) { return ag, nil },

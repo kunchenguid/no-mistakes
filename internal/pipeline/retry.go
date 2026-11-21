@@ -44,14 +44,6 @@ func (a *invocationFailureAgent) Run(ctx context.Context, opts agent.RunOpts) (*
 	return result, &agentInvocationFailure{err: err}
 }
 
-func (a *invocationFailureAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *invocationFailureAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
-}
-
 func (a *invocationFailureAgent) ReportsAgentAttempts() bool {
 	return agent.ReportsAgentAttempts(a.inner)
 }

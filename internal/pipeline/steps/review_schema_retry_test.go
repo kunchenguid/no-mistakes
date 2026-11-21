@@ -51,8 +51,8 @@ func TestReviewStep_SchemaRejectionRerunsAFreshReview(t *testing.T) {
 		t.Fatalf("agent calls = %d, want the rejected review plus one rerun", len(ag.calls))
 	}
 	for i, call := range ag.calls {
-		if call.Session != nil || call.Purpose != "review" {
-			t.Fatalf("call %d = purpose %q session %+v, want a session-free review", i+1, call.Purpose, call.Session)
+		if call.Purpose != "review" {
+			t.Fatalf("call %d = purpose %q, want a review", i+1, call.Purpose)
 		}
 	}
 	note, ok := strings.CutPrefix(ag.calls[1].Prompt, ag.calls[0].Prompt)
@@ -319,9 +319,6 @@ func TestReviewStep_RereviewSchemaRejectionRerunsAFreshReview(t *testing.T) {
 		if ag.calls[i].Purpose != want {
 			t.Fatalf("call %d purpose = %q, want %q", i+1, ag.calls[i].Purpose, want)
 		}
-	}
-	if ag.calls[1].Session != nil || ag.calls[2].Session != nil {
-		t.Fatal("a rereview attempt ran with a session")
 	}
 	if !strings.HasPrefix(ag.calls[2].Prompt, ag.calls[1].Prompt) {
 		t.Fatalf("rerun prompt is not the original rereview prompt plus a note:\n%s", ag.calls[2].Prompt)

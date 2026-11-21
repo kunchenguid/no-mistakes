@@ -90,7 +90,7 @@ func main() {
 	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
 	cfg.PR.BaseBranch = *base
 	for i := 0; i < *n; i++ {
-		ag, err := agent.New(types.AgentPi, "pi", []string{"--provider", "openai-codex", "--model", "gpt-6.1-sol", "--thinking", "high", "--no-extensions", "--no-skills", "--no-prompt-templates"})
+		ag, err := agent.New(types.AgentOMP, "omp", []string{"--model", "dashscope/qwen4-max", "--thinking", "high", "--no-extensions", "--no-skills"})
 		if err != nil {
 			panic(err)
 		}

@@ -275,7 +275,7 @@ func newAxiRunCmd() *cobra.Command {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				profile, err := piProfileFromFlags(cmd, model, effort)
+				profile, err := runProfileFromFlags(cmd, model, effort)
 				if err != nil {
 					return emitError(cmd, 2, err.Error())
 				}
@@ -297,8 +297,7 @@ func newAxiRunCmd() *cobra.Command {
 	bindCallerRestrictionsFlag(cmd)
 	bindPRTextFlags(cmd, &prTitle, &prBodyFile)
 	bindAxiWaitFlag(cmd, &wait)
-	bindPiProfileFlags(cmd, &model, &effort)
-	bindReviewerFlags(cmd)
+	bindRunProfileFlags(cmd, &model, &effort)
 	return cmd
 }
 
@@ -313,15 +312,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 // runAxiRunWithPRText is runAxiRunWithLaunchProof with the caller-supplied PR
 // text already read and validated by resolvePRTextFlags.
 func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, prText db.RunPRText, profiles ...agentcfg.RunSelection) error {
-	profile := agentcfg.OptionalPiProfile(profiles)
-	reviewer := agentcfg.OptionalReviewerProfile(profiles)
-	if reviewer == nil {
-		var err error
-		reviewer, err = reviewerFromFlags(cmd)
-		if err != nil {
-			return emitError(cmd, 2, err.Error())
-		}
-	}
+	profile := agentcfg.OptionalRunProfile(profiles)
 	if err := profile.ValidateRequest(); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
@@ -427,7 +418,7 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, baseRemote, omitIntent, prText, profile, reviewer)
+		receipt, err := claimLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, baseRemote, omitIntent, prText, profile)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -450,11 +441,8 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 			if !integration.MatchesRemote(active.BaseRemote, baseRemote) {
 				return emitError(cmd, 2, "active run has a different integration remote; omit --base-remote to reattach")
 			}
-			if !active.ReviewerProfile.Matches(reviewer) {
-				return emitError(cmd, 2, "active run has a different reviewer; omit --reviewer flags to reattach")
-			}
-			if !active.PiProfile.Matches(profile) {
-				return emitError(cmd, 2, "active run has a different Pi profile; omit --model/--effort to reattach")
+			if !active.RunProfile.Matches(profile) {
+				return emitError(cmd, 2, "active run has a different run profile; omit --model/--effort to reattach")
 			}
 			if err := conflictingActiveRunPRBaseBranch(active, baseBranch); err != nil {
 				return emitError(cmd, 2, err.Error(),
@@ -478,20 +466,15 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		return emitError(cmd, 2, "--caller-restrictions is accepted only when starting a new run; omit it to reattach")
 	}
 	if runID == "" {
-		resolvedReviewer, resolveErr := resolveReviewer(env.client, env.repo.ID, reviewer)
-		if resolveErr != nil {
-			return emitError(cmd, 2, resolveErr.Error())
-		}
-		reviewer = resolvedReviewer
 		if err := configErrorForFreshAxiRun(env, runID); err != nil {
 			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 		}
 		// A distinct RPC is also the capability check: an older daemon must
 		// refuse before a push, not silently ignore an unknown profile field.
 		if profile != nil {
-			var resolved agentcfg.PiProfile
-			if err := env.client.Call(ipc.MethodResolvePiProfile, profile, &resolved); err != nil {
-				return emitError(cmd, 2, fmt.Sprintf("resolve Pi profile: %v", err))
+			var resolved agentcfg.RunProfile
+			if err := env.client.Call(ipc.MethodResolveRunProfile, profile, &resolved); err != nil {
+				return emitError(cmd, 2, fmt.Sprintf("resolve run profile: %v", err))
 			}
 			if err := resolved.Validate(); err != nil {
 				return emitError(cmd, 2, err.Error())
@@ -538,12 +521,12 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		}
 		var err error
 		if launchNonce != "" {
-			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, prText, profile, reviewer)
+			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, prText, profile)
 			if err == nil {
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRunWithPRText(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, prText, profile, reviewer)
+			runID, err = triggerRunWithPRText(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, prText, profile)
 		}
 		if err == nil && planID != "" && runID != planID {
 			err = fmt.Errorf("launched run does not own the captured verification plan")
@@ -884,9 +867,8 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	if err != nil {
 		return "", err
 	}
-	profile := agentcfg.OptionalPiProfile(profiles)
-	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
-	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
+	profile := agentcfg.OptionalRunProfile(profiles)
+	pushOptions := append(formatSkipPushOptions(skipSteps), formatRunProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
@@ -964,11 +946,8 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	}
 
 	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
-		if !run.ReviewerProfile.Matches(agentcfg.OptionalReviewerProfile(profiles)) {
-			return "", fmt.Errorf("triggered run has a conflicting reviewer")
-		}
-		if !run.PiProfile.Matches(profile) {
-			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
+		if !run.RunProfile.Matches(profile) {
+			return "", fmt.Errorf("triggered run has a conflicting run profile")
 		}
 		if planID != "" && (run.VerificationPlan == nil || run.VerificationPlan.ID != planID) {
 			return "", fmt.Errorf("triggered run has a conflicting verification plan")
@@ -992,8 +971,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	params.CommitIdentity = identity
 	params.OmitIntent = omitIntent
 	params.FreshLaunch = true
-	params.PiProfile = profile
-	params.ReviewerProfile = agentcfg.OptionalReviewerProfile(profiles)
+	params.RunProfile = profile
 	params.ClosingIssueRefs = closesIssues
 	params.PRTitle, params.PRBody = prText.Title, prText.Body
 	params.VerificationPlanID = planID
@@ -1073,8 +1051,7 @@ func submissionReconciliationUpstream(ctx context.Context, env *axiEnv, head, re
 func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch, baseRemote string, omitIntent bool, prText db.RunPRText, profiles ...agentcfg.RunSelection) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
-		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
-		ReviewerProfile:  agentcfg.OptionalReviewerProfile(profiles),
+		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, RunProfile: agentcfg.OptionalRunProfile(profiles),
 		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent,
 		PRTextDigest:             db.PRTextDigest(prText.Title, prText.Body),
 		CallerRestrictionsDigest: callerrestrictions.LaunchRecord(ctx).Digest(),
@@ -1082,11 +1059,8 @@ func claimLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch,
 	}, &result); err != nil {
 		return nil, err
 	}
-	if result.Receipt != nil && !result.Receipt.PiProfile.Matches(agentcfg.OptionalPiProfile(profiles)) {
-		return nil, fmt.Errorf("launch receipt has a conflicting Pi profile")
-	}
-	if result.Receipt != nil && !result.Receipt.ReviewerProfile.Matches(agentcfg.OptionalReviewerProfile(profiles)) {
-		return nil, fmt.Errorf("launch receipt has a conflicting reviewer")
+	if result.Receipt != nil && !result.Receipt.RunProfile.Matches(agentcfg.OptionalRunProfile(profiles)) {
+		return nil, fmt.Errorf("launch receipt has a conflicting run profile")
 	}
 	return result.Receipt, nil
 }
@@ -1103,13 +1077,12 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		return nil, err
 	}
 	homes := runenv.CaptureTranscriptHomes()
-	profile := agentcfg.OptionalPiProfile(profiles)
+	profile := agentcfg.OptionalRunProfile(profiles)
 	identity, err := captureSubmissionIdentity(ctx, env.client, ".")
 	if err != nil {
 		return nil, err
 	}
-	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
-	pushOptions = append(pushOptions, formatReviewerPushOptions(agentcfg.OptionalReviewerProfile(profiles))...)
+	pushOptions := append(formatSkipPushOptions(skipSteps), formatRunProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
@@ -1151,9 +1124,8 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		TranscriptHomes:    homes,
 		BaseRemote:         integration.RequestedRemote(ctx),
 		RepoID:             env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
-		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
+		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, RunProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
-		ReviewerProfile: agentcfg.OptionalReviewerProfile(profiles),
 	}, &result); err != nil {
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}
@@ -1292,11 +1264,10 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 		toon.Field{Key: "submitted_head_sha", Value: receipt.SubmittedHeadSHA},
 		toon.Field{Key: "intent_digest", Value: receipt.IntentDigest},
 	}
-	if receipt.ReviewerProfile != nil {
-		fields = append(fields, toon.Field{Key: "reviewer_profile", Value: toon.NewObject(
-			toon.Field{Key: "agent", Value: string(receipt.ReviewerProfile.Agent)},
-			toon.Field{Key: "model", Value: receipt.ReviewerProfile.Model},
-			toon.Field{Key: "effort", Value: string(receipt.ReviewerProfile.Effort)},
+	if receipt.RunProfile != nil {
+		fields = append(fields, toon.Field{Key: "run_profile", Value: toon.NewObject(
+			toon.Field{Key: "model", Value: receipt.RunProfile.Model},
+			toon.Field{Key: "effort", Value: string(receipt.RunProfile.Effort)},
 		)})
 	}
 	emitDoc(cmd, toon.Field{Key: "launch_receipt", Value: toon.NewObject(fields...)})

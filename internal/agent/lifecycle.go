@@ -101,23 +101,6 @@ func emitAgentRetry(opts RunOpts, name string, label string, attempt, max int) {
 	})
 }
 
-func emitAgentFallback(opts RunOpts, current, next string, err error) {
-	emitAgentControl(opts, LifecycleEvent{
-		Agent:   current,
-		Phase:   LifecyclePhaseFallback,
-		Message: fmt.Sprintf("agent %s failed (%s); falling back to %s", current, fallbackReason(err), next),
-	})
-}
-
-func emitAgentQuotaSwitch(opts RunOpts, current, next string, err error) {
-	emitAgentControl(opts, LifecycleEvent{
-		Agent:     current,
-		Phase:     LifecyclePhaseQuotaSwitch,
-		NextAgent: next,
-		Message:   fmt.Sprintf("agent %s exhausted its quota (%s); switching to %s with a fresh session", current, fallbackReason(err), next),
-	})
-}
-
 func emitAgentControl(opts RunOpts, event LifecycleEvent) {
 	if opts.OnLifecycle != nil {
 		emitLifecycle(opts, event)

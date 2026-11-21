@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -34,13 +32,6 @@ func (a *perfRecordingAgent) Name() string { return a.inner.Name() }
 func (a *perfRecordingAgent) Close() error { return a.inner.Close() }
 
 // SupportsSessionResume forwards the wrapped adapter's session capability.
-func (a *perfRecordingAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *perfRecordingAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
-}
 
 func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	attempts := 0
@@ -52,8 +43,6 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 		attempts++
 		attemptOpts := opts
 		attemptOpts.ConfiguredModel = attempt.ConfiguredModel
-		attemptOpts.Session = attempt.Session
-		attemptOpts.SessionFallback = attempt.SessionFallback
 		a.record(ctx, attemptOpts, attempt.Agent, attempt.Result, attempt.Err, attempt.StartedAt, attempt.CompletedAt)
 	}
 	start := time.Now()
@@ -74,15 +63,13 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		purpose = string(a.stepName)
 	}
 
-	sessionKey := invocationSessionKey(opts, result)
 	inv := db.AgentInvocation{
 		RunID:       a.runID,
 		StepName:    string(a.stepName),
 		Round:       a.round(),
 		Purpose:     purpose,
 		Agent:       agentName,
-		SessionMode: invocationSessionMode(opts, result, runErr),
-		SessionKey:  sessionKey,
+		SessionMode: db.InvocationModeCold,
 		StartedAt:   startedAt.Unix(),
 		CompletedAt: completedAt.Unix(),
 		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
@@ -92,16 +79,12 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		model := opts.ConfiguredModel
 		inv.ConfiguredModel = &model
 	}
-	if opts.SessionFallback && opts.SessionFallbackReason != "" {
-		reason := opts.SessionFallbackReason
-		inv.FallbackReason = &reason
-	}
 	if opts.Workload != nil {
 		files, lines := opts.Workload.Files, opts.Workload.Lines
 		inv.WorkloadFiles = &files
 		inv.WorkloadLines = &lines
 	}
-	a.recordResult(&inv, sessionKey, result)
+	a.recordResult(&inv, result)
 	if runErr != nil {
 		if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {
 			inv.ExitStatus = "cancelled"
@@ -121,7 +104,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 // usage, per-round token deltas, and bounded activity metrics into inv. Every
 // field the adapter did not report is left nil so it is stored as unknown
 // rather than a fabricated zero.
-func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey string, result *agent.Result) {
+func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, result *agent.Result) {
 	if result == nil {
 		return
 	}
@@ -150,13 +133,12 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 	// subtract the same session's prior cumulative so the row cannot be mistaken
 	// for per-round usage. Read the prior BEFORE this row is inserted.
 	if result.UsageReported {
-		priorInput, priorOutput, priorCache, _ := a.db.LatestSessionCumulative(a.runID, sessionKey)
-		deltaInput := agent.PerRoundTokens(result.Usage.InputTokens, priorInput, result.SessionUsageCumulative)
-		deltaOutput := agent.PerRoundTokens(result.Usage.OutputTokens, priorOutput, result.SessionUsageCumulative)
-		deltaCache := agent.PerRoundTokens(result.Usage.CacheReadTokens, priorCache, result.SessionUsageCumulative)
-		inv.DeltaInputTokens = &deltaInput
-		inv.DeltaOutputTokens = &deltaOutput
-		inv.DeltaCacheReadTokens = &deltaCache
+		input := result.Usage.InputTokens
+		output := result.Usage.OutputTokens
+		cache := result.Usage.CacheReadTokens
+		inv.DeltaInputTokens = &input
+		inv.DeltaOutputTokens = &output
+		inv.DeltaCacheReadTokens = &cache
 	}
 
 	if result.UsageReported && result.Usage.ReasoningReported {
@@ -213,45 +195,8 @@ func countOutputFindings(output json.RawMessage) (int, bool) {
 	return len(items), true
 }
 
-func invocationSessionMode(opts agent.RunOpts, result *agent.Result, runErr error) string {
-	switch {
-	case opts.SessionFallback:
-		return db.InvocationModeFallback
-	case opts.Session == nil:
-		return db.InvocationModeCold
-	case opts.Session.ID != "":
-		// A session was requested but the adapter did not report resuming it
-		// (e.g. agy silently replaced a stale conversation with a fresh one).
-		// Record as fallback so the stale-session path is not mistaken for a
-		// successful resume. That absence is only evidence when the turn
-		// succeeded, because most adapters set Resumed after finalizing and a
-		// failed turn never gets there - unless the adapter positively named a
-		// different session, which is evidence whether or not the turn failed.
-		if result != nil && !result.Resumed &&
-			(runErr == nil || (result.SessionID != "" && result.SessionID != opts.Session.ID)) {
-			return db.InvocationModeFallback
-		}
-		return db.InvocationModeResumed
-	default:
-		return db.InvocationModeStarted
-	}
-}
-
 // invocationSessionKey fingerprints the session identity so reuse is
 // auditable without storing the raw resumable id in the telemetry table.
-func invocationSessionKey(opts agent.RunOpts, result *agent.Result) string {
-	id := ""
-	if result != nil && result.SessionID != "" {
-		id = result.SessionID
-	} else if opts.Session != nil && opts.Session.ID != "" {
-		id = opts.Session.ID
-	}
-	if id == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(sum[:8])
-}
 
 // classifyInvocationFailure buckets an invocation error into a
 // low-cardinality category. Only the category is stored - never the error

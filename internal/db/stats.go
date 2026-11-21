@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -19,12 +18,6 @@ type Stats struct {
 	FixedFindings    int
 	StepStats        []StepStats
 	RepoStats        []RepoStats
-	QuotaRouting     []QuotaRoutingStats
-}
-
-type QuotaRoutingStats struct {
-	RunID  string
-	Record *quotarouting.Record
 }
 
 // StepStats summarizes reported and fixed findings for one pipeline step.
@@ -73,13 +66,6 @@ func (d *DB) GetStats() (*Stats, error) {
 		stats.TotalRuns += len(runs)
 
 		for _, run := range runs {
-			record, err := quotarouting.ParseRecord(run.QuotaRouting)
-			if err != nil {
-				return nil, fmt.Errorf("quota routing for run %s: %w", run.ID, err)
-			}
-			if record != nil {
-				stats.QuotaRouting = append(stats.QuotaRouting, QuotaRoutingStats{RunID: run.ID, Record: record})
-			}
 			if run.PRURL != nil && *run.PRURL != "" {
 				stats.PullRequests++
 			}

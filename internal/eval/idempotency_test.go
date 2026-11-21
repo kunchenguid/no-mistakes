@@ -227,7 +227,7 @@ func TestReplayTwiceKeepsCorpusUntouchedAndCohortStable(t *testing.T) {
 	labelsBefore := mustReadFile(t, filepath.Join(captured[0].Dir, "labels.json"))
 	manifestBefore := mustReadFile(t, filepath.Join(captured[0].Dir, "manifest.json"))
 
-	opts := ReplayOptions{Set: "labeled", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1}
+	opts := ReplayOptions{Set: "labeled", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1}
 	firstSession, firstEvals, err := Replay(ctx, store, opts)
 	if err != nil {
 		t.Fatal(err)

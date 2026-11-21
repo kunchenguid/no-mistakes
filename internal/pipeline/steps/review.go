@@ -57,25 +57,10 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// The review conversation (see
 	// docs/src/content/docs/concepts/review-conversation.md).
 	//
-	// A reviewer session may be resumed by exactly one kind of turn: the
-	// finalize turn that receives the answers to the questions that same pass
-	// asked, where no code has changed in between. Every other entry into this
-	// step drops the identity first, so a stale session can never be seated as
-	// the certifier of code written after it reviewed. The cases that would
-	// otherwise do exactly that are a fix round (its fixes implement the
-	// findings of the session that would judge them) and a restart back to
-	// review after a CI repair (RestartFrom, which re-enters the step on a new
-	// head inside the same run, and therefore the same RunSessions). Dropping
-	// it here - before any turn of this round runs - also survives a daemon
-	// restart, because Forget deletes the persisted row too.
 	// askDir gates whether the reviewer may ASK (config only); readDir gates
 	// reading a conversation that already exists (config, or files on disk).
 	askDir := reviewConversationDir(sctx)
 	convDir := reviewConversationReadDir(sctx)
-	resumingAnswers := sctx.FinalizingAnswers && !sctx.Fixing && convDir != ""
-	if !resumingAnswers {
-		sctx.Sessions.Forget(pipeline.SessionRoleReviewer)
-	}
 
 	// In fix mode, ask the agent to fix issues first.
 	//
@@ -187,7 +172,6 @@ Previous review findings to address:
 			Prompt:                    fixPrompt,
 			ErrorPrefix:               "agent fix",
 			FallbackSummary:           "address review findings",
-			SessionRole:               pipeline.SessionRoleFixer,
 			Purpose:                   "review-fix",
 			Workload:                  workload,
 			ReportBlockedVerification: true,
@@ -419,12 +403,6 @@ Risk assessment (after listing all findings):
 	// validates. Every other failure returns at once, and so does a rejection
 	// from a turn its deadline or a cancellation cut short.
 	turnPrompt := prompt
-	sessionRole := pipeline.SessionRole("")
-	if convDir != "" && !sctx.Fixing {
-		// A fresh identity unless this is the finalize turn of the pass that
-		// asked; Forget above already dropped any stale one.
-		sessionRole = pipeline.SessionRoleReviewer
-	}
 	// The answers ride the prompt whenever a finalize turn runs, including the
 	// cold one that replays a fix round's rereview. Gating this on the session
 	// would mean answering a question a rereview asked did nothing at all and
@@ -442,11 +420,7 @@ Risk assessment (after listing all findings):
 			// The carried findings ride immediately after the answers, so the
 			// turn re-adjudicates what it already judged before it carries on.
 			turnPrompt = prompt + answers + carriedFindingsPromptSection(sctx.CarriedFindings)
-			how := "resuming"
-			if !resumingAnswers {
-				how = "replaying"
-			}
-			sctx.Log(fmt.Sprintf("%s the review with %d answered question(s)", how, len(asked.Answered())))
+			sctx.Log(fmt.Sprintf("replaying the review with %d answered question(s)", len(asked.Answered())))
 		}
 	}
 	opts := agent.RunOpts{
@@ -461,7 +435,7 @@ Risk assessment (after listing all findings):
 	var findings Findings
 	var validationErrors []error
 	if retained != nil {
-		findings, err = s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, *retained, reviewable, askDir)
+		findings, err = s.completeCoverageGaps(sctx, turnPrompt, opts, *retained, reviewable, askDir)
 		if err != nil {
 			return nil, err
 		}
@@ -470,7 +444,7 @@ Risk assessment (after listing all findings):
 		}
 	} else {
 		for attempt := 1; ; attempt++ {
-			result, err := s.runReviewAgent(sctx, "agent review", sessionRole, opts)
+			result, err := s.runReviewAgent(sctx, "agent review", opts)
 			if err == nil {
 				findings, err = parseReviewAnalyzerOutput(result)
 				if err == nil {
@@ -536,7 +510,7 @@ Risk assessment (after listing all findings):
 		// remainder named, so a partial or fabricated record never approves.
 		completed := findings
 		if retained == nil {
-			completed, err = s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+			completed, err = s.completeCoverageGaps(sctx, turnPrompt, opts, findings, reviewable, askDir)
 		}
 		if err != nil {
 			return nil, err
@@ -646,7 +620,7 @@ func reviewCoverageCompletionSection(missing []string) string {
 // keeps the strict coverage rule intact - the union is re-checked by
 // reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
 // still fails the round and is named in the park message.
-func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
+func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
 	if sctx.EvalReplay {
 		// Eval replay scores the review's findings against captured gold and
 		// never consumes the reviewed_paths certification, so the completion
@@ -675,7 +649,7 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 	completionOpts := opts
 	completionOpts.Prompt = basePrompt + reviewCoverageCompletionSection(missing)
 	completionOpts.Purpose = "review-coverage"
-	result, err := s.runReviewAgent(sctx, "agent review coverage", role, completionOpts)
+	result, err := s.runReviewAgent(sctx, "agent review coverage", completionOpts)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("focused coverage pass failed (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
 		return findings, nil
@@ -970,18 +944,17 @@ func sanitizePromptMultilineText(text string) string {
 }
 
 func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
-	role := opts.SessionRole
 	prefix := opts.ErrorPrefix
 	opts.ErrorPrefix = ""
 	opts.RunAgent = func(runOpts agent.RunOpts) (*agent.Result, error) {
-		return s.runReviewAgent(sctx, prefix, role, runOpts)
+		return s.runReviewAgent(sctx, prefix, runOpts)
 	}
 	return executeFixMode(sctx, stepName, opts)
 }
 
-func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
+func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, opts agent.RunOpts) (*agent.Result, error) {
 	timeout := reviewAgentTimeout(sctx.Config)
-	result, err := sctx.RunAgentSessionBudget(sctx.Ctx, timeout, reviewAgentWorkingTimeout(sctx.Config), errReviewAgentTimeout, role, opts)
+	result, err := sctx.RunAgentBudget(sctx.Ctx, timeout, reviewAgentWorkingTimeout(sctx.Config), errReviewAgentTimeout, opts)
 	if err != nil {
 		err = reviewAgentError(timeout, prefix, err)
 	}

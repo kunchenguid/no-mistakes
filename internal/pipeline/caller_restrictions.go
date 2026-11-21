@@ -41,14 +41,6 @@ func (a *callerRestrictionsAgent) Run(ctx context.Context, opts agent.RunOpts) (
 
 func (a *callerRestrictionsAgent) Close() error { return a.inner.Close() }
 
-func (a *callerRestrictionsAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *callerRestrictionsAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
-}
-
 func (a *callerRestrictionsAgent) ReportsAgentAttempts() bool {
 	return agent.ReportsAgentAttempts(a.inner)
 }

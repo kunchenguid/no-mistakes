@@ -8,33 +8,22 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-agent: auto
-
-acpx_path: acpx
+agent: omp
 
 forgejo_axi_path: forgejo-axi
 
-acp_registry_overrides:
-  local-gemini: node /opt/mock-acp-agent.mjs
-
 agent_path_override:
-  claude: /Users/you/bin/claude
-  codex: /opt/homebrew/bin/codex
-  grok: /Users/you/.grok/bin/grok
-  rovodev: /usr/local/bin/acli
-  opencode: /usr/local/bin/opencode
-  pi: /usr/local/bin/pi
-  copilot: /usr/local/bin/copilot
+  omp: /Users/you/.bun/bin/omp
 
 agent_config:
-  codex:
-    model: gpt-5.4
-    effort: low
+  omp:
+    model: dashscope/qwen4-max
+    effort: xhigh
 
 agent_args_override:
-  codex:
-    - -c
-    - service_tier="priority"
+  omp:
+    - --service-tier
+    - priority
 
 ci_timeout: "168h"
 
@@ -145,44 +134,24 @@ providers:
 
 ### agent
 
-Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
+|         |                 |
+| ------- | --------------- |
+| Type    | `string`        |
+| Values  | `omp`           |
+| Default | `omp`           |
 
-|         |                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------- |
-| Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `acp:<target>` |
-| Default | `auto`                                                                                      |
+This build supports exactly one pipeline agent: the native omp (Oh My Pi) CLI.
+There is no `auto` probing, no ordered fallback list, and no ACP target. Every
+pipeline step uses the same omp configuration.
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, `cursor`, then `devin`.
-`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`, and `devin` is an ACP alias for the `devin` target with default command `devin acp`.
-With default paths, `auto` only selects an alias when both its command binary (`cursor-agent` or `devin`) and `acpx` resolve; `acp_registry_overrides.<target>` and `acpx_path` replace those respective defaults during availability checks.
-`acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` and `acp:devin` use the same default commands as `cursor` and `devin`.
-Arbitrary `acp:<target>` agents are opt-in and are not considered by `agent: auto`.
-The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
-If an explicit agent is unavailable, `auto` finds no native agent or ACP alias, or no fallback-list entry is available, the gate fails before its first pipeline step rather than reporting a partial command-only validation as passed.
-`no-mistakes doctor` checks the global configuration, while every run repeats resolution after applying any trusted repository-level `agent` override.
-
-You can also set an ordered fallback list:
-
-```yaml
-agent: [codex, grok]
-```
-
-The list is filtered to entries available to the daemon at run startup. By default, the first available entry becomes the primary agent; opt-in [quota-aware routing](#quota_routing) can reorder that resolved list.
-After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` (or `devin` and `acp:devin`) provide one fallback and preserve whichever spelling appears first.
-If no entry is available, the gate fails before its first pipeline step.
-If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
-Fallback candidates share the invocation's existing bounded context and use only its remaining time; once that context expires or is cancelled, no further candidate is announced or started.
-Structured findings and validation failures in an agent's returned output do not trigger fallback. A recognized Codex provider rejection of the requested structured-output schema does trigger fallback.
+A repository may set `agent: omp`; any other value fails the run at setup.
+`no-mistakes doctor` checks the global configuration, while every run repeats
+resolution after applying a trusted repository-level `agent` value.
 
 ### acpx_path
 
-Path to the user-installed `acpx` binary used for `agent: acp:<target>` and ACP aliases such as `agent: cursor` and `agent: devin`.
-
-|         |          |
-| ------- | -------- |
-| Type    | `string` |
-| Default | `acpx`   |
+Accepted for configuration compatibility and ignored. ACP agents are not part
+of this build.
 
 ### forgejo_axi_path
 
@@ -197,408 +166,97 @@ A bare name is resolved from the daemon's effective `PATH`; an explicit path is 
 
 ### acp_registry_overrides
 
-Map an ACP target name to a raw ACP agent command.
-When `agent: acp:<target>` matches an override key, no-mistakes runs `acpx --agent <command>` instead of `acpx <target>`.
-ACP aliases use the same target keys. For example, `agent: cursor` and `agent: acp:cursor` resolve to the `cursor` target, so set `cursor` to override the default `cursor-agent acp` command; `devin` likewise overrides the default `devin acp` command.
-Values are trimmed; a blank or whitespace-only value behaves as no override, so an alias keeps its default command.
-Availability checks always resolve `acpx_path`. They also probe the executable named first in the effective non-blank raw command when it is a bare command name or clean absolute path. Relative, quoted, or escaped raw commands are not pre-probed; `acpx` executes them from the worktree. These checks do not invoke the ACP target or test its credentials.
-
-|         |                     |
-| ------- | ------------------- |
-| Type    | `map[string]string` |
-| Default | Empty               |
-
-Example:
-
-```yaml
-agent: acp:local-gemini
-acp_registry_overrides:
-  local-gemini: node /opt/mock-acp-agent.mjs
-```
-
-For `devin`, an override is also the way to select a model slug from `devin models list` that Devin does not advertise over ACP, since [`agent_config.devin.model`](#agent_config) accepts only ACP-advertised ids:
-
-```yaml
-agent: devin
-acp_registry_overrides:
-  devin: devin acp --model <slug>
-```
+Accepted for configuration compatibility and ignored. This build has no ACP
+targets.
 
 ### agent_path_override
 
-Custom binary paths for native agents.
-When set, `no-mistakes` uses this path instead of looking up the binary on `PATH`.
-ACP agents and aliases use `acpx_path` for the bridge; use `acp_registry_overrides` to replace a raw target command such as `cursor-agent acp`.
+Custom binary paths. Only the `omp` key is used.
 
 |         |                                   |
 | ------- | --------------------------------- |
 | Type    | `map[string]string`               |
-| Default | Empty (uses default binary names) |
+| Default | Empty (resolves `omp` on `PATH`)  |
 
-Default native binary names when no override is set:
-
-| Agent      | Binary     |
-| ---------- | ---------- |
-| `claude`   | `claude`   |
-| `codex`    | `codex`    |
-| `grok`     | `grok`     |
-| `rovodev`  | `acli`     |
-| `opencode` | `opencode` |
-| `pi`       | `pi`       |
-| `copilot`  | `copilot`  |
-| `antigravity` | `agy`      |
+```yaml
+agent_path_override:
+  omp: /Users/you/.bun/bin/omp
+```
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. no-mistakes maps each field down to whatever mechanism that harness actually uses, so you no longer have to know each CLI's own flag.
+Model and reasoning effort for omp.
 
-|         |                                                                                     |
-| ------- | ----------------------------------------------------------------------------------- |
-| Type    | `map[string]{model, effort, quota_provider}`                                         |
-| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `acp:<target>` |
-| Default | Empty (every harness keeps its own defaults)                                        |
-
-```yaml
-agent_config:
-  codex:
-    model: gpt-5.4
-    effort: low
-  claude:
-    model: sonnet
-    effort: high
-  opencode:
-    model: openai/gpt-5
-  cursor:
-    model: gpt-5
-```
-
-`effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The value is passed to the harness as written, so a level that harness does not implement is rejected by the harness itself rather than silently downgraded.
-
-How each field maps:
-
-| Agent             | `model`                                       | `effort`                          | Accepted effort levels                              |
-| ----------------- | --------------------------------------------- | --------------------------------- | --------------------------------------------------- |
-| `claude`          | `--model`                                     | `--effort`                        | `low`, `medium`, `high`, `xhigh`, `max`             |
-| `codex`           | `-m`                                          | `-c model_reasoning_effort="…"`   | `minimal`, `low`, `medium`, `high`                  |
-| `grok`            | `--model`                                     | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
-| `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `opencode`        | session `model` (needs `provider/model`)         | session model `variant`        | provider-specific                                   |
-| `cursor`, `devin`, `acp:*` | `acpx --model`                       | not expressible                   | -                                                   |
-| `rovodev`         | not expressible                               | not expressible                   | -                                                   |
-| `antigravity`     | not expressible                               | not expressible                   | -                                                   |
-
-`opencode` needs the `provider/model` form (for example `openai/gpt-5`) because its session API takes the provider and the model as separate fields; a bare model name is refused at config load rather than dropped.
-OpenCode 2 receives both knobs in the model reference when the session is created; an effort-only profile resolves the location's default model first.
-OpenCode 1 receives them in the session message.
-Neither version receives model flags in the launch command, because `opencode serve` rejects them.
-
-An entry may also declare `quota_provider`, the quota-axi provider ID used as routing input when `quota_routing.enabled` is on. It does not set a harness option. See [quota-aware routing](#quota_routing) for provider defaults, Pi's explicit-provider requirement, and account selection.
-
-`rovodev` and `antigravity` have no mechanism no-mistakes can set - `acli rovodev serve` plus its REST session API take no model parameter, and the `agy` CLI parses flags strictly - so setting `model` or `effort` for them is a config error. An entry containing only `quota_provider` is valid. Reach for [`agent_args_override`](#agent_args_override) there if your build of the CLI accepts a flag. Reasoning effort is likewise unavailable for ACP targets: no-mistakes drives them through `acpx`, which exposes `--model` but no effort surface. acpx also accepts only the model ids a target advertises over ACP; for `devin` that is a subset of `devin models list`, and [`acp_registry_overrides`](#acp_registry_overrides) is the escape hatch for the rest.
-
-`agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored. For first-class ACP aliases, `cursor` and `acp:cursor` share a profile, as do `devin` and `acp:devin`: the selected spelling's entry wins when both are configured; otherwise the other spelling's entry applies. This also applies to review-agent profiles.
-
-**Precedence for unpinned runs.** `agent_args_override` wins. Opt-in [per-run Pi profiles](#per-run-pi-profiles) and [reviewer profiles](#per-run-reviewer-profiles) have separate, immutable selection contracts. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
+|         |                                             |
+| ------- | ------------------------------------------- |
+| Type    | `map[string]{model, effort, quota_provider}` |
+| Keys    | `omp`                                       |
+| Default | Empty (omp keeps its own defaults)          |
 
 ```yaml
 agent_config:
-  codex:
-    model: gpt-5.4   # ignored: the raw -m below pins it
-    effort: low      # applied: nothing raw pins reasoning depth
-agent_args_override:
-  codex:
-    - -m
-    - o3
+  omp:
+    model: dashscope/qwen4-max
+    effort: xhigh
 ```
+
+`effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max` and is
+passed to omp as `--thinking`. `model` is passed as `--model`. `agent_config` is
+global-only; a repository block is ignored.
+
+**Precedence.** A raw `agent_args_override.omp` flag that already pins
+`--model` or `--thinking` wins, and `agent_config` does not emit that knob.
 
 ### Per-run reviewer profiles
 
-Choose a reviewer independently of the primary author/fixer:
+Removed. This build has no reviewer/fixer role split: a per-run `--model` /
+`--effort` pin, when supplied, applies to every pipeline step.
 
-```sh
-no-mistakes axi run --intent "the user's goal" \
-  --reviewer codex --reviewer-model gpt-5.4 --reviewer-effort high
-```
+### Per-run run profiles
 
-`--reviewer` requires an explicit harness with verified model and effort
-selection: `claude`, `codex`, `copilot`, `grok`, `opencode`, or `pi`.
-`cursor`, `devin`, every `acp:<target>`, `rovodev`, and `antigravity` cannot
-be pinned because they lack at least one of these mechanisms. Omitted model
-and effort fields inherit `agent_config` for the selected harness, and both
-must resolve before launch.
-Pinned reviewer model names are limited to 256 characters from
-`[A-Za-z0-9._-/]` and cannot start with `-`. A model valid in `agent_config`
-may still be refused as a pinned reviewer, including `opus[1m]`, Bedrock IDs
-containing `:`, and OpenCode IDs such as `ollama/qwen3:8b`.
-Pi reviewers also require the provider-qualified model ID described under
-[per-run Pi profiles](#per-run-pi-profiles).
-Unsupported tuning, unavailable binaries, and raw `agent_args_override` for
-the selected reviewer harness are refused before an active run is cancelled.
-For ordinary and proof-mode launches, reviewer availability and trusted
-instruction-suppression policy are checked before a push changes private-gate
-refs or takes custody. An older daemon without reviewer-resolution support is
-refused before submission.
-Model availability and authentication remain the harness's responsibility.
-
-The resolved harness, model and effort are stored atomically in
-`runs.reviewer_profile` and cannot be replaced or cleared. They override
-`review_agents.reviewer`, `reviewer_after_round`, and the reviewer portion of a
-Pi run pin. The primary and fixer keep their existing selection. Each run has
-its own pin, so concurrent runs can choose different reviewers. Later global
-profiles, raw arguments and reviewer routing cannot replace it during recovery.
-Trusted instruction-suppression policy still applies, and a missing reviewer
-fails closed rather than falling back to the primary.
-
-Omit the reviewer flags to reattach. Explicit selections must match the stored
-pin, including on nonce replay and receipt claims. Retries preserve the pin and
-retain the ordinary retry configuration checks. `rerun` inherits the resolved
-reviewer unless `--reviewer` explicitly selects a replacement for the new run.
-A fresh `axi run` without reviewer flags uses current configuration, including
-any newly requested Pi profile, and never inherits the previous run's reviewer
-pin, even when the push is up to date. Requested profiles are visible in
-[`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status) and
-[`stats --run <id>`](/no-mistakes/reference/cli/#no-mistakes-stats).
-This does not infer model families or select a fallback reviewer.
-
-### Per-run Pi profiles
-
-Select a profile when creating a validation run, without editing global config:
-
-```sh
-no-mistakes axi run --intent "the user's goal" \
-  --model openai-codex/gpt-5.4 --effort high
-```
-
-`--model` and/or `--effort` opt in. Each explicit field overrides
-`agent_config.pi`; an omitted field inherits that global default. Both must
-resolve to nonempty values before a run starts. Use a provider-qualified model
-ID from Pi's catalog, not a bare name, URL, glob, or `:thinking` suffix.
-Supported effort spellings are `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
-Availability, authentication, and model-specific reasoning support remain Pi's
-responsibility. For optional quota evidence at run start, see
-[quota-aware routing](#quota_routing).
-
-A pin applies to **every pipeline duty**, including reviewer and fixer roles,
-unless an explicit per-run reviewer profile overrides the reviewer.
-The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
-non-Pi `review_agents`, except reviewer entries replaced by an explicit per-run
-reviewer). Under the default trust policy, a nonempty `agent` in
-the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
-global scalar or fallback list for this check, just as it does for an ordinary
-run. This lets one project opt into Pi profiles with trusted `agent: pi` while
-other projects keep a global `agent: auto` or another global selection. When the
-trusted project config does not select an agent, the global selection must itself
-be Pi-only. If the trusted default branch enables `allow_repo_commands: true`,
-the submitted branch instead becomes the source of any repository `agent`
-override. Without that opt-in, an `agent: pi` that exists only on the submitted
-feature branch cannot authorize the profile. Unreadable or malformed
-submitted/trusted config refuses the profile. These checks run before any active
-validation is cancelled. Pi role-specific model/effort values are superseded by
-the run pin. Native `--model`, `--provider`, `--models`,
-`--thinking` (including `--flag=value`), or `--` in
-`agent_args_override.pi` conflict at launch: move defaults to `agent_config.pi`
-rather than combining two selection mechanisms.
-
-The daemon resolves the values once and stores `runs.pi_profile` atomically
-with run creation. That field cannot be changed or cleared. The pin survives
-retries and daemon recovery. Later
-global model, effort, agent-chain, role, or raw selection-flag changes cannot
-replace it. Recovery still enforces trusted repository policies and refuses
-unusable configuration or a missing Pi binary rather than switching harnesses.
-The pin fixes selection parameters, not provider credentials, model-catalog
-contents, or other agent settings; credentials are never stored in it.
-
-Reattaching with omitted flags preserves the existing pin. Explicit fields must
-match it; a different profile requires a new run. The same rule binds nonce
-replays and receipt claims. `rerun --model ... --effort ...` selects a profile
-for a **new** run; without those flags a rerun uses current global configuration,
-not its predecessor's pin. Existing runs and all callers omitting both flags
-remain unpinned and keep the previous global-config behavior. Concurrent runs
-hold independent pins without modifying shared configuration.
-
-Structured AXI status and daemon run/receipt responses expose `pi_profile:
-{model, effort}` only for pinned runs. `no-mistakes stats --run <id>` shows that
-requested profile alongside per-invocation served-model and usage evidence;
-a pin is not a claim that a provider reported usage. These values stay local,
-not in remote analytics. The CLI checks daemon support before a fresh pinned
-submission, so an older daemon cannot silently launch it without a pin.
+A `--model`/`--effort` pair on `axi run` (or `axi rerun`) pins one omp model and
+effort for that run, immutable after creation. Omitted fields inherit
+`agent_config.omp`. See [`axi run`](/no-mistakes/reference/cli/#no-mistakes-axi-run).
 
 ### review_agents
 
-Optional, **global-only** harness and model/effort overrides for the review loop.
-Repository `.no-mistakes.yaml` cannot set these profiles; a matching
-[`repository_overrides`](#machine-local-review-agents) entry in this file can
-replace individual roles for one repository. Omitted roles keep the
-normal `agent` selection and fallback chain; other pipeline steps are unchanged.
+Accepted as a parse-only compatibility tombstone and ignored. There is no
+reviewer/fixer role routing in this build; every step uses the one omp
+configuration.
 
-```yaml
-review_agents:
-  reviewer:
-    agent: pi
-    model: anthropic-vertex/claude-opus-4-8
-    effort: max
-  fixer:
-    agent: pi
-    model: google-vertex/gemini-3.8-flash
-    effort: max
-```
+### session_reuse
 
-The role keys are `reviewer`, `fixer`, and their optional later-round overlays
-`reviewer_after_round` and `fixer_after_round`. Each configured role requires one
-explicit `agent` (the same harness names as `agent_config`; no `auto` or lists).
-Model and effort are optional and inherit `agent_config` for that harness when
-empty. Nonempty role values override that profile, but native
-`agent_args_override` flags still win. Model availability, credentials, and
-supported effort levels remain the harness/provider's responsibility.
+Accepted for configuration compatibility and ignored. Every omp invocation runs
+cold; no pipeline turn resumes conversational state.
 
-Reviewer roles (`reviewer` and `reviewer_after_round`) also accept an ordered,
-explicit `fallback` list. Each entry requires `agent` and accepts `model` and
-`effort` with the same inheritance and native-argument precedence as the role:
+### quota_routing
 
-```yaml
-review_agents:
-  reviewer:
-    agent: codex
-    fallback:
-      - {agent: pi, model: openai-codex/gpt-5.4, effort: high}
-```
-
-Only recognized invocation-time provider quota exhaustion advances this list.
-Launch errors, transient failures, invalid review output, timeouts and cancellation
-do not. Each replacement receives the complete review prompt without a session,
-inside the invocation's existing timeout. Subsequent review and coverage turns
-using that role stay on its selected reviewer rather than retrying exhausted
-candidates. The base and later-round reviewer roles have separate fallback chains.
-If all configured reviewers exhaust their quota, review fails without approval.
-The fallback log names both configured candidates, including same-harness profiles.
-See [local invocation evidence](/no-mistakes/reference/environment/#what-stays-local-and-what-leaves-the-machine)
-for the recorded identities.
-An OpenCode turn that ran tools, or whose tool activity is unknown, cannot fall
-back to a fresh reviewer session.
-These candidates are independent reviewer instances and never fall back to the
-writer or fixer implicitly. `fallback` is operator-only, does not use quota routing,
-and accepts neither nested fallback lists nor `after_round`; fixer roles reject it.
-
-#### Later-round role overrides
-
-`reviewer_after_round` and `fixer_after_round` are opt-in overlays for long
-review loops, where the first pass is worth a stronger tier and later rounds are
-mostly re-checking a fix the stronger model already prescribed. Each takes the
-same `agent` / `model` / `effort` fields plus `after_round`: the number of
-leading rounds that stay on the base role. `after_round` defaults to `1`, so the
-overlay takes over from round 2.
-
-```yaml
-review_agents:
-  fixer:
-    agent: pi
-    model: anthropic-vertex/claude-opus-4-8
-  fixer_after_round:
-    agent: pi
-    model: google-vertex/gemini-3.8-flash
-    after_round: 2
-```
-
-Rounds 1 and 2 above run on the `fixer` profile; round 3 and every later round
-run on `fixer_after_round`. The direction is yours: point the overlay at a
-cheaper tier to stop long loops from spending at the top tier, or at a stronger
-one to escalate a loop that is not converging.
-
-Without these keys nothing changes - every round runs on the role it runs on
-today. They only select the harness for a round; they never change how many
-rounds happen, and `auto_fix` plus the gate remain the only things that bound
-the loop. The overlay applies to a round the pipeline numbered; an invocation
-outside a numbered round keeps the base role. Only the base roles accept plain
-`agent` / `model` / `effort` - setting `after_round` on `reviewer` or `fixer`, or
-a value below 1, is a configuration error. Because a later-round fixer may be a
-harness that cannot resume sessions, fixer session reuse is reported for every
-fixer a run can use: configuring a non-resumable `fixer_after_round` turns fix
-turns cold for the whole run rather than handing round 3 a session it cannot
-resume. `no-mistakes stats --run <id>` shows the agent and served model per
-invocation alongside its round, so which tier served which round is visible
-after the fact.
-
-Both roles can use the same harness with different models. Reviews and rereviews
-always run fresh; only review fixes reuse the fixer's session when
-`session_reuse` is enabled and the fixer supports it. These settings do not
-select the agents repairing tests, documentation, or CI. An opt-in
-[per-run Pi profile](#per-run-pi-profiles) supersedes these configured role
-values for that run. See [per-run reviewer profiles](#per-run-reviewer-profiles)
-for independent reviewer selection and its precedence over both mechanisms.
-Eval capture strips these profiles so replay candidates remain
-authoritative.
+Accepted for configuration compatibility and ignored. One omp configuration
+serves every step, so there is no agent ordering or mid-run provider switch.
 
 ### agent_args_override
 
-Extra CLI flags to pass to each native agent.
-Use this for anything [`agent_config`](#agent_config) does not cover - service tier, permission mode, profiles, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
+Extra CLI flags for omp.
 
-|         |                                                           |
-| ------- | --------------------------------------------------------- |
-| Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity` |
-| Default | Empty (no extra flags)                                    |
-
-User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
-
-| Agent      | Reserved flags                                                                                              |
-| ---------- | ----------------------------------------------------------------------------------------------------------- |
-| `claude`   | `-p`, `--print`, `--verbose`, `--output-format`, `--json-schema`, `-r`, `--resume`, `--session-id`, `-c`, `--continue`, `--fork-session` |
-| `codex`    | `exec`, `resume`, `--resume`, `--session`, `--session-id`, `--thread`, `--thread-id`, `--last`, `--json`, `--color` |
-| `grok`     | `-p`, `--single`, `--prompt-file`, `--prompt-json`, `--output-format`, `--json-schema`, `-r`, `--resume`, `-c`, `--continue`, `--fork-session`, `--session-id`, `--system-prompt-override`, `--system-prompt`, `--rules`, `--append-system-prompt`, `--agent`, `--agents`, `--verbatim`, `--no-subagents`, `--no-auto-update`, `--cwd`, `--restore-code`, `--worktree`, `--worktree-ref` |
-| `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                               |
-| `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
-| `pi`       | `--mode`, `--no-session`, `-c`, `--continue`, `-r`, `--resume`, `--session`, `--session-id`, `--fork`     |
-| `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
-| `antigravity` | `--dangerously-skip-permissions`, `--print`, `--json-schema`, `--output-format`, `--conversation`, `-c`, `--continue` |
-
-For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
-
-The selected Codex profile/model's provider must accept that schema. A recognized provider schema rejection lets the next eligible configured fallback agent take over. Without one, the run stops with `codex structured-output incompatibility` and preserves the provider diagnostic. The Codex schema incompatibility is not retried by the adapter or by automatic crash retries. A Review or Test analyzer rerun restarts the agent chain, so Codex may be called again and fail fast before the fallback runs. Review is neither skipped nor retried without the schema. Select a compatible Codex profile/model or configure a different agent route, then rerun the pipeline so review can complete. A profile that works for plain prompts, such as Rebase, can still reject structured review requests.
-
-The Claude, Codex, Grok, Pi, and Antigravity session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
-
-Smart defaults:
-
-- For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
-- For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
-- For `grok`, supplying `--permission-mode` or `--always-approve` suppresses the default `--permission-mode bypassPermissions`. No model flag is added: Grok uses its current configured default unless you explicitly set `-m` or `--model`.
-- For `antigravity`, supplying `-t` or `--print-timeout` suppresses the default `--print-timeout 24h`.
-
-Permission and sandbox flags affect the underlying agent, but they do not disable no-mistakes' pipeline prompt steering.
-Pipeline agents are still told to keep intentional writes inside the worktree and avoid mutating system state outside it.
-
-Example:
+|         |                         |
+| ------- | ----------------------- |
+| Type    | `map[string][]string`   |
+| Keys    | `omp`                   |
+| Default | Empty (no extra flags)  |
 
 ```yaml
 agent_args_override:
-  claude:
+  omp:
     - --model
-    - sonnet
-    - --permission-mode
-    - acceptEdits
-  codex:
-    - -m
-    - gpt-5.4
-    - -c
-    - service_tier="priority"
-    - -c
-    - model_reasoning_effort="low"
-  grok:
-    - --reasoning-effort
-    - high
-  rovodev:
-    - --profile
-    - work
-  pi:
-    - --provider
-    - google
+    - dashscope/qwen4-max
+    - --thinking
+    - xhigh
 ```
 
-Do not put a model flag under `opencode` here: these flags go to `opencode serve`, which exits with usage on an unknown option. Use `agent_config.opencode.model` instead.
-
-For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). For immutable selection rules, see [per-run Pi profiles](#per-run-pi-profiles) and [reviewer profiles](#per-run-reviewer-profiles). For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+Flags are inserted before no-mistakes' managed flags. A raw `--model` or
+`--thinking` pin wins over `agent_config`. Managed flags (`--mode`,
+`--no-session`, and session-resume flags) are refused at config load so the
+JSONL stream stays parseable.
 
 ### forge_profiles
 
@@ -957,57 +615,6 @@ Daemon log verbosity.
 | Values  | `debug`, `info`, `warn`, `error` |
 | Default | `info`                           |
 
-### session_reuse
-
-Per-run agent session reuse for the review loop's fixer role.
-
-|         |        |
-| ------- | ------ |
-| Type    | `bool` |
-| Default | `true` |
-
-When enabled and every fixer that can serve the run supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns. A configured later-round fixer that cannot resume therefore makes all fixer turns cold for that run; see [later-round role overrides](#later-round-role-overrides).
-Review turns - the initial full review and every full rereview - always run as fresh invocations regardless of this setting. They are also session-free, unless the run has a [review conversation](/no-mistakes/reference/repo-config/#reviewconversation) AND this setting is on, in which case one reviewer session spans exactly one review pass - the asking turn and the finalize turn that receives its answers - and never a code change; with `session_reuse: false` that finalize turn runs cold, which costs a re-read rather than the answers, because the finalize prompt is the complete review prompt plus the answers. Either way a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
-The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
-When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record. Pi emits per-invocation usage after a resume, unlike Codex's cumulative session counters.
-Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts; Pi's own session directory retains its native transcript. Keep Pi's session directory private, and keep any `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` setting stable while a run is active so a daemon restart can find the fixer session.
-The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
-Set `false` to force every agent invocation cold.
-
-### quota_routing
-
-Opt-in, quota-aware agent ordering at run start.
-
-|         |                                          |
-| ------- | ---------------------------------------- |
-| Type    | `map[string]{enabled, expected_run_length, read_timeout, quota_axi_path}` |
-| Default | `enabled: false` (the feature is opt-in) |
-
-When `enabled: true`, no-mistakes reads **one** snapshot with the locally installed `quota-axi --full --json` at the start of each run and reorders the resolved agent list by quota evidence before the run picks its head agent. Explicit [`review_agents`](#review_agents) overrides do not use quota routing. Ordering follows these rules:
-
-- An agent with concrete proof of exhaustion - runway `exhausted_now`, or a known `0%` remaining - is moved to the back of the list (it stays in the list, so the existing launch-failure fallback still has somewhere to go).
-- An agent whose runway is `projected_exhaustion` must have a reported usable runway greater than `expected_run_length`; otherwise it is treated like an exhausted one.
-- Runway `through_reset` passes.
-- Surviving agents with known applicable scopes and a `spendPriority` for each scope rank by the minimum of those priorities, highest first; ties keep your configured order.
-- An agent without proof of exhaustion whose applicable quota or `spendPriority` is unknown stays eligible but ranks below every ranked agent. Unknown candidates keep their configured order relative to each other.
-
-Native `claude` and `codex` retain account, profile, and model-scope matching. All other agents, including Pi, use only provider-level `all_models` or `all_products` scopes for their declared provider. Vendor-specific and named-model scopes do not affect their routing. Without provider-wide evidence, quota is unknown: the agent stays eligible and retains its configured order among unknown candidates.
-
-Each agent keeps its own [`agent_config`](#agent_config) model and effort: only the order changes. A missing, slow, or unreadable `quota-axi` keeps your configured order, logs the reason, and never blocks a run. The mid-run quota switch remains enabled in this case. Inspect the recorded outcome with `no-mistakes axi status` or [`no-mistakes stats`](/no-mistakes/reference/cli/#no-mistakes-stats). See [local telemetry](/no-mistakes/reference/environment/#what-stays-local-and-what-leaves-the-machine) for storage and privacy.
-
-Mid-run, a recognised quota-exhaustion error advances to the next agent in the chosen order with a fresh session, dropping any resumed session. This can happen once per agent, and later invocations do not return to earlier agents. If no successor remains, the error is returned. The existing agent-unavailable fallback is unchanged. Daemon recovery reuses the recorded order and last recorded switch without reading another snapshot, even if the global opt-in setting has since changed.
-
-Subkeys:
-
-- `enabled` (bool, default `false`): the opt-in switch.
-- `expected_run_length` (positive duration, default `90m`): the runway floor. A projected exhaustion that outlasts this window does not demote the agent; the value is an expectation for ordering, never a run cancel.
-- `read_timeout` (positive duration, default `15s`): bound on the single quota-axi read at run start. Quota-axi may delegate an expired session's renewal to the vendor CLI that owns it, so a slow read waits up to this long before the run proceeds on the configured order.
-- `quota_axi_path` (string, default `quota-axi` on `PATH`): the executable to run.
-
-`quota_routing` is global-only: it decides which of this machine's credential-bearing agents a run spends, so a `quota_routing` block in a repository's `.no-mistakes.yaml` is a config error rather than an ignored key.
-
-Provider mapping: `claude` and `codex` map to their same-named quota-axi providers by default. Any agent can declare [`quota_provider`](#agent_config) under `agent_config` to select a provider explicitly. An unmapped non-Pi agent ranks as unknown quota. A `pi` without an explicit provider disables reordering for the whole run with one warning: the configured order stands, the mid-run switch stays off, and the run record says why. Model names never infer a provider. For Pi with `quota_provider: codex`, the model prefix selects the published credential key (`codex-native/…` reads `codex-home`; `openai-codex-work/…` reads that Pi credential). For `quota_provider: claude`, explicit `profile:…` and `claude-swap:…` prefixes select that published profile. Other providers use their default account; a Pi provider prefix such as `kimi-coding` is not an account key. Routing checks published `accountKeys` membership in both quota schemas. A named credential missing from the report stays unknown rather than borrowing another account’s evidence.
-
 ### worktree_roots
 
 Where a repository's pipeline run worktrees are created.
@@ -1320,10 +927,10 @@ Each entry renders to one trailer line. It supports literal text and two Go-styl
 
 | Variable | Value |
 | --- | --- |
-| `{{.Agent}}` | The agent that actually ran the invocation; with an `agent` fallback list, the one that answered, not the first configured |
+| `{{.Agent}}` | The agent that actually ran the invocation (`omp` in this build) |
 | `{{.Model}}` | The model the agent reported serving the invocation, or `unknown` when it reports none |
 
-For example, this renders `Assisted-by: no-mistakes:codex:gpt-5.5` on a fix made by Codex after a fallback from Claude:
+For example, this renders `Assisted-by: no-mistakes:omp:qwen4-max` on a fix made by omp:
 
 ```yaml
 commit:
@@ -1333,7 +940,7 @@ commit:
 ```
 
 `{{.Agent}}` and `{{.Model}}` come from agent output, so each is cut to its first whitespace-separated token, reduced to letters, digits, and `-_.:/`, and limited to 64 bytes; a value with nothing left renders as `unknown`.
-Claude, Codex, Grok, and Pi report the model they served; other agents render `unknown`.
+omp reports the model it served; if it reports none, the trailer renders `unknown`.
 Every entry must render to a `Key: value` line that git recognizes as a trailer.
 The key must be literal: an entry starts with its full `Key: ` prefix as plain text, and placeholders are allowed only in the value after it, so `{{.Agent}}-assisted: yes` is rejected.
 Entries are limited to 1,024 bytes and 16 placeholders, the list to 16 entries, and the same template restrictions and unsafe-character rules as `commit.fix_message` apply.
@@ -1440,27 +1047,6 @@ Changes apply to the next run, and to a run recovered after a daemon restart, wh
 
 Eval replay cases store no remote URL, so a replay does not apply a matching entry's review, documentation, or test guidance.
 
-#### Machine-local review agents
-
-A matching entry can choose the review loop's harnesses for that one repository, with the same roles and fields as the global [`review_agents`](#review_agents) block:
-
-```yaml
-review_agents:
-  reviewer: {agent: claude}
-  fixer: {agent: codex}
-repository_overrides:
-  https://github.com/acme/widget.git:
-    review_agents:
-      reviewer:
-        agent: opencode
-        model: openrouter/z-ai/glm-4.6
-```
-
-Each role the entry names replaces the global entry for that role whole, including its `fallback` and `after_round`; roles it omits keep the global value. Above, `acme/widget` reviews on OpenCode and still fixes on Codex, and every other repository keeps both global roles. An entry without `review_agents` changes nothing.
-Entries are validated at load with the same rules and messages as the global block, prefixed with the override's normalized remote.
-The entry is matched against the registered repository's remote, so a pushed branch can never select it, and the repository's own `.no-mistakes.yaml` still cannot set `review_agents`.
-For run-pin precedence and eligibility, see [per-run Pi profiles](#per-run-pi-profiles) and [per-run reviewer profiles](#per-run-reviewer-profiles).
-
 #### Machine-local commands
 
 A matching `commands` block supplements the repository's trusted commands; it never changes their strings or removes them.
@@ -1531,7 +1117,7 @@ When enabled and no intent was supplied directly for the run, no-mistakes can re
 | `intent.publish_intent`   | `bool`     | `true`  | Publish the generated Intent section on PR bodies by default |
 | `intent.check`            | `object`   | `off`    | Add deterministic term and pattern checks for run intent       |
 
-Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+Valid `disabled_readers` values are `omp`.
 
 `intent.publish_intent: false` is a global, operator-side default that keeps the generated `## Intent` section out of the PR body for runs started without an explicit override. It is the caller-side counterpart of the repository's trusted [`pr.publish_intent`](/no-mistakes/reference/repo-config/#prpublish_intent): both are tighten-only, the repository's trusted policy remains the ceiling a caller can never exceed, and review, test, document, lint, and CI auto-fix prompts keep the full intent. Under the caller-side omission the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; the intent is withheld from them, never scanned out of their output. A run records the folded decision (the `axi run --no-publish-intent` flag OR this global default) at start; reruns inherit it, and a mid-run config change never re-publishes. This field is global-only: a pushed branch's `.no-mistakes.yaml` cannot express it.
 

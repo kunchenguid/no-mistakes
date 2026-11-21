@@ -80,10 +80,6 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 					pushOptions = append(pushOptions, option)
 				}
 			}
-			reviewer, err := parseReviewerPushOptions(pushOptions)
-			if err != nil {
-				return err
-			}
 			// Resolve the daemon root from the gate itself, not NM_HOME: this
 			// runs as a git hook helper, and git sets no NM_HOME for a hook.
 			p, err := paths.ForGate(gatePath)
@@ -96,13 +92,10 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 			var result ipc.AdmitPushResult
-			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, ReviewerProfile: reviewer}, &result); err != nil {
+			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath}, &result); err != nil {
 				return err
 			}
 			if !result.Context.Nested {
-				if reviewer != nil && !result.ReviewerValidated {
-					return fmt.Errorf("daemon does not validate reviewer admission; restart it before pushing a reviewer selection")
-				}
 				return nil
 			}
 			return emitGateContextRefusal(cmd, gatecontext.Result{
@@ -165,11 +158,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			piProfile, err := parsePiProfilePushOptions(pushOptions)
-			if err != nil {
-				return err
-			}
-			reviewer, err := parseReviewerPushOptions(pushOptions)
+			runProfile, err := parseRunProfilePushOptions(pushOptions)
 			if err != nil {
 				return err
 			}
@@ -246,8 +235,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				PRBaseBranch:           prBaseBranch,
 				BaseRemote:             baseRemote,
 				OmitIntent:             omitIntent,
-				PiProfile:              piProfile,
-				ReviewerProfile:        reviewer,
+				RunProfile:             runProfile,
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,

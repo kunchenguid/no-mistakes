@@ -68,8 +68,8 @@ func TestReplayUsesCallerHOMEAndKeepsIsolatedNMHOME(t *testing.T) {
 	}
 
 	for _, candidate := range []Candidate{
-		{Agent: types.AgentClaude, Model: "test"},
-		{Agent: types.AgentPi, Model: "test"},
+		{Agent: types.AgentOMP, Model: "test"},
+		{Agent: types.AgentOMP, Model: "test"},
 	} {
 		name := string(candidate.Agent)
 		probePath := filepath.Join(probeDir, name+".probe")
@@ -121,7 +121,7 @@ func TestReplayUsesCallerHOMEAndKeepsIsolatedNMHOME(t *testing.T) {
 		pipelineBin += ".cmd"
 	}
 	installNamedHOMEProbeHarness(t, pipelineBin, filepath.Join(probeDir, "pipeline.probe"), piHOMEProbeReply)
-	pipelineAgent, err := agent.NewWithOptions(types.AgentPi, pipelineBin, nil, agent.Options{
+	pipelineAgent, err := agent.NewWithOptions(types.AgentOMP, pipelineBin, nil, agent.Options{
 		Profile: agentcfg.Profile{Model: "test"},
 	})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestReplayUsesCallerHOMEAndKeepsIsolatedNMHOME(t *testing.T) {
 
 func hideHarnessDirOverrides(t *testing.T) {
 	t.Helper()
-	unsetEnv(t, "PI_CODING_AGENT_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR")
+	unsetEnv(t, "OMP_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR")
 }
 
 func unsetEnv(t *testing.T, keys ...string) {

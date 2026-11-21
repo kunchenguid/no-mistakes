@@ -239,7 +239,7 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	session, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1})
+	session, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	candidate := Candidate{Agent: types.AgentClaude, Model: "test", Effort: agentcfg.EffortHigh}
+	candidate := Candidate{Agent: types.AgentOMP, Model: "test", Effort: agentcfg.EffortHigh}
 	session, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: candidate, Repeats: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -755,7 +755,7 @@ func TestCaptureAndReportScoresMatchingCandidateAsTruePositive(t *testing.T) {
 	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "labeled", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1}); err != nil {
+	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "labeled", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1}); err != nil {
 		t.Fatal(err)
 	} else if len(evaluations) != 1 || evaluations[0].TruePositive != 1 || evaluations[0].FalseNegative != 0 || evaluations[0].Pending != 0 {
 		t.Fatalf("replay scores = %#v, want true-positive match on the same issue", evaluations)
@@ -801,7 +801,7 @@ func TestCaptureAndReportLeavesUnmatchedCandidateFindingsPending(t *testing.T) {
 	if len(cases) != 1 || cases[0].Labels.HasGold() {
 		t.Fatalf("approve capture = %#v, want unlabeled gold", cases)
 	}
-	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1}); err != nil {
+	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1}); err != nil {
 		t.Fatal(err)
 	} else if len(evaluations) != 1 || evaluations[0].FalsePositive != 0 || evaluations[0].Pending != 1 {
 		t.Fatalf("replay scores = %#v, want unmatched finding queued, not a false-positive", evaluations)
@@ -843,7 +843,7 @@ func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidate.Agent != types.AgentCodex || candidate.Model != "gpt-5.4" || candidate.Effort != "" {
+	if candidate.Agent != types.AgentOMP || candidate.Model != "gpt-5.4" || candidate.Effort != "" {
 		t.Fatalf("candidate = %#v", candidate)
 	}
 }

@@ -1,17 +1,9 @@
 package intent
 
 // AllReaders returns the default set of agent transcript readers, minus any
-// the caller has disabled by name. Disabled names are matched
-// case-insensitively against each reader's Name().
+// the caller has disabled by name. This build supports only omp.
 func AllReaders(disabled map[string]bool) []Reader {
-	all := []Reader{
-		NewClaudeReader(),
-		NewCodexReader(),
-		NewOpenCodeReader(),
-		NewRovoDevReader(),
-		NewPiReader(),
-		NewCopilotReader(),
-	}
+	all := []Reader{NewOMPReader()}
 	if len(disabled) == 0 {
 		return all
 	}

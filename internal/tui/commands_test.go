@@ -143,9 +143,8 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	newRun.Error = nil
 
 	homes := t.TempDir()
-	claudeHome, codexHome := filepath.Join(homes, "claude account"), filepath.Join(homes, "codex account")
-	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
-	t.Setenv("CODEX_HOME", codexHome)
+	ompHome := filepath.Join(homes, "omp account")
+	t.Setenv("OMP_HOME", ompHome)
 	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
 	})
@@ -160,8 +159,8 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		if params.CommitIdentity == nil || params.CommitIdentity.AuthorName != "TUI Submitter" || params.CommitIdentity.CommitterEmail != "tui@example.test" {
 			return nil, fmt.Errorf("rerun lost submitting identity: %+v", params.CommitIdentity)
 		}
-		if params.TranscriptHomes == nil || params.TranscriptHomes.ClaudeConfigDir != claudeHome || params.TranscriptHomes.CodexHome != codexHome {
-			return nil, fmt.Errorf("rerun lost the selected transcript homes: %#v", params.TranscriptHomes)
+		if params.TranscriptHomes == nil || params.TranscriptHomes.OMPHome != ompHome {
+			return nil, fmt.Errorf("rerun lost the selected transcript home: %#v", params.TranscriptHomes)
 		}
 		return &ipc.RerunResult{RunID: newRun.ID}, nil
 	})
@@ -247,8 +246,7 @@ func TestModel_RerunRefusesOlderDaemonTranscriptDiscovery(t *testing.T) {
 				requests <- struct{}{}
 				return &ipc.RerunResult{RunID: "wrong-account-discovery"}, nil
 			})
-			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "selected claude"))
-			t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "selected codex"))
+			t.Setenv("OMP_HOME", filepath.Join(t.TempDir(), "selected omp"))
 			client, err := ipc.Dial(sock)
 			if err != nil {
 				t.Fatal(err)

@@ -176,103 +176,6 @@ func TestReviewStep_RetractedQuestionDoesNotPark(t *testing.T) {
 // half of the contract: the answer reaches the SAME reviewer session, which
 // finishes the pass it paused instead of re-reading the diff from scratch, and
 // the answer is durably recorded for the next cold reviewer.
-func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
-	t.Parallel()
-	turn := 0
-	mock := &sessionMockAgent{}
-	var convDir string
-	mock.respond = func(opts agent.RunOpts) *agent.Result {
-		if opts.Purpose != "review" {
-			t.Errorf("unexpected agent purpose %q", opts.Purpose)
-			return &agent.Result{Output: []byte(`{}`)}
-		}
-		turn++
-		if turn == 1 {
-			// A model that trimmed the example to the fields it was told are
-			// required: no kind, no weight, no asked_at.
-			if err := appendAgentQuestionLine(convDir, `{"id":"q1","question":"keep the legacy route?","options":["keep","remove"]}`); err != nil {
-				t.Errorf("append question: %v", err)
-			}
-			return &agent.Result{Output: []byte(cleanReviewJSON)}
-		}
-		return &agent.Result{Output: []byte(cleanReviewJSON)}
-	}
-
-	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}}, enableReviewConversation)
-	convDir = exec.ReviewConversationDir(run.ID)
-
-	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
-
-	waitForReviewStatus(t, database, run.ID, types.StepStatusAwaitingApproval)
-	if err := reviewqa.AppendAnswer(convDir, reviewqa.Answer{ID: "q1", Answer: "keep", AnsweredBy: "captain", AskOrdinal: 1}); err != nil {
-		t.Fatalf("append answer: %v", err)
-	}
-	if err := exec.Respond(types.StepReview, types.ActionAnswer, nil); err != nil {
-		t.Fatalf("respond with answers: %v", err)
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("executor timed out")
-	}
-
-	reviews := reviewCalls(mock.snapshot())
-	if len(reviews) != 2 {
-		t.Fatalf("expected an asking turn and a finalize turn, got %d", len(reviews))
-	}
-	if reviews[0].Session == nil || reviews[0].Session.ID != "" {
-		t.Fatalf("the asking turn must START a reviewer session, got %+v", reviews[0].Session)
-	}
-	if reviews[1].Session == nil || reviews[1].Session.ID != "sess-1" {
-		t.Fatalf("the finalize turn must RESUME the asking session, got %+v", reviews[1].Session)
-	}
-	if !strings.Contains(reviews[1].Prompt, `answer="keep"`) || !strings.Contains(reviews[1].Prompt, "answered_by=captain") {
-		t.Fatalf("finalize prompt is missing the answer:\n%s", reviews[1].Prompt)
-	}
-	if !strings.Contains(reviews[1].Prompt, "settles ONLY the question it answers") {
-		t.Fatalf("finalize prompt lost the scope-of-an-answer instruction:\n%s", reviews[1].Prompt)
-	}
-	// A resume must not turn the finalize turn into a bare message: the prompt
-	// has to stand on its own so a failed resume degrades to a cold review
-	// rather than a meaningless one.
-	if !strings.Contains(reviews[1].Prompt, "Do a full review pass before returning") {
-		t.Fatalf("finalize prompt is not self-sufficient:\n%s", reviews[1].Prompt)
-	}
-
-	// The answer is persisted where the next COLD reviewer reads it.
-	answers, _, err := database.GetBranchReviewAnswers(repo.ID, run.Branch, 0)
-	if err != nil {
-		t.Fatalf("read branch answers: %v", err)
-	}
-	if len(answers) != 1 || answers[0].Answer != "keep" || answers[0].AnsweredBy != "captain" {
-		t.Fatalf("branch answers = %#v", answers)
-	}
-
-	// The answer round is not a fix round: no code changed, so nothing may
-	// count it as one.
-	steps, err := database.GetStepsByRun(run.ID)
-	if err != nil {
-		t.Fatalf("get steps: %v", err)
-	}
-	rounds, err := database.GetRoundsByStep(steps[0].ID)
-	if err != nil {
-		t.Fatalf("get rounds: %v", err)
-	}
-	if len(rounds) != 2 {
-		t.Fatalf("expected 2 rounds, got %d", len(rounds))
-	}
-	if rounds[1].Trigger != "answer" || rounds[1].IsFixRound() {
-		t.Fatalf("answer round = %q (fix=%v), want trigger answer and not a fix round", rounds[1].Trigger, rounds[1].IsFixRound())
-	}
-	if rounds[0].SelectionSource != nil {
-		t.Fatalf("answering must not record a human selection on the asking round, got %q", *rounds[0].SelectionSource)
-	}
-}
 
 // TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout pins the
 // property that makes waiting-on-answers safe: the agent turn ENDS before the
@@ -658,13 +561,6 @@ func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T)
 	if len(reviews) != 3 {
 		t.Fatalf("expected 3 review turns (initial, post-fix rereview, finalize), got %d", len(reviews))
 	}
-	// The rereview and its finalize replay both judge pipeline-authored code,
-	// so both stay cold: a reviewer session must never span a code change.
-	for i := 1; i < 3; i++ {
-		if reviews[i].Session != nil {
-			t.Fatalf("review turn %d ran with session %+v, want cold across a fix round", i+1, reviews[i].Session)
-		}
-	}
 	if !strings.Contains(reviews[2].Prompt, `answer="yes"`) {
 		t.Fatalf("finalize replay is missing the answer:\n%s", reviews[2].Prompt)
 	}
@@ -677,57 +573,6 @@ func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T)
 // restart back to review inside the same run (a CI repair's RestartFrom), which
 // re-enters this step on a NEW head while RunSessions still holds the identity
 // of the session that reviewed the old one.
-func TestReviewStep_OnlyAFinalizeTurnResumesTheReviewerSession(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name              string
-		finalizingAnswers bool
-		fixing            bool
-		wantResumeOf      string
-	}{
-		{name: "finalize turn resumes the asking session", finalizingAnswers: true, wantResumeOf: "stale-sess"},
-		{name: "plain re-entry starts fresh", wantResumeOf: ""},
-		{name: "fix round runs cold", fixing: true, wantResumeOf: ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir, baseSHA, headSHA := setupGitRepo(t)
-			mock := &sessionMockAgent{}
-			mock.respond = func(agent.RunOpts) *agent.Result {
-				return &agent.Result{Output: []byte(cleanReviewJSON)}
-			}
-			sctx := withReviewConversation(newTestContextWithDBRecords(t, mock, dir, baseSHA, headSHA, config.Commands{}))
-			if err := sctx.DB.UpsertRunAgentSession(sctx.Run.ID, string(pipeline.SessionRoleReviewer), mock.Name(), "stale-sess"); err != nil {
-				t.Fatalf("seed reviewer session: %v", err)
-			}
-			sctx.Sessions = pipeline.NewRunSessions(sctx.DB, sctx.Run.ID, mock, true)
-			sctx.FinalizingAnswers = tc.finalizingAnswers
-			sctx.Fixing = tc.fixing
-			sctx.SkipFixExecution = true
-
-			if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-				t.Fatalf("execute: %v", err)
-			}
-			reviews := reviewCalls(mock.snapshot())
-			if len(reviews) != 1 {
-				t.Fatalf("expected one review turn, got %d", len(reviews))
-			}
-			switch {
-			case tc.fixing:
-				if reviews[0].Session != nil {
-					t.Fatalf("a fix round's rereview must be session-free, got %+v", reviews[0].Session)
-				}
-			case tc.wantResumeOf == "":
-				if reviews[0].Session == nil || reviews[0].Session.ID != "" {
-					t.Fatalf("re-entry must start a fresh reviewer session, got %+v", reviews[0].Session)
-				}
-			default:
-				if reviews[0].Session == nil || reviews[0].Session.ID != tc.wantResumeOf {
-					t.Fatalf("finalize turn must resume %q, got %+v", tc.wantResumeOf, reviews[0].Session)
-				}
-			}
-		})
-	}
-}
 
 // TestReviewStep_ConversationOffIsTodaysReview is the opt-in contract: with
 // review.conversation unset - the default for every repository that has not
@@ -750,7 +595,6 @@ func TestReviewStep_ConversationOffIsTodaysReview(t *testing.T) {
 		if on {
 			enableReviewConversation(sctx.Config)
 		}
-		sctx.Sessions = pipeline.NewRunSessions(sctx.DB, sctx.Run.ID, ag, true)
 		outcome, err := (&ReviewStep{}).Execute(sctx)
 		if err != nil {
 			t.Fatalf("execute (conversation on=%v): %v", on, err)
@@ -791,20 +635,8 @@ func TestReviewStep_ConversationOffIsTodaysReview(t *testing.T) {
 		t.Fatalf("the off run left %d conversation file(s) behind", len(entries))
 	}
 
-	// No reviewer identity: every review turn stays session-free, which is the
-	// property the fix-round independence guarantee rests on.
 	if len(offAgent.calls) != 1 {
 		t.Fatalf("expected 1 review call, got %d", len(offAgent.calls))
-	}
-	if offAgent.calls[0].Session != nil {
-		t.Fatalf("the off review turn was given a session: %+v", offAgent.calls[0].Session)
-	}
-	sessions, err := offSctx.DB.GetRunAgentSessions(offSctx.Run.ID)
-	if err != nil {
-		t.Fatalf("get sessions: %v", err)
-	}
-	if len(sessions) != 0 {
-		t.Fatalf("the off run persisted %d role session(s): %+v", len(sessions), sessions)
 	}
 
 	// The agent contract is part of the off-state guarantee, not just the

@@ -17,8 +17,8 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentAuto {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
@@ -70,7 +70,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"agent: auto",
+		"agent: omp",
 		"ci_timeout:",
 		"step_quiet_warning:",
 		"review_agent_timeout:",
@@ -99,8 +99,8 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error on reload: %v", err)
 	}
-	if cfg.Agent != types.AgentAuto {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
@@ -368,7 +368,7 @@ func TestLoadGlobal_InvalidTestAgentTimeout(t *testing.T) {
 func TestEnsureDefaultGlobalConfig_DoesNotOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	custom := "agent: codex\nlog_level: debug\n"
+	custom := "agent: omp\nlog_level: debug\n"
 	if err := os.WriteFile(path, []byte(custom), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestEnsureDefaultGlobalConfig_DoesNotOverwrite(t *testing.T) {
 func TestEnsureDefaultGlobalConfig_SkipsOnStatPermissionError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("agent: codex\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("agent: omp\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(dir, 0o000); err != nil {
@@ -402,8 +402,8 @@ func TestEnsureDefaultGlobalConfig_SkipsOnStatPermissionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read config: %v", err)
 	}
-	if string(data) != "agent: codex\n" {
-		t.Errorf("config was overwritten despite stat permission error:\ngot:  %q\nwant: %q", string(data), "agent: codex\n")
+	if string(data) != "agent: omp\n" {
+		t.Errorf("config was overwritten despite stat permission error:\ngot:  %q\nwant: %q", string(data), "agent: omp\n")
 	}
 }
 
@@ -435,7 +435,7 @@ func TestLoadGlobal_DoesNotCreateFile(t *testing.T) {
 func TestLoadGlobal_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	data := `agent: codex
+	data := `agent: omp
 agent_path_override:
   claude: /usr/local/bin/claude
   codex: /opt/codex
@@ -452,8 +452,8 @@ log_level: "debug"
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.CITimeout != 2*time.Hour+30*time.Minute {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 2*time.Hour+30*time.Minute)
@@ -478,7 +478,7 @@ log_level: "debug"
 func TestLoadGlobal_AgentAcceptsList(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	data := `agent: [codex, claude]
+	data := `agent: [omp]
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -488,10 +488,10 @@ func TestLoadGlobal_AgentAcceptsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
-	want := []types.AgentName{types.AgentCodex, types.AgentClaude}
+	want := []types.AgentName{types.AgentOMP}
 	if len(cfg.Agents) != len(want) {
 		t.Fatalf("agents = %v, want %v", cfg.Agents, want)
 	}
@@ -505,7 +505,7 @@ func TestLoadGlobal_AgentAcceptsList(t *testing.T) {
 func TestLoadGlobal_AgentStringPreservesSingleAgent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	data := `agent: codex
+	data := `agent: omp
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -515,10 +515,10 @@ func TestLoadGlobal_AgentStringPreservesSingleAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
-	if len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentCodex {
+	if len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentOMP {
 		t.Fatalf("agents = %v, want [codex]", cfg.Agents)
 	}
 }
@@ -527,7 +527,7 @@ func TestLoadGlobal_PartialOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	// Only override agent, rest should be defaults
-	data := `agent: opencode
+	data := `agent: omp
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -537,8 +537,8 @@ func TestLoadGlobal_PartialOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentOpenCode {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOpenCode)
+	if cfg.Agent != types.AgentOMP {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOMP)
 	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v (should be default)", cfg.CITimeout, DefaultCITimeout)
@@ -692,8 +692,8 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
 	}
 
-	if len(raw.Agent) != 1 || raw.Agent[0] != types.AgentAuto {
-		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentAuto)
+	if len(raw.Agent) != 1 || raw.Agent[0] != types.AgentOMP {
+		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentOMP)
 	}
 	d, err := time.ParseDuration(raw.CITimeout)
 	if err != nil {

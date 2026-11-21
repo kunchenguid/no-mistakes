@@ -164,11 +164,8 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
 | `--pr-title` | `string` | (none) | PR title used when this run creates or updates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
 | `--pr-body-file` | `string` | (none) | Read the PR description used when this run creates or updates the PR; `-` reads stdin to EOF |
-| `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
-| `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
-| `--reviewer` | `string` | (none) | Independent immutable [reviewer harness](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) |
-| `--reviewer-model` | `string` | (none) | Reviewer model; requires `--reviewer`, defaults to its `agent_config` profile |
-| `--reviewer-effort` | `string` | (none) | Reviewer effort; requires `--reviewer`, defaults to its `agent_config` profile |
+| `--model` | `string` | (none) | omp provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-run-profiles) |
+| `--effort` | `string` | (none) | omp reasoning effort for that profile; omitted fields inherit `agent_config.omp` |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
@@ -866,11 +863,8 @@ failed step instead of repeating every completed step.
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); freshly passing it also updates an existing PR |
 | `--pr-body-file` | `string` | (none) | Replace the inherited supplied PR description from a file, or `-` for stdin; freshly passing it also updates an existing PR |
-| `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
-| `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
-| `--reviewer` | `string` | inherited | Reviewer harness for the new run; omission inherits the previous run's resolved reviewer pin |
-| `--reviewer-model` | `string` | (none) | Reviewer model; requires `--reviewer`, defaults to its `agent_config` profile |
-| `--reviewer-effort` | `string` | (none) | Reviewer effort; requires `--reviewer`, defaults to its `agent_config` profile |
+| `--model` | `string` | (none) | omp provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-run-profiles) |
+| `--effort` | `string` | (none) | omp reasoning effort for that profile; omitted fields inherit `agent_config.omp` |
 
 ## no-mistakes sync
 
@@ -1049,8 +1043,7 @@ Checks:
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Agent runners: native binaries `claude`, `codex`, `grok`, `acli`, `opencode`, `pi`, `copilot`, and `agy` (Antigravity), plus the optional ACP bridge `acpx`
-- ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`, and `devin` plus `acpx` for `devin`
+- Agent runner: the native `omp` binary
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
 - Every configured [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry, reported as `forge <key>` (for example `forge github.com` or `forge github.com/owner`): the profile resolves and validates, its provider CLI is installed, and that CLI is authenticated for the profile's host
 - Every configured [`provider_plugins`](/no-mistakes/reference/global-config/#provider_plugins) entry, reported as `plugin <name>`: that its command executable resolves

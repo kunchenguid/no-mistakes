@@ -16,7 +16,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/spf13/cobra"
 )
@@ -293,25 +292,7 @@ func doctorProviderPlugins(
 }
 
 func doctorAgentChecks() []doctorAgentCheck {
-	agents := []doctorAgentCheck{
-		{"claude", []string{"claude"}},
-		{"codex", []string{"codex"}},
-		{"grok", []string{"grok"}},
-		{"rovodev", []string{"acli"}},
-		{"opencode", []string{"opencode"}},
-		{"pi", []string{"pi"}},
-		{"copilot", []string{"copilot"}},
-		{"antigravity", []string{"agy"}},
-		{"acpx", []string{"acpx"}},
+	return []doctorAgentCheck{
+		{"omp", []string{"omp"}},
 	}
-	for _, alias := range types.ACPAliases() {
-		agents = append(agents, doctorAgentCheck{
-			name: string(alias.Name),
-			binaries: []string{
-				alias.DefaultCommandBinary(),
-				"acpx",
-			},
-		})
-	}
-	return agents
 }

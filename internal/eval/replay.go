@@ -261,7 +261,6 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 	// strips agent_args_override and agent_config from the pinned config so a
 	// replay cannot inherit the capturing machine's own pins.
 	baseAgent, err := agent.NewWithOptions(candidate.Agent, cfg.AgentPathFor(candidate.Agent), nil, agent.Options{
-		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 		DisableProjectSettings: cfg.DisableProjectSettings,
 		Profile:                candidate.Profile(),
 	})

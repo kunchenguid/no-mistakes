@@ -22,7 +22,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -100,11 +99,9 @@ type Executor struct {
 
 	onEvent EventFunc
 
-	// sessions manages this run's durable review-loop agent sessions; shared
-	// carries run-scoped step-to-step results. Both are created per Execute.
-	sessions *RunSessions
-	shared   *RunShared
-	workDir  string
+	// shared carries run-scoped step-to-step results, created per Execute.
+	shared  *RunShared
+	workDir string
 
 	// Ephemeral proof only: recovered runs earn no retry credit.
 	crashRetryBaseSHA   string
@@ -713,8 +710,6 @@ func (e *Executor) prepareRestart(runID string, name types.StepName, currentInde
 }
 
 func (e *Executor) initializeRunScopes(runID string) {
-	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
-	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
 	e.shared = &RunShared{}
 	e.crashRetryBaseSHA = ""
 	e.crashRetryRecovered = false
@@ -863,7 +858,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		DB:           e.db,
 		StepResultID: gate.stepResult.ID,
 		Agent:        bindCallerRestrictions(e.agent, run),
-		Sessions:     e.sessions,
 		Shared:       e.shared,
 		// The same value executeStep supplies. A reconciler or resumer that
 		// reads the run's evidence - ReviewStep.ResumeApprovalGate resolves the
@@ -1413,17 +1407,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
 			}
 			return
-		case agent.LifecyclePhaseQuotaSwitch:
-			// The quota-aware mid-run switch already happened in the agent
-			// chain; amend the run's quota-routing record with it. Any failure
-			// here is an observability gap, never a run failure - the switch
-			// cannot be un-happened and the run continues on the next agent.
-			quotarouting.RecordSwitch(e.db, sr.RunID, quotarouting.SwitchEvent{
-				From:   event.Agent,
-				To:     event.NextAgent,
-				Reason: event.Message,
-				At:     time.Now(),
-			})
 		default:
 			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
 				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
@@ -1528,7 +1511,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		StepResultID:         sr.ID,
 		UserIntent:           userIntent,
 		IntentSource:         userIntentSource,
-		Sessions:             e.sessions,
 		Shared:               e.shared,
 		EvidenceDir:          e.runEvidenceDir(run.ID),
 		DeliveryRetry:        e.deliveryRetry,
@@ -2364,14 +2346,6 @@ func (a *gateStepBoundaryAgent) Run(ctx context.Context, opts agent.RunOpts) (*a
 
 func (a *gateStepBoundaryAgent) Close() error { return a.inner.Close() }
 
-func (a *gateStepBoundaryAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *gateStepBoundaryAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
-}
-
 func (a *gateStepBoundaryAgent) ReportsAgentAttempts() bool {
 	return agent.ReportsAgentAttempts(a.inner)
 }
@@ -2408,13 +2382,6 @@ func (a *lifecycleAgent) Close() error {
 
 // SupportsSessionResume forwards the wrapped adapter's session capability so
 // wrapping never hides it from the review loop's session manager.
-func (a *lifecycleAgent) SupportsSessionResume() bool {
-	return agent.SupportsSessionResume(a.inner)
-}
-
-func (a *lifecycleAgent) SupportsSessionProvider(provider string) bool {
-	return agent.SupportsSessionProvider(a.inner, provider)
-}
 
 func (a *lifecycleAgent) ReportsAgentAttempts() bool {
 	return agent.ReportsAgentAttempts(a.inner)
