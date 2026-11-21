@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -174,4 +177,56 @@ func TestPRAppendixVerifyPluginHandshake(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPRAppendixVerifyBitbucketSSHHostMatchesWebIdentity(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":7,"title":"Target PR","summary":{"raw":"author"},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/7"}}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "test@example.com")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "test-token")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", server.URL)
+	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
+
+	for _, remote := range []string{"git@ssh.bitbucket.org:ws/repo.git", "git@bitbucket.org:ws/repo.git", "https://bitbucket.org/ws/repo.git"} {
+		t.Run(remote, func(t *testing.T) {
+			reader, err := NewPRAppendixReader(context.Background(), cfg, remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, err := reader(context.Background(), "7")
+			if err != nil || content.Body != "author" {
+				t.Fatalf("read = %+v, %v", content, err)
+			}
+		})
+	}
+
+	t.Run("other repository", func(t *testing.T) {
+		reader, err := NewPRAppendixReader(context.Background(), cfg, "git@ssh.bitbucket.org:ws/other.git")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reader(context.Background(), "7"); err == nil || !strings.Contains(err.Error(), "does not match --repo") {
+			t.Fatalf("read error = %v, want identity mismatch", err)
+		}
+	})
+
+	t.Run("lookalike hosts", func(t *testing.T) {
+		requests.Store(0)
+		for _, remote := range []string{"git@bitbucket.org.evil.example:ws/repo.git", "git@evilbitbucket.org:ws/repo.git"} {
+			if reader, err := NewPRAppendixReader(context.Background(), cfg, remote); err == nil {
+				if _, err := reader(context.Background(), "7"); err == nil {
+					t.Fatalf("%s: read succeeded, want rejection", remote)
+				}
+			}
+		}
+		if n := requests.Load(); n != 0 {
+			t.Fatalf("lookalike remotes reached the API %d times", n)
+		}
+	})
 }
