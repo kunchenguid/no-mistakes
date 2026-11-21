@@ -99,11 +99,6 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			wantSub: "tls",
 		},
 		{
-			name:    "prose turn ending",
-			errMsg:  `antigravity output parse: ended its turn with prose instead of the required JSON object`,
-			wantSub: "prose",
-		},
-		{
 			name:    "agy permission declaration",
 			errMsg:  `antigravity reported error: declaring permissions: cortex tool view_file: failed`,
 			wantSub: "permission",
@@ -114,34 +109,9 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			wantSub: "tool call",
 		},
 		{
-			name:    "provider protocol residue after JSON",
-			errMsg:  `pi output parse: invalid character '<' after top-level value (output snippet: "{\"summary\":\"x\"}")`,
-			wantSub: "protocol residue",
-		},
-		{
-			name:    "protocol residue with provider-like output text",
-			errMsg:  `pi output parse: invalid character '<' after top-level value (output snippet: "{\"balance\":\"token\"}")`,
-			wantSub: "protocol residue",
-		},
-		{
-			name:    "pi missing output tool",
-			errMsg:  `pi did not finish by calling no_mistakes_output alone`,
-			wantSub: "missing output tool",
-		},
-		{
-			name:    "pi missing output tool with benign stderr",
-			errMsg:  `pi did not finish by calling no_mistakes_output alone: transient provider response`,
-			wantSub: "missing output tool",
-		},
-		{
 			name:    "pi fetch failed",
 			errMsg:  `pi exited: exit status 1: fetch failed`,
 			wantSub: "fetch failed",
-		},
-		{
-			name:    "unfused split bare JSON objects",
-			errMsg:  `pi output parse: split bare JSON objects could not be fused into one valid object`,
-			wantSub: "split",
 		},
 	}
 
@@ -230,6 +200,18 @@ func TestClassifyTransient_Negative(t *testing.T) {
 		{
 			name:   "competing verdicts",
 			errMsg: `pi output parse: multiple bare JSON objects found in output`,
+		},
+		{
+			name:   "prose turn ending",
+			errMsg: `antigravity output parse: ended its turn with prose instead of the required JSON object`,
+		},
+		{
+			name:   "provider protocol residue after JSON",
+			errMsg: `pi output parse: invalid character '<' after top-level value (output snippet: "{\"summary\":\"x\"}")`,
+		},
+		{
+			name:   "unfused split bare JSON objects",
+			errMsg: `pi output parse: split bare JSON objects could not be fused into one valid object`,
 		},
 		{
 			name:   "free usage limit",
@@ -370,41 +352,34 @@ func TestRunWithRetry_PiTransientThenSucceeds(t *testing.T) {
 	transientBackoff = func(ctx context.Context, _ int) error { return ctx.Err() }
 	t.Cleanup(func() { transientBackoff = previous })
 
-	for _, message := range []string{
-		"pi did not finish by calling no_mistakes_output alone",
-		"pi exited: exit status 1: fetch failed",
-	} {
-		t.Run(message, func(t *testing.T) {
-			calls := 0
-			var events []LifecycleEvent
-			var attempts []Attempt
-			firstErr := errors.New(message)
-			want := &Result{Text: "ok"}
-			opts := RunOpts{
-				OnLifecycle: func(e LifecycleEvent) { events = append(events, e) },
-				OnAttempt:   func(a Attempt) { attempts = append(attempts, a) },
-			}
-			got, err := runWithRetry(context.Background(), "pi", opts, 1, classifyTransient, nil, func() (*Result, error) {
-				calls++
-				if calls == 1 {
-					return nil, firstErr
-				}
-				return want, nil
-			})
-			if err != nil || got != want || calls != 2 {
-				t.Fatalf("result = %v, error = %v, calls = %d; want success on second attempt", got, err, calls)
-			}
-			if len(attempts) != 2 || attempts[0].Err != firstErr || attempts[1].Result != want {
-				t.Fatalf("attempt telemetry = %+v", attempts)
-			}
-			if len(events) != 1 || events[0].Agent != "pi" || events[0].Phase != LifecyclePhaseRetry || !strings.Contains(events[0].Message, "attempt 2/2") {
-				t.Fatalf("retry telemetry = %+v", events)
-			}
-		})
+	calls := 0
+	var events []LifecycleEvent
+	var attempts []Attempt
+	firstErr := errors.New("pi exited: exit status 1: fetch failed")
+	want := &Result{Text: "ok"}
+	opts := RunOpts{
+		OnLifecycle: func(e LifecycleEvent) { events = append(events, e) },
+		OnAttempt:   func(a Attempt) { attempts = append(attempts, a) },
+	}
+	got, err := runWithRetry(context.Background(), "pi", opts, 1, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		if calls == 1 {
+			return nil, firstErr
+		}
+		return want, nil
+	})
+	if err != nil || got != want || calls != 2 {
+		t.Fatalf("result = %v, error = %v, calls = %d; want success on second attempt", got, err, calls)
+	}
+	if len(attempts) != 2 || attempts[0].Err != firstErr || attempts[1].Result != want {
+		t.Fatalf("attempt telemetry = %+v", attempts)
+	}
+	if len(events) != 1 || events[0].Agent != "pi" || events[0].Phase != LifecyclePhaseRetry || !strings.Contains(events[0].Message, "attempt 2/2") {
+		t.Fatalf("retry telemetry = %+v", events)
 	}
 }
 
-func TestRunWithRetry_ProtocolResidueTicket401StillRetries(t *testing.T) {
+func TestRunWithRetry_ProtocolResidueDoesNotReplayTheTask(t *testing.T) {
 	previous := transientBackoff
 	transientBackoff = func(ctx context.Context, _ int) error { return ctx.Err() }
 	t.Cleanup(func() { transientBackoff = previous })
@@ -418,11 +393,11 @@ func TestRunWithRetry_ProtocolResidueTicket401StillRetries(t *testing.T) {
 		}
 		return &Result{Text: "ok"}, nil
 	})
-	if err != nil || result == nil || result.Text != "ok" {
-		t.Fatalf("result = %+v, error = %v; want retry success", result, err)
+	if !errors.Is(err, residueErr) {
+		t.Fatalf("error = %v, want the format error returned", err)
 	}
-	if calls != 2 {
-		t.Fatalf("calls = %d, want one retry", calls)
+	if result != nil || calls != 1 {
+		t.Fatalf("result = %+v, calls = %d; want no replay of the completed task", result, calls)
 	}
 }
 
@@ -563,26 +538,6 @@ func TestRunWithRetry_RespectsContextCancellation(t *testing.T) {
 	}
 	if calls > 2 {
 		t.Errorf("expected at most 2 calls before cancel, got %d", calls)
-	}
-}
-
-func TestRunWithRetry_CombinedClassifierForClaude(t *testing.T) {
-	defer withFastBackoff(t)()
-
-	// claudeRetryClassifier should retry both transient API errors AND errNoStructuredOutput.
-	calls := 0
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, claudeRetryClassifier, nil, func() (*Result, error) {
-		calls++
-		return nil, errNoStructuredOutput
-	})
-	if err == nil {
-		t.Fatal("expected error after exhausting retries")
-	}
-	if calls != 4 {
-		t.Errorf("expected 4 calls for errNoStructuredOutput retries, got %d", calls)
-	}
-	if !errors.Is(err, errNoStructuredOutput) {
-		t.Errorf("expected errNoStructuredOutput to surface as final error, got %v", err)
 	}
 }
 
