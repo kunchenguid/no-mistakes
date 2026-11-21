@@ -309,9 +309,9 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 		t.Fatal(err)
 	}
 
-	// Keep daemon tests hermetic now that the default config auto-detects agents.
-	mockClaude := writeMockClaude(t, t.TempDir())
-	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + "\n"
+	// Keep daemon tests hermetic with the one supported harness.
+	mockOMP := writeMockClaude(t, t.TempDir())
+	configYAML := "agent: omp\nagent_path_override:\n  omp: " + mockOMP + "\n"
 	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -434,17 +434,21 @@ func testClaudeProjectDirName(cwd string) string {
 
 func writeMockClaude(t *testing.T, dir string) string {
 	t.Helper()
+	const message = `{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"findings\":[],\"summary\":\"clean\"}"}],"usage":{"input":1,"output":1}}}`
+	const agentEnd = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"findings\":[],\"summary\":\"clean\"}"}],"usage":{"input":1,"output":1}}]}`
 	if runtime.GOOS == "windows" {
-		path := filepath.Join(dir, "claude.bat")
-		script := "@echo off\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"findings\":[],\"summary\":\"clean\"}}\r\n"
+		path := filepath.Join(dir, "omp.bat")
+		script := "@echo off\r\nmore >nul\r\necho " + message + "\r\necho " + agentEnd + "\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
 	}
-	path := filepath.Join(dir, "claude")
+	path := filepath.Join(dir, "omp")
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"summary":"clean"}}'
+cat >/dev/null
+printf '%s\n' '` + message + `'
+printf '%s\n' '` + agentEnd + `'
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

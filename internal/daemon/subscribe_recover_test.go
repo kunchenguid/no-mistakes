@@ -460,8 +460,8 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	mockClaude := writeMockClaude(t, t.TempDir())
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+	mockOMP := writeMockClaude(t, t.TempDir())
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: omp\nagent_path_override:\n  omp: "+mockOMP+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	d, err := db.Open(p.DB())
@@ -595,12 +595,12 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			if err := p.EnsureDirs(); err != nil {
 				t.Fatal(err)
 			}
-			mockClaude := writeMockClaude(t, t.TempDir())
+			mockOMP := writeMockClaude(t, t.TempDir())
 			profileDir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    user: recovery-user\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			globalConfig := "agent: claude\nagent_path_override:\n  claude: " + mockClaude +
+			globalConfig := "agent: omp\nagent_path_override:\n  omp: " + mockOMP +
 				"\nforge_profiles:\n  github.com:\n    gh_config_dir: " + profileDir + "\n"
 			if err := os.WriteFile(p.ConfigFile(), []byte(globalConfig), 0o644); err != nil {
 				t.Fatal(err)
