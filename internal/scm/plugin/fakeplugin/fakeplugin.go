@@ -46,6 +46,10 @@ type State struct {
 	HangOn string `json:"hang_on,omitempty"`
 	// Checks are reported for every PR.
 	Checks []Check `json:"checks"`
+	// PerCheckLogs makes "pr check-logs" answer the per-check form,
+	// carrying each listed check's own log and acquisition verdict, instead
+	// of the single combined FailedLogs string.
+	PerCheckLogs bool `json:"per_check_logs,omitempty"`
 	// MergeWhenChecksPass marks a PR merged at the head the CI step asked
 	// about once a "pr checks" call sees every check passing.
 	MergeWhenChecksPass bool   `json:"merge_when_checks_pass,omitempty"`
@@ -74,6 +78,15 @@ type Check struct {
 	Bucket  string `json:"bucket"`
 	State   string `json:"state,omitempty"`
 	Link    string `json:"link,omitempty"`
+	// ProviderAttributed declares the check a failure the CI service
+	// reported about itself rather than a job verdict.
+	ProviderAttributed bool `json:"provider_attributed,omitempty"`
+	// RepositoryAcquisition is the per-check log form answer for this check
+	// when State.PerCheckLogs is set.
+	RepositoryAcquisition string `json:"repository_acquisition,omitempty"`
+	// Log is the per-check log text answered for this check when
+	// State.PerCheckLogs is set.
+	Log string `json:"log,omitempty"`
 }
 
 // Call is one parsed invocation, as recorded in the request log.
@@ -361,6 +374,20 @@ func servePR(state *State, pr *PR, call Call, body string) (any, bool, error) {
 	case "pr mergeability":
 		return map[string]any{"state": "mergeable"}, false, nil
 	case "pr check-logs":
+		if state.PerCheckLogs {
+			logs := make([]map[string]any, 0, len(state.Checks))
+			for _, check := range state.Checks {
+				logs = append(logs, map[string]any{
+					"id":                     check.Name,
+					"name":                   check.Name,
+					"output":                 check.Log,
+					"repository_acquisition": check.RepositoryAcquisition,
+				})
+			}
+			// The combined "logs" string is the pre-existing answer the fix
+			// round still reads, so the per-check form carries both.
+			return map[string]any{"logs": state.FailedLogs, "checks": logs}, false, nil
+		}
 		return map[string]any{"logs": state.FailedLogs}, false, nil
 	case "pr merged":
 		proof := map[string]any{"merged": pr.State == "merged", "number": pr.Number, "url": pr.URL, "head_sha": pr.HeadSHA}

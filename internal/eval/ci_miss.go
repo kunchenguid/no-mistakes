@@ -25,8 +25,9 @@ const goldSourceCIFalseNegative = "recorded-ci-false-negative"
 // code defect Review could have caught: a failing check the provider attributes
 // to the job (ci-check) or a review bot's comment about the change
 // (ci-review-bot). A ci-transient failure is a provider/infra outcome no code
-// change clears, and a merge conflict is not a defect Review reads for, so both
-// are excluded.
+// change clears, a ci-infrastructure failure is one the CI service produced
+// about itself (or could not be read to tell), and a merge conflict is not a
+// defect Review reads for, so all three are excluded.
 func isCIFalseNegativeCategory(category string) bool {
 	switch category {
 	case types.FindingCategoryCICheck, types.FindingCategoryCIReviewBot:

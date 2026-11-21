@@ -170,6 +170,7 @@ a built-in provider's failure does; it is never read as an empty answer.
 | `bucket` | Required: `pass`, `fail`, `pending`, `cancel`, or `skipping`. Map your forge's states onto these; anything else fails the call. |
 | `id`, `state`, `link`, `execution_id` | Optional provider identifiers and raw state, surfaced for diagnostics. |
 | `started_at`, `completed_at` | Optional RFC 3339 timestamps. |
+| `provider_attributed` | Optional boolean on a `fail` check. Declare `true` when the CI service reported the failure about itself rather than about a job it ran - a build that died before any job could run, for example because its agent could not clone the repository - and the check therefore carries no verdict on the code. It is a question, not a verdict: the CI step reads that check's log (below) before acting, so declaring it can never silence a genuine failure, and a check without it is never classified from log text. Maps to `Check.ProviderAttributedFailure`. |
 
 ## Subcommands
 
@@ -271,10 +272,36 @@ step.
 Print the logs of the named failed checks.
 
 - **args:** `<number> --failed [--branch=<branch>] [--head-sha=<sha>] --check=<name> [--check=<name> ...]`
-- **result:** `{ "logs": "..." }` (use `""` when there are none; a missing key fails)
+- **result:** `{ "logs": "..." }` (use `""` when there are none; a missing key fails), or the per-check form:
+
+```json
+{ "checks": [ { "id": "run-42", "name": "build", "output": "...", "repository_acquisition": "infrastructure" } ] }
+```
 
 `--failed` is always passed in protocol version 1. The CI auto-fix prompt
 keeps the last 1 MiB, where build and test failures are reported.
+
+The per-check form is what lets the adapter attribute a log to one check, so
+send it whenever you can: a single combined `logs` string belongs to the whole
+set and cannot settle any one check. Each entry matches a requested `--check`
+by `id` first (then by `name` for a plugin that reports no ids).
+
+`repository_acquisition` is optional. Omit it and the adapter reads `output`
+for the acquisition failure messages of a runtime checkout (`permission denied
+(publickey)`, `could not read from remote repository`, `error: cloning git
+repository`, `error: fetching commit`, `warning: checkout failed!`, `fatal:
+could not fetch`). Supply it yourself - `infrastructure`, `ambiguous`, or
+`none` - when your service reports the outcome directly, which is more precise.
+Any other value is a protocol violation.
+
+The verdict is only consulted for a check that declared
+`provider_attributed`, and a checkout failure is printed at the *head* of a
+build's log: do not truncate a log to its tail before answering, or the
+adapter cannot read the one line that matters and the check is treated as
+ambiguous. A check with no entry, an empty or missing `output`, or a combined
+`logs` answer for a provider-attributed check is ambiguous: it parks for a human
+rather than reading green, because an unreadable log is not evidence that the
+code is fine.
 
 ### pr merged (capability `merged_proof`)
 

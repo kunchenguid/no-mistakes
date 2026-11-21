@@ -381,6 +381,9 @@ func normalizeCheck(raw wireCheck) (scm.Check, error) {
 		State:       strings.TrimSpace(raw.State),
 		ExecutionID: strings.TrimSpace(raw.ExecutionID),
 		Link:        strings.TrimSpace(raw.Link),
+		// Only a failed check can be a failure the service reported about
+		// itself; the CI step asks the log before acting either way.
+		ProviderAttributedFailure: raw.ProviderAttributed && scm.CheckBucket(strings.ToLower(strings.TrimSpace(raw.Bucket))) == scm.CheckBucketFail,
 	}
 	switch bucket := scm.CheckBucket(strings.ToLower(strings.TrimSpace(raw.Bucket))); bucket {
 	case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketPending, scm.CheckBucketCancel, scm.CheckBucketSkip:
@@ -456,6 +459,140 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 		return "", h.protocolf(CmdPRCheckLogs, "response did not include logs (use an empty string when there are none)")
 	}
 	return keepTail(*result.Logs, maxLogsBytes), nil
+}
+
+// RepositoryAcquisitions reads each provider-attributed check's own log when the
+// plugin answers "pr check-logs" with its per-check form, and takes the plugin's
+// own reading when it supplies one. Only checks GetChecks marked
+// ProviderAttributedFailure are consulted; every other check - all of them
+// genuine job verdicts - stays RepositoryAcquisitionNone without a log read, so
+// log text can never reclassify a real failure.
+//
+// A single combined "logs" string belongs to the whole set, so it cannot settle
+// any one check's attribution: those checks are answered ambiguous (an unreadable
+// answer is not evidence that the code is fine), and the CI step parks them for a
+// decision rather than spending a fix round on a guess.
+func (h *Host) RepositoryAcquisitions(ctx context.Context, pr *scm.PR, branch, headSHA string, checks []scm.Check) ([]scm.RepositoryAcquisition, error) {
+	result := make([]scm.RepositoryAcquisition, len(checks))
+	surveyed := false
+	for i, check := range checks {
+		result[i] = scm.RepositoryAcquisitionNone
+		if check.ProviderAttributedFailure {
+			surveyed = true
+		}
+	}
+	if !surveyed {
+		return result, nil
+	}
+	if !h.Capabilities().FailedCheckLogs {
+		return nil, scm.ErrUnsupported
+	}
+	number, err := h.prNumberOf(CmdPRCheckLogs, pr)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{number, "--failed"}
+	if branch != "" {
+		args = append(args, flag("branch", branch))
+	}
+	if headSHA != "" {
+		args = append(args, flag("head-sha", headSHA))
+	}
+	for _, check := range checks {
+		if check.ProviderAttributedFailure {
+			args = append(args, flag("check", check.Name))
+		}
+	}
+	var logs checkLogsResult
+	if err := h.call(ctx, CmdPRCheckLogs, args, nil, &logs, maxLogsResponseBytes); err != nil {
+		return nil, err
+	}
+	if logs.Logs == nil && logs.Checks == nil {
+		return nil, h.protocolf(CmdPRCheckLogs, "response did not include logs (use an empty string when there are none)")
+	}
+	for i, check := range checks {
+		if !check.ProviderAttributedFailure {
+			continue
+		}
+		if logs.Checks == nil {
+			result[i] = scm.RepositoryAcquisitionAmbiguous
+			continue
+		}
+		entry, found := matchingCheckLog(*logs.Checks, check)
+		if !found {
+			result[i] = scm.RepositoryAcquisitionAmbiguous
+			continue
+		}
+		if strings.TrimSpace(entry.RepositoryAcquisition) != "" {
+			result[i], err = normalizeRepositoryAcquisition(entry.RepositoryAcquisition)
+			if err != nil {
+				return nil, h.protocolf(CmdPRCheckLogs, "check %q: %v", check.Name, err)
+			}
+			continue
+		}
+		switch {
+		case strings.TrimSpace(entry.Output) == "":
+			result[i] = scm.RepositoryAcquisitionAmbiguous
+		case acquisitionFailureMarker(entry.Output):
+			result[i] = scm.RepositoryAcquisitionInfrastructure
+		default:
+			result[i] = scm.RepositoryAcquisitionNone
+		}
+	}
+	return result, nil
+}
+
+// matchingCheckLog finds a check's own entry: by id first, since names are not
+// unique on a PR, then by name for a plugin that reports no ids.
+func matchingCheckLog(entries []wireCheckLog, check scm.Check) (wireCheckLog, bool) {
+	if id := strings.TrimSpace(check.ProviderID); id != "" {
+		for _, entry := range entries {
+			if strings.TrimSpace(entry.ID) == id {
+				return entry, true
+			}
+		}
+		return wireCheckLog{}, false
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Name) == check.Name {
+			return entry, true
+		}
+	}
+	return wireCheckLog{}, false
+}
+
+func normalizeRepositoryAcquisition(value string) (scm.RepositoryAcquisition, error) {
+	switch scm.RepositoryAcquisition(strings.ToLower(strings.TrimSpace(value))) {
+	case scm.RepositoryAcquisitionInfrastructure, scm.RepositoryAcquisitionAmbiguous, scm.RepositoryAcquisitionNone:
+		return scm.RepositoryAcquisition(strings.ToLower(strings.TrimSpace(value))), nil
+	default:
+		return "", fmt.Errorf("unknown repository_acquisition %q (want infrastructure, ambiguous, or none)", value)
+	}
+}
+
+// acquisitionMarkers are a CI service's own reports that it could not obtain the
+// repository, matched case-insensitively on one log line. They are only ever
+// consulted for a check the provider already failed and marked, so a genuine
+// job verdict can never be reclassified by text a test prints.
+var acquisitionMarkers = []string{
+	"permission denied (publickey)",
+	"could not read from remote repository",
+	"error: cloning git repository",
+	"error: fetching commit",
+	"warning: checkout failed!",
+	"fatal: could not fetch",
+}
+
+func acquisitionFailureMarker(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		lower := strings.ToLower(line)
+		for _, marker := range acquisitionMarkers {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead string) (scm.MergedProof, error) {

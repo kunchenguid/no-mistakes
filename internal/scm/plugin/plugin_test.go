@@ -737,3 +737,78 @@ func TestPrefixBufferNeverFailsWrites(t *testing.T) {
 		t.Fatalf("buffer = %q", buf.String())
 	}
 }
+
+// A plugin may declare a failure the CI service reported about itself, and may
+// answer "pr check-logs" per check. Only a failed check is ever marked, and an
+// unreadable answer is ambiguous: it is never "the code is fine".
+func TestRepositoryAcquisitions(t *testing.T) {
+	host, transport := availableHost(t, statusAllCaps, Options{})
+	ctx := context.Background()
+
+	unmarked := []scm.Check{{Name: "unit tests", ProviderID: "unit", Bucket: scm.CheckBucketFail}}
+	got, err := host.RepositoryAcquisitions(ctx, testPR(), "feature", "abc", unmarked)
+	if err != nil || len(got) != 1 || got[0] != scm.RepositoryAcquisitionNone {
+		t.Fatalf("unmarked check = %v, %v", got, err)
+	}
+
+	// The plugin's own reading wins over whatever its log says.
+	transport.reply(`{"checks":[
+		{"id":"build","name":"build","output":"","repository_acquisition":"infrastructure"},
+		{"id":"unit","name":"unit tests","output":"--- FAIL: TestThing\n","repository_acquisition":"none"},
+		{"id":"lint","name":"lint","output":"…(log truncated)\n","repository_acquisition":"ambiguous"}
+	]}`)
+	checks := []scm.Check{
+		{Name: "build", ProviderID: "build", Bucket: scm.CheckBucketFail, ProviderAttributedFailure: true},
+		{Name: "unit tests", ProviderID: "unit", Bucket: scm.CheckBucketFail, ProviderAttributedFailure: true},
+		{Name: "lint", ProviderID: "lint", Bucket: scm.CheckBucketFail, ProviderAttributedFailure: true},
+	}
+	got, err = host.RepositoryAcquisitions(ctx, testPR(), "feature", "abc", checks)
+	if err != nil {
+		t.Fatalf("RepositoryAcquisitions error = %v", err)
+	}
+	want := []scm.RepositoryAcquisition{scm.RepositoryAcquisitionInfrastructure, scm.RepositoryAcquisitionNone, scm.RepositoryAcquisitionAmbiguous}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RepositoryAcquisitions = %v, want %v", got, want)
+	}
+	transport.wantArgv("pr", "check-logs", "7", "--failed", "--branch=feature", "--head-sha=abc", "--check=build", "--check=unit tests", "--check=lint")
+
+	// Without a per-check answer the log is read here, and the combined form is
+	// unattributable, so an empty or answerless entry stays ambiguous.
+	transport.reply(`{"logs":"git@github.com: Permission denied (publickey).\n"}`)
+	got, err = host.RepositoryAcquisitions(ctx, testPR(), "feature", "abc", checks)
+	if err != nil {
+		t.Fatalf("combined logs: %v", err)
+	}
+	for i, class := range got {
+		if class != scm.RepositoryAcquisitionAmbiguous {
+			t.Fatalf("combined logs check %d = %q, want ambiguous", i, class)
+		}
+	}
+
+	// A plugin that reads the log for us and reports an acquisition marker is
+	// believed; one that reports no marker for a complete log is genuine.
+	transport.reply(`{"checks":[
+		{"id":"build","name":"build","output":"fatal: Could not read from remote repository.\n"},
+		{"id":"unit","name":"unit tests","output":"--- FAIL: TestThing\n"}
+	]}`)
+	got, err = host.RepositoryAcquisitions(ctx, testPR(), "feature", "abc", checks[:2])
+	if err != nil {
+		t.Fatalf("per-check logs: %v", err)
+	}
+	if got[0] != scm.RepositoryAcquisitionInfrastructure || got[1] != scm.RepositoryAcquisitionNone {
+		t.Fatalf("per-check logs = %v, want [infrastructure none]", got)
+	}
+
+	// An unrecognized verdict is a protocol violation, not a silent answer.
+	transport.reply(`{"checks":[{"id":"build","name":"build","repository_acquisition":"probably"}]}`)
+	if _, err := host.RepositoryAcquisitions(ctx, testPR(), "feature", "abc", checks[:1]); err == nil || !errors.Is(err, ErrProtocol) {
+		t.Fatalf("unknown verdict = %v", err)
+	}
+
+	// A plugin without the capability skips, like a logged-out CLI.
+	logsless, logslessTransport := availableHost(t, statusNoCaps, Options{})
+	if _, err := logsless.RepositoryAcquisitions(ctx, testPR(), "feature", "abc", checks[:1]); !errors.Is(err, scm.ErrUnsupported) {
+		t.Fatalf("missing capability = %v", err)
+	}
+	_ = logslessTransport
+}

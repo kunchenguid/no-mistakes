@@ -102,6 +102,12 @@ const (
 	FindingCategoryCIBehindBase    = "ci-behind-base"
 	FindingCategoryCITransient     = "ci-transient"
 	FindingCategoryCIReviewBot     = "ci-review-bot"
+	// FindingCategoryCIInfrastructure is a check the CI service failed on
+	// itself - its own setup, or its failure to clone/fetch the repository
+	// before any repository command ran - or one whose log could not tell
+	// that apart from a code failure. It is always ask-user: no code change
+	// can clear it, so it never spends an auto-fix round.
+	FindingCategoryCIInfrastructure = "ci-infrastructure"
 )
 
 // FindingCategoryReviewQuestion marks the synthetic finding the review step
