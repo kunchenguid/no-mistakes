@@ -229,21 +229,14 @@ func newAxiRunCmd() *cobra.Command {
 			"control or bidi characters, and no-mistakes markers are refused before any\n" +
 			"push. They are inherited by rerun and retry, and cannot be combined with\n" +
 			"--skip pr.\n\n" +
-			"--model and/or --effort opt into an immutable Pi profile for a new run.\n" +
-			"An omitted field comes from agent_config.pi; both must resolve. Requires\n" +
-			"Pi-only agents; raw native selection flags conflict. The pin outranks\n" +
-			"configured review-role profiles and survives config edits, retries and recovery.\n" +
-			"--reviewer selects an independent immutable reviewer harness. Its model and\n" +
-			"effort come from --reviewer-model/--reviewer-effort or agent_config defaults.\n" +
-			"Supported reviewer pins: claude, codex, copilot, grok, opencode, pi. Both\n" +
-			"model and effort must resolve; harnesses without both mechanisms are refused.\n" +
-			"It overrides reviewer routing, including a Pi run pin, without changing the\n" +
-			"primary or fixer. Reruns inherit it unless explicitly replaced.\n" +
-			"Omit flags to reattach; a different selection cannot change an active run.\n\n" +
+			"--model and/or --effort opt into an immutable omp profile for a new run.\n" +
+			"An omitted field comes from agent_config.omp; both must resolve. The pin\n" +
+			"outranks configured agent_config and survives config edits, retries and\n" +
+			"recovery. Omit flags to reattach; a different selection cannot change an\n" +
+			"active run.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
-			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
-			"or `agent: devin` ACP alias, or an explicit `acp:<target>` through `acpx`, and\n" +
-			"fails before the first step when none can run.\n\n" +
+			"agent. The daemon requires `agent: omp` with the native `omp` CLI on PATH,\n" +
+			"and fails before the first step when it cannot run.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,

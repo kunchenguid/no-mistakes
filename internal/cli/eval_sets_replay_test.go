@@ -29,7 +29,7 @@ func TestEvalSetsHistoricalReplayAvailability(t *testing.T) {
 	candidate := strings.Replace(findings, `"findings":[`, `"findings":[{"id":"extra","severity":"warning","file":"extra.go","line":20,"description":"unmatched candidate","action":"ask-user","review_scope":"source"},`, 1)
 	installFakeCLIReviewAgent(t, root, candidate)
 	execNoMistakes(t, bin, "eval", "capture", f.run.ID)
-	execNoMistakes(t, bin, "eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "2")
+	execNoMistakes(t, bin, "eval", "run", "--cases", "labeled", "--candidate", "omp,model=test", "--repeats", "2")
 	store, err := eval.Open(paths.WithRoot(root).EvalDir())
 	if err != nil {
 		t.Fatal(err)

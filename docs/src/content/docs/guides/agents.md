@@ -59,6 +59,21 @@ Sessions are always cold. Every pipeline turn - including a review turn that
 receives answers to its own questions - starts a fresh omp process, so no turn
 can inherit conversational state from the code change it is judging.
 
+## Delivery constraints
+
+The pipeline agent runs only its assigned phase; the outer executor alone performs the
+other validation, push, PR, and CI phases. A step that attempts pipeline control gets
+`error.code: nested_gate_context`.
+
+If a monitored PR falls behind or conflicts after checks pass, never hand-rebase: the
+live CI monitor re-pushes the branch and revalidates from Review. `no-mistakes rerun` is
+only the dead-monitor recovery, and it refuses when it cannot prove continuity with the reviewed head.
+
+Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present.
+
+Prerequisite: the native `omp` CLI on `PATH` (or `agent_path_override.omp`) and
+`agent: omp`.
+
 ## Gate isolation
 
 Under the trusted `disable_project_settings: true` opt-out, a gate turn is

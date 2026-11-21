@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -207,11 +208,11 @@ func TestEvalRunRendersProgressAndScoreDashboard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "2")
+	out, err := executeCmd("eval", "run", "--cases", "labeled", "--candidate", "omp,model=test", "--repeats", "2")
 	if err != nil {
 		t.Fatalf("eval run: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "replaying 1 case(s) x 2 repeat(s) with claude,model=test on labeled") {
+	if !strings.Contains(out, "replaying 1 case(s) x 2 repeat(s) with omp,model=test on labeled") {
 		t.Fatalf("run output = %q, want the replay plan header", out)
 	}
 	if !strings.Contains(out, "1/2") || !strings.Contains(out, "2/2") || !strings.Contains(out, "TP 1 · FN 0 · FP 0 · pending 0") {
@@ -228,7 +229,7 @@ func TestEvalRunRendersProgressAndScoreDashboard(t *testing.T) {
 	// but must stay safe: the frozen corpus is untouched, and the identical
 	// input lands in the same cohort so the report aggregates instead of
 	// fragmenting into a new comparison group.
-	if out, err = executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "2"); err != nil {
+	if out, err = executeCmd("eval", "run", "--cases", "labeled", "--candidate", "omp,model=test", "--repeats", "2"); err != nil {
 		t.Fatalf("second eval run: %v\n%s", err, out)
 	}
 	setsAfter, err := executeCmd("eval", "sets")
@@ -315,16 +316,20 @@ func setupEvalCLIFixture(t *testing.T, ctx context.Context, root, findings strin
 	return evalCLIFixture{run: run, round: round, step: step, db: database}
 }
 
-// installFakeCLIReviewAgent puts a scripted claude on PATH that replies with
-// the given review findings, mirroring the fake agent the internal/eval
-// replay tests use.
+// installFakeCLIReviewAgent puts a scripted omp on PATH that replies with
+// the given review findings.
 func installFakeCLIReviewAgent(t *testing.T, root, findingsJSON string) {
 	t.Helper()
 	fakeDir := t.TempDir()
-	fake := filepath.Join(fakeDir, "claude")
-	reply := `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"review"}]}}
-{"type":"result","subtype":"success","is_error":false,"structured_output":` + findingsJSON + `,"usage":{"input_tokens":12,"output_tokens":3}}
-`
+	fake := filepath.Join(fakeDir, "omp")
+	encoded, err := json.Marshal(findingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	message := `{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":` + text + `}],"usage":{"input":12,"output":3}}}`
+	end := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":` + text + `}],"usage":{"input":12,"output":3}}]}`
+	reply := message + "\n" + end + "\n"
 	var script string
 	if runtime.GOOS == "windows" {
 		fake += ".cmd"
@@ -518,7 +523,7 @@ func TestEvalDisplayCommandsDoNotCreateThePipelineDatabase(t *testing.T) {
 	}{
 		{command: []string{"eval", "sets"}},
 		{command: []string{"eval", "report"}},
-		{command: []string{"eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "1"}, allowError: true},
+		{command: []string{"eval", "run", "--cases", "labeled", "--candidate", "omp,model=test", "--repeats", "1"}, allowError: true},
 	}
 	for _, tt := range tests {
 		command := tt.command
