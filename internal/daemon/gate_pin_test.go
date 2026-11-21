@@ -50,7 +50,7 @@ func gatePinFixture(t *testing.T, defaultBranchYAML string, pinnedGates []config
 		t.Fatal(err)
 	}
 	mockClaude := writeMockClaude(t, t.TempDir())
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: omp\nagent_path_override:\n  omp: "+mockClaude+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	d, err := db.Open(p.DB())
