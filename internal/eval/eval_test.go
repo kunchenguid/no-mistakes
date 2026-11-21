@@ -209,125 +209,10 @@ func TestCapturePreservesFixRoundStartingHead(t *testing.T) {
 	}
 }
 
-func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
-	ctx := context.Background()
-	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
-	defer sourceDB.Close()
-
-	fakeDir := t.TempDir()
-	fake := filepath.Join(fakeDir, "claude")
-	const reply = `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"clean"}]}}
-{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":12,"output_tokens":3}}
-`
-	var script string
-	if runtime.GOOS == "windows" {
-		fake += ".cmd"
-		script = "@echo off\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
-	} else {
-		script = "#!/bin/sh\n[ \"$NM_HOME\" = \"" + p.Root() + "\" ] && touch \"" + p.Root() + "/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
-	}
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	store, err := Open(p.EvalDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	session, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if session.ID == "" || len(evaluations) != 1 {
-		t.Fatalf("replay = session %#v evaluations %#v", session, evaluations)
-	}
-	got := evaluations[0]
-	if got.Status != "completed" || got.GoldCount != 1 || got.TruePositive != 0 || got.FalseNegative != 1 || got.Pending != 0 {
-		t.Fatalf("replay outcome = %#v, want a completed miss of the true-positive gold", got)
-	}
-	if !got.TokensReported || got.FreshInputTokens != 12 || got.OutputTokens != 3 {
-		t.Fatalf("replay metrics = %#v", got)
-	}
-	if strings.Contains(got.Error, p.Root()) {
-		t.Fatalf("replay error leaked production root: %q", got.Error)
-	}
-	if _, err := os.Stat(filepath.Join(p.Root(), "shared-home-used")); !os.IsNotExist(err) {
-		t.Fatalf("candidate used production NM_HOME: %v", err)
-	}
-	var reservations int
-	if err := store.db.QueryRow(`SELECT count(*) FROM replay_case_reservations WHERE session_id = ?`, session.ID).Scan(&reservations); err != nil {
-		t.Fatal(err)
-	}
-	if reservations != 0 {
-		t.Fatalf("completed replay retained %d case reservations", reservations)
-	}
-}
-
 // TestReplayPinsCandidateModelAndEffortOnTheHarness is the end-to-end half of
 // the unified abstraction on the eval side: a candidate's model and effort reach
 // the harness through the same agentcfg mapping the pipeline uses, so an
 // effort-aware comparison actually runs at the effort it reports.
-func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
-	ctx := context.Background()
-	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
-	defer sourceDB.Close()
-
-	fakeDir := t.TempDir()
-	tuningArgsPath := filepath.Join(fakeDir, "tuning-args.txt")
-	fake := filepath.Join(fakeDir, "claude")
-	const reply = `{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":1,"output_tokens":1}}
-`
-	var script string
-	if runtime.GOOS == "windows" {
-		fake += ".cmd"
-		// Do not expand %* through cmd.exe: the later JSON-schema argument
-		// contains quoting and metacharacters that make echoing the complete
-		// command line unreliable. The profile args are deliberately first, so
-		// record only those four scalar arguments.
-		script = "@echo off\r\n>\"" + tuningArgsPath + "\" echo %~1 %~2\r\n>>\"" + tuningArgsPath + "\" echo %~3 %~4\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
-	} else {
-		script = "#!/bin/sh\nprintf '%s %s\\n%s %s\\n' \"$1\" \"$2\" \"$3\" \"$4\" > \"" + tuningArgsPath + "\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
-	}
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	store, err := Open(p.EvalDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	candidate := Candidate{Agent: types.AgentOMP, Model: "test", Effort: agentcfg.EffortHigh}
-	session, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: candidate, Repeats: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(evaluations) != 1 || evaluations[0].Status != "completed" {
-		t.Fatalf("replay = %#v", evaluations)
-	}
-	if session.Candidate != "claude,model=test,effort=high" {
-		t.Fatalf("session candidate = %q, want the canonical spelling", session.Candidate)
-	}
-	tuningArgs, err := os.ReadFile(tuningArgsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"--model test", "--effort high"} {
-		if !strings.Contains(string(tuningArgs), want) {
-			t.Fatalf("candidate harness tuning args %q do not carry %q", tuningArgs, want)
-		}
-	}
-}
 
 // TestCaptureStripsEveryHarnessPinFromThePinnedConfig keeps a replay from
 // inheriting the capturing machine's own model or effort: the candidate is the
@@ -741,97 +626,19 @@ func TestCaptureLeavesUnknownSelectedFindingUnlabeled(t *testing.T) {
 	}
 }
 
-func TestCaptureAndReportScoresMatchingCandidateAsTruePositive(t *testing.T) {
-	ctx := context.Background()
-	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
-	defer sourceDB.Close()
-	installFakeReviewAgent(t, p, `{"findings":[{"id":"other","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`)
-
-	store, err := Open(p.EvalDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "labeled", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1}); err != nil {
-		t.Fatal(err)
-	} else if len(evaluations) != 1 || evaluations[0].TruePositive != 1 || evaluations[0].FalseNegative != 0 || evaluations[0].Pending != 0 {
-		t.Fatalf("replay scores = %#v, want true-positive match on the same issue", evaluations)
-	}
-	reports, err := Report(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	output := RenderReport(reports)
-	if !strings.Contains(output, "true-positive 1, false-negative 0, false-positive 0, pending 0") || !strings.Contains(output, "recall: 100.0%") {
-		t.Fatalf("report = %q, want true-positive recall", output)
-	}
-	if strings.Contains(output, "park") || strings.Contains(output, "verdict") || strings.Contains(output, "agreement") {
-		t.Fatalf("report still uses park/pass accuracy language: %q", output)
-	}
-}
-
-func TestCaptureAndReportLeavesUnmatchedCandidateFindingsPending(t *testing.T) {
-	ctx := context.Background()
-	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
-	defer sourceDB.Close()
-	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
-		t.Fatal(err)
-	}
-	steps, err := sourceDB.GetStepsByRun(run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	installFakeReviewAgent(t, p, `{"findings":[{"id":"new-issue","severity":"error","file":"main.go","line":3,"description":"unexpected later issue","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"new","risk_scope":"source-or-external"}`)
-
-	store, err := Open(p.EvalDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cases) != 1 || cases[0].Labels.HasGold() {
-		t.Fatalf("approve capture = %#v, want unlabeled gold", cases)
-	}
-	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentOMP, Model: "test"}, Repeats: 1}); err != nil {
-		t.Fatal(err)
-	} else if len(evaluations) != 1 || evaluations[0].FalsePositive != 0 || evaluations[0].Pending != 1 {
-		t.Fatalf("replay scores = %#v, want unmatched finding queued, not a false-positive", evaluations)
-	}
-	reports, err := Report(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	output := RenderReport(reports)
-	if !strings.Contains(output, "unlabeled / pending") || !strings.Contains(output, "queued unmatched candidate findings: 1") {
-		t.Fatalf("report = %q, want unlabeled pending, not a pass or false-positive", output)
-	}
-	if strings.Contains(output, "false-positive 1") || strings.Contains(output, "park") || strings.Contains(output, "verdict") {
-		t.Fatalf("report punished or passed an unlabeled approve case: %q", output)
-	}
-}
-
 func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 	for _, input := range []string{
 		"",
-		"claude",
-		"claude,model=",
-		"claude,=sonnet",
-		"claude,model",
-		"claude,model=a,model=b",
-		"claude,model=sonnet,temperature=0",
-		"claude,model=sonnet,effort=turbo",
+		"omp",
+		"omp,model=",
+		"omp,=sonnet",
+		"omp,model",
+		"omp,model=a,model=b",
+		"omp,model=sonnet,temperature=0",
+		"omp,model=sonnet,effort=turbo",
+		"claude,model=x",
+		"codex,model=x",
 		"rovodev,model=x",
-		"antigravity,model=x",
-		"opencode,model=gpt-5",
 		"cursor,model=gpt-5,effort=high",
 		"nope,model=x",
 	} {
@@ -839,7 +646,7 @@ func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 			t.Errorf("ParseCandidate(%q) succeeded, want error", input)
 		}
 	}
-	candidate, err := ParseCandidate(" codex,model=gpt-5.4 ")
+	candidate, err := ParseCandidate(" omp,model=gpt-5.4 ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -852,16 +659,16 @@ func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 // syntax from failing with a generic parse error: the message has to name the
 // replacement, because every older invocation and doc snippet uses it.
 func TestParseCandidateRejectsTheReplacedSpelling(t *testing.T) {
-	_, err := ParseCandidate("codex+gpt-5.4")
+	_, err := ParseCandidate("omp+gpt-5.4")
 	if err == nil {
-		t.Fatal("ParseCandidate(codex+gpt-5.4) succeeded, want a migration error")
+		t.Fatal("ParseCandidate(omp+gpt-5.4) succeeded, want a migration error")
 	}
 	if !strings.Contains(err.Error(), "model=") {
 		t.Fatalf("error %v does not show the replacement spelling", err)
 	}
 	// A model id containing a plus is still a legitimate new-form candidate and
 	// must not be mistaken for the replaced spelling.
-	candidate, err := ParseCandidate("claude,model=some+model")
+	candidate, err := ParseCandidate("omp,model=some+model")
 	if err != nil {
 		t.Fatalf("ParseCandidate with a plus in the model = %v", err)
 	}
@@ -875,7 +682,7 @@ func TestParseCandidateRejectsTheReplacedSpelling(t *testing.T) {
 // agent_config, and it stays part of the candidate identity so two efforts of
 // one model never collapse into a single reported candidate.
 func TestParseCandidateCarriesTheEffortAxis(t *testing.T) {
-	candidate, err := ParseCandidate("codex,model=gpt-5.4,effort=low")
+	candidate, err := ParseCandidate("omp,model=gpt-5.4,effort=low")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,10 +692,10 @@ func TestParseCandidateCarriesTheEffortAxis(t *testing.T) {
 	if got, want := candidate.Profile(), (agentcfg.Profile{Model: "gpt-5.4", Effort: agentcfg.EffortLow}); got != want {
 		t.Fatalf("candidate profile = %#v, want %#v", got, want)
 	}
-	if got := candidate.String(); got != "codex,model=gpt-5.4,effort=low" {
+	if got := candidate.String(); got != "omp,model=gpt-5.4,effort=low" {
 		t.Fatalf("candidate string = %q", got)
 	}
-	other, err := ParseCandidate("codex,model=gpt-5.4,effort=high")
+	other, err := ParseCandidate("omp,model=gpt-5.4,effort=high")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,17 +704,12 @@ func TestParseCandidateCarriesTheEffortAxis(t *testing.T) {
 	}
 }
 
-// TestParseCandidatePinsACPModelThroughAcpx records the closed gap: an ACP
-// target used to be refused outright because no-mistakes had no way to enforce
-// its model.
-func TestParseCandidatePinsACPModelThroughAcpx(t *testing.T) {
+// TestParseCandidateRejectsACPNames pins the omp-only candidate surface: ACP
+// aliases and targets are no longer accepted.
+func TestParseCandidateRejectsACPNames(t *testing.T) {
 	for _, input := range []string{"cursor,model=gpt-5", "acp:custom,model=gpt-5"} {
-		candidate, err := ParseCandidate(input)
-		if err != nil {
-			t.Fatalf("ParseCandidate(%q) = %v, want an accepted candidate", input, err)
-		}
-		if candidate.Model != "gpt-5" {
-			t.Fatalf("candidate = %#v", candidate)
+		if _, err := ParseCandidate(input); err == nil {
+			t.Fatalf("ParseCandidate(%q) succeeded, want an unsupported-agent error", input)
 		}
 	}
 }
