@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 )
 
 func TestSubmissionReconciliationBase(t *testing.T) {
@@ -59,8 +59,7 @@ func TestSubmissionReconciliationBase(t *testing.T) {
 					}
 				}
 				t.Chdir(cwd)
-				env := &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}
-				got := submissionReconciliationUpstream(context.Background(), env, head, tc.requested)
+				got := gate.SubmissionUpstream(context.Background(), ".", "main", head, tc.requested, 0)
 				if got.BaseBranch != tc.want {
 					t.Fatalf("selected base = %q, want %q", got.BaseBranch, tc.want)
 				}

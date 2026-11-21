@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -59,6 +60,10 @@ const (
 const (
 	SafetySafeFastForward       = "safe_fast_forward"
 	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
+
+	SafetyPrivateMirrorCheckRequired = "private_mirror_reconciliation_required"
+	SafetyBlockedPrivateMirror       = "blocked_private_mirror"
+	ActionCheckPrivateMirror         = "check_private_mirror"
 )
 
 // State is the shared branch synchronization contract rendered by CLI, AXI,
@@ -285,6 +290,21 @@ func (s *Service) InspectCached(ctx context.Context) State {
 // Refresh explicitly verifies the exact configured push ref into a private
 // no-mistakes ref. It never updates an ordinary remote-tracking ref.
 func (s *Service) Refresh(ctx context.Context) State {
+	state := s.refreshPushTarget(ctx)
+	if state.State == StateCustodyReturned && state.Safety == SafetyPrivateMirrorCheckRequired {
+		return s.verifyFreshSubmission(ctx, state)
+	}
+	return state
+}
+
+// RefreshTarget is Refresh without the private-mirror planner, so a plain
+// sync never stages objects or queries the upstream; only an explicit check
+// does.
+func (s *Service) RefreshTarget(ctx context.Context) State {
+	return s.refreshPushTarget(ctx)
+}
+
+func (s *Service) refreshPushTarget(ctx context.Context) State {
 	state, run, ok := s.inspect(ctx)
 	if !ok || !refreshable(state) {
 		return state
@@ -439,7 +459,7 @@ func (s *Service) Apply(ctx context.Context) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
 	}
-	plan := s.Refresh(ctx)
+	plan := s.refreshPushTarget(ctx)
 	if plan.State == StateSynchronized || plan.State == StateMergedRemoteRemoved {
 		plan.Changed = false
 		return plan
@@ -1561,7 +1581,7 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	if run == nil || !terminalRunStatus(run.Status) || run.LastPushedSHA == nil || unpublishedPipelineHead(run) {
 		return State{}, false
 	}
-	fresh := s.Refresh(ctx)
+	fresh := s.refreshPushTarget(ctx)
 	switch fresh.Safety {
 	case "blocked_offline", "blocked_remote_changed_during_refresh", "blocked_binding_changed":
 		blocked := blockedPlan(fresh, fresh.State, fresh.Safety, "the live push target could not be verified, so nothing was recovered; no files or refs were changed")
@@ -2900,8 +2920,46 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 		state.NextAction = &NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"}
 		return
 	}
+	if s.freshSubmissionNeedsCheck(ctx, state) {
+		state.Safety = SafetyPrivateMirrorCheckRequired
+		state.NextAction = &NextAction{Code: ActionCheckPrivateMirror, Command: "no-mistakes axi sync --check"}
+		return
+	}
 	state.Safety = "custody_returned"
 	state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+}
+
+func (s *Service) freshSubmissionNeedsCheck(ctx context.Context, state *State) bool {
+	if strings.TrimSpace(s.GateDir) == "" || git.ValidateBareRepository(ctx, s.GateDir) != nil {
+		return false
+	}
+	needsProof, err := gate.FreshSubmissionNeedsProof(ctx, s.GateDir, s.workDir(), state.Local.Branch, state.Local.Head)
+	return needsProof || err != nil
+}
+
+func (s *Service) verifyFreshSubmission(ctx context.Context, state State) State {
+	upstreamUnread := false
+	resolveUpstream := func() gate.ReconciliationUpstream {
+		upstream := gate.SubmissionUpstream(ctx, s.workDir(), s.Repo.DefaultBranch, state.Local.Head, "", s.remoteTimeout())
+		upstreamUnread = upstream.URL == "" || upstream.BaseBranch == ""
+		return upstream
+	}
+	_, err := gate.PlanStaleBranchReconciliation(ctx, s.GateDir, s.workDir(), state.Local.Branch, state.Local.Head, "", resolveUpstream)
+	if err == nil {
+		state.Safety = "custody_returned"
+		state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+		return state
+	}
+	message := "a fresh run from this head would be refused before any run starts: " + err.Error() + "."
+	if upstreamUnread {
+		message += " The selected upstream base could not be read, so the base-deletion proof was not tried; a run that can read it may be admitted."
+	}
+	message += " No sync action applies to this state; the worktree, branches, and gate lane were not changed"
+	state.Changed = false
+	state.NextAction = nil
+	state.Safety = SafetyBlockedPrivateMirror
+	state.Error = message
+	return state
 }
 
 // relationBetween classifies the local head against a target commit using only
