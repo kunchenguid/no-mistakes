@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -136,6 +137,10 @@ func TestReconcileStaleBranchRefusesAndNamesUniquePrivateCommits(t *testing.T) {
 	}
 	t.Logf("Publication refusal: %v", err)
 	t.Logf("Preserved private branch: %s", reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"))
+	var atRisk *AtRiskError
+	if !errors.As(err, &atRisk) {
+		t.Fatalf("at-risk refusal is %T, want *AtRiskError so a caller can recognize it without matching its message", err)
+	}
 	for _, want := range []string{firstPrivateHead, "private-only trailer trim", privateHead, "second private-only change"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("refusal did not name every at-risk commit; missing %q in: %v", want, err)

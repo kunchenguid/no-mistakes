@@ -115,7 +115,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 	if !exists {
 		return plan, nil
 	}
-	archiveTag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + gateHead
+	archiveTag := abandonedArchiveTag(branch, gateHead)
 	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, archiveTag)
 	if err != nil {
 		return plan, fmt.Errorf("inspect private mirror archive tag %s: %w", archiveTag, err)
@@ -185,13 +185,12 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				}
 				atRisk = append(atRisk, description)
 			}
-			refusal := fmt.Errorf(
+			return plan, &AtRiskError{message: fmt.Sprintf(
 				"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s. "+
 					"Clears on any of: %s",
 				branchRef, len(remaining), liveHead, strings.Join(atRisk, "; "),
 				joinSatisfiers(satisfiers),
-			)
-			return plan, refusal
+			)}
 		}
 		plan.PreservedByRecovery = preserved
 	}
@@ -206,6 +205,16 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		PreservedByRecovery:  plan.PreservedByRecovery,
 	}, nil
 }
+
+// AtRiskError is the refusal for a private head carrying private-only commits
+// that are neither proven to survive in the live head nor preserved by a
+// recovery anchor. It is a distinct type so a caller can recognize this one
+// refusal without matching on its message.
+type AtRiskError struct {
+	message string
+}
+
+func (e *AtRiskError) Error() string { return e.message }
 
 // isRunOwnedHead reports whether the private mirror head is exactly one of the
 // run-owned heads. Matching is on the full object ID only: an abbreviated or
@@ -261,22 +270,65 @@ func ApplyStaleBranchReconciliation(ctx context.Context, gateDir string, plan St
 			plan.BranchRef, currentHead, plan.PreviousHead,
 		)
 	}
-	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, plan.ArchiveTag)
-	if err != nil {
-		return result, fmt.Errorf("inspect private mirror archive tag %s: %w", plan.ArchiveTag, err)
-	}
-	if archived && archivedHead != plan.PreviousHead {
-		return result, fmt.Errorf("private mirror archive tag %s already points at %s, not %s", plan.ArchiveTag, archivedHead, plan.PreviousHead)
-	}
-	if !archived {
-		if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", plan.ArchiveTag, plan.PreviousHead, strings.Repeat("0", len(plan.PreviousHead))); err != nil {
-			return result, fmt.Errorf("archive stale private mirror head %s at %s: %w", plan.PreviousHead, plan.ArchiveTag, err)
-		}
+	if err := archiveHead(ctx, gateDir, plan.ArchiveTag, plan.PreviousHead); err != nil {
+		return result, err
 	}
 	if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", "-d", plan.BranchRef, plan.PreviousHead); err != nil {
 		return result, fmt.Errorf("delete archived stale private mirror ref %s at %s: %w", plan.BranchRef, plan.PreviousHead, err)
 	}
 	return StaleBranchReconciliation{Reconciled: true, PreviousHead: plan.PreviousHead, ArchivedTag: plan.ArchiveTag}, nil
+}
+
+// abandonedArchiveTag names the tag that keeps a private mirror head reachable
+// once its branch ref no longer points at it.
+func abandonedArchiveTag(branch, head string) string {
+	return "refs/tags/no-mistakes-abandoned/" + branch + "/" + head
+}
+
+// archiveHead creates tag at head without ever replacing existing evidence: a
+// tag already at head is idempotent, and a symbolic tag or one naming another
+// object fails closed.
+func archiveHead(ctx context.Context, gateDir, tag, head string) error {
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, tag)
+	if err != nil {
+		return fmt.Errorf("inspect private mirror archive tag %s: %w", tag, err)
+	}
+	if archived && archivedHead != head {
+		return fmt.Errorf("private mirror archive tag %s already points at %s, not %s", tag, archivedHead, head)
+	}
+	if !archived {
+		if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", tag, head, strings.Repeat("0", len(head))); err != nil {
+			return fmt.Errorf("archive stale private mirror head %s at %s: %w", head, tag, err)
+		}
+	}
+	return nil
+}
+
+// ArchiveAbandonedHead archives head as an abandoned private mirror head of
+// branch under the tag reconciliation writes before it removes a branch ref,
+// and returns that tag. It moves no branch ref: it is for a caller that owns
+// its own proof and its own compare-and-swap of the branch, and needs only the
+// same archive-before-replace record.
+func ArchiveAbandonedHead(ctx context.Context, gateDir, branch, head string) (string, error) {
+	branch = strings.TrimSpace(branch)
+	head = strings.TrimSpace(head)
+	if branch == "" || head == "" {
+		return "", fmt.Errorf("archive abandoned private mirror head: branch and head are required")
+	}
+	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
+		return "", fmt.Errorf("archive abandoned private mirror head: %w", err)
+	}
+	if _, err := git.Run(ctx, gateDir, "check-ref-format", "--branch", branch); err != nil {
+		return "", fmt.Errorf("archive abandoned private mirror head of %q: invalid branch name: %w", branch, err)
+	}
+	if resolved, err := git.Run(ctx, gateDir, "rev-parse", "--verify", head+"^{commit}"); err != nil || resolved != head {
+		return "", fmt.Errorf("archive abandoned private mirror head of %s: %s is not an exact commit", branch, head)
+	}
+	tag := abandonedArchiveTag(branch, head)
+	if err := archiveHead(ctx, gateDir, tag, head); err != nil {
+		return "", err
+	}
+	return tag, nil
 }
 
 func RestoreReconciledBranch(ctx context.Context, gateDir, branch string, result StaleBranchReconciliation) error {
@@ -314,8 +366,7 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 	if _, err := git.Run(ctx, gateDir, "check-ref-format", "--branch", branch); err != nil {
 		return false
 	}
-	tag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + head
-	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, tag)
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, abandonedArchiveTag(branch, head))
 	if err != nil || !archived || archivedHead != head {
 		return false
 	}
