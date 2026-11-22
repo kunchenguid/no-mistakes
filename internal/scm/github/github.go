@@ -642,9 +642,9 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 		if cursor != "" {
 			args = append(args, "-F", "cursor="+cursor)
 		}
-		out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+		out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 		if err != nil {
-			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", detail, err)
 		}
 		var response struct {
 			Data struct {
@@ -919,9 +919,9 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		"-f", "per_page=100",
 		"--paginate", "--slurp",
 	)
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	out, detail, err := stdoutOnly(h.cmd(ctx, "gh", args...))
 	if err != nil {
-		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", detail, err)
 	}
 	type workflowRun struct {
 		ID           int64  `json:"id"`
@@ -1568,6 +1568,29 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 }
 
 func (h *Host) getReviewComments(ctx context.Context, pr *scm.PR, verifiedBotUserID int64) ([]scm.ReviewComment, error) {
+	threaded, err := h.readReviewThreads(ctx, pr, verifiedBotUserID, false)
+	if err != nil {
+		return nil, err
+	}
+	comments := make([]scm.ReviewComment, 0, len(threaded))
+	for _, comment := range threaded {
+		comments = append(comments, comment.ReviewComment)
+	}
+	return comments, nil
+}
+
+// reviewThreadComment is a registered review bot's comment with the
+// resolution state of the thread that holds it.
+type reviewThreadComment struct {
+	scm.ReviewComment
+	Resolved bool
+}
+
+// readReviewThreads reads every registered review bot's comment in the pull
+// request's review threads. Resolved threads are skipped unless
+// includeResolved asks for them, in which case their comments are paged in
+// full as well.
+func (h *Host) readReviewThreads(ctx context.Context, pr *scm.PR, verifiedBotUserID int64, includeResolved bool) ([]reviewThreadComment, error) {
 	if pr == nil {
 		return nil, errors.New("pr is nil")
 	}
@@ -1595,7 +1618,7 @@ func (h *Host) getReviewComments(ctx context.Context, pr *scm.PR, verifiedBotUse
 		return nil, errors.New("expected positive GitHub pull request number")
 	}
 
-	var comments []scm.ReviewComment
+	var comments []reviewThreadComment
 	cursor := ""
 	for {
 		args := []string{"api"}
@@ -1647,7 +1670,7 @@ func (h *Host) getReviewComments(ctx context.Context, pr *scm.PR, verifiedBotUse
 			return nil, errors.New("PR review comments response did not contain review threads")
 		}
 		for _, thread := range threads.Nodes {
-			if thread.IsResolved {
+			if thread.IsResolved && !includeResolved {
 				continue
 			}
 			// A partial thread must never read as a clean one, so every page
@@ -1657,7 +1680,9 @@ func (h *Host) getReviewComments(ctx context.Context, pr *scm.PR, verifiedBotUse
 				if page.Nodes == nil {
 					return nil, errors.New("PR review comments response did not contain thread comments")
 				}
-				comments = appendReviewBotComments(comments, page, h.host, verifiedBotUserID)
+				for _, comment := range appendReviewBotComments(nil, page, h.host, verifiedBotUserID) {
+					comments = append(comments, reviewThreadComment{ReviewComment: comment, Resolved: thread.IsResolved})
+				}
 				if !page.PageInfo.HasNextPage {
 					break
 				}

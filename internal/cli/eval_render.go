@@ -44,6 +44,9 @@ func renderEvalSetsDashboard(summaries []eval.SetSummary) string {
 	lines = append(lines, metricStatsLine("Cases", strconv.Itoa(diversified.Cases), capDetail))
 	goldFindings := diversified.TruePositive + diversified.FalseNegative + diversified.FalsePositive
 	lines = append(lines, metricStatsLine("Gold findings", strconv.Itoa(goldFindings), fmt.Sprintf("across %d gold case(s)", diversified.GoldCases)))
+	p := diversified.Provenance
+	lines = append(lines, metricStatsLine("Gold provenance", "", fmt.Sprintf("%d inferred · %d recorded-human · %d adjudicated", p.Inferred, p.RecordedHuman, p.Adjudicated)))
+	lines = append(lines, metricStatsLine("Other labels", "", fmt.Sprintf("%d excluded · %d unknown", p.Excluded, p.Unknown)))
 	if goldFindings > 0 {
 		lines = append(lines, "")
 		lines = append(lines, evalConfusionMatrixLines(diversified.TruePositive, diversified.FalseNegative, diversified.FalsePositive)...)

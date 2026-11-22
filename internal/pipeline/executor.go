@@ -94,6 +94,9 @@ type Executor struct {
 	// retrySource is the failed run Execute continues instead of starting the
 	// pipeline from the beginning (SetRetrySource).
 	retrySource string
+	// deliveryRetry is set once planRetry proves the retry source already
+	// pushed: the continuation then never publishes a repair.
+	deliveryRetry bool
 
 	onEvent EventFunc
 
@@ -555,6 +558,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			return e.failRun(run, repo, err, ctx)
 		}
 		start, carried = checkpoint.Index, checkpoint.Steps
+		e.deliveryRetry = checkpoint.Delivery
 	}
 
 	// Record every requested skip before any step can park. Recovery and
@@ -858,7 +862,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		ForgeContext: e.forge,
 		DB:           e.db,
 		StepResultID: gate.stepResult.ID,
-		Agent:        e.agent,
+		Agent:        bindCallerRestrictions(e.agent, run),
 		Sessions:     e.sessions,
 		Shared:       e.shared,
 		// The same value executeStep supplies. A reconciler or resumer that
@@ -1277,7 +1281,7 @@ func recoveredLogPath(step *db.StepResult) string {
 }
 
 func (e *Executor) autoFixLimit(stepName types.StepName) int {
-	if e.config == nil {
+	if e.config == nil || (e.deliveryRetry && stepName == types.StepCI) {
 		return 0
 	}
 	return e.config.AutoFixLimit(stepName)
@@ -1482,6 +1486,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// the recorder reads, so an operator-configured later-round review role
 		// and the recorded evidence name the same round.
 		stepAgent = &roundStampingAgent{inner: stepAgent, round: func() int { return roundNum + 1 }}
+		stepAgent = bindCallerRestrictions(stepAgent, run)
 	}
 	var ciWake <-chan struct{}
 	if e.ciWake != nil {
@@ -1526,6 +1531,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Sessions:             e.sessions,
 		Shared:               e.shared,
 		EvidenceDir:          e.runEvidenceDir(run.ID),
+		DeliveryRetry:        e.deliveryRetry,
 		Fixing:               state.fixing,
 		SkipFixExecution:     state.skipFixExecution,
 		FinalizingAnswers:    state.answering,

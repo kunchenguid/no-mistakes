@@ -274,7 +274,7 @@ func TestGitlabEvidenceIndependentOfTestingInEveryAppendixMode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			owned, err := composeOwnedPRContent(prOwnedBody{before: "Author narrative"}, "Title", appendix, 0, sctx.WorkDir, "")
+			owned, err := composeOwnedPRContent(prOwnedBody{before: "Author narrative"}, scm.ProviderGitLab, "Title", appendix, 0, sctx.WorkDir, "")
 			if err != nil {
 				t.Fatal(err)
 			}

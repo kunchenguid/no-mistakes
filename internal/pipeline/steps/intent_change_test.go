@@ -135,8 +135,9 @@ func TestIntentStep_SummarizesValidatedChange(t *testing.T) {
 					WindowStart, WindowEnd time.Time
 					Transcript             string
 				}
-				_, data, ok := strings.Cut(opts.Prompt, "\n---\n")
-				if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+				_, framed, started := strings.Cut(opts.Prompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+				data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+				if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 					t.Fatal("untrusted prompt data must be one JSON packet")
 				}
 				if packet.Change.Base != base || packet.Change.Head != head {
@@ -274,8 +275,9 @@ func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
 					WindowStart, WindowEnd time.Time
 					Transcript             string
 				}
-				_, data, ok := strings.Cut(opts.Prompt, "\n---\n")
-				if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+				_, framed, started := strings.Cut(opts.Prompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+				data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+				if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 					t.Fatal("summary request must carry one JSON packet")
 				}
 				if packet.Change.Base != base || packet.Change.Head != head {

@@ -23,7 +23,7 @@ func newRerunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Rerun the pipeline for the current branch",
-		Long:  "Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent. A per-run PR base branch is inherited from the selected prior run unless --base-branch is set. Omission of the generated Intent section is inherited from the selected prior run; --no-publish-intent additionally keeps it out of the PR body for this rerun (tighten-only; the full intent still reaches every step prompt except PR drafting). The selected run's pull-request URL is inherited when that PR is not already merged or closed, so retarget can prove identity. --model/--effort select a new immutable Pi profile (see axi run --help); a rerun is a NEW run and does not inherit the prior model pin. Without these flags it uses global configuration. Closing references (--closes) are inherited from the selected prior run; --closes adds to them. A supplied PR title and description (--pr-title, --pr-body-file; see axi run --help) are inherited from the selected prior run, and each flag replaces its inherited value; they are used only if this rerun creates the PR.",
+		Long:  "Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent. A per-run PR base branch is inherited from the selected prior run unless --base-branch is set. Omission of the generated Intent section is inherited from the selected prior run; --no-publish-intent additionally keeps it out of the PR body for this rerun (tighten-only; the full intent still reaches every step prompt except PR drafting). The selected run's pull-request URL is inherited when that PR is not already merged or closed, so retarget can prove identity. --model/--effort select a new immutable Pi profile (see axi run --help); a rerun is a NEW run and does not inherit the prior model pin. Without these flags it uses global configuration. Closing references (--closes) are inherited from the selected prior run; --closes adds to them. A supplied PR title and description (--pr-title, --pr-body-file; see axi run --help) are inherited from the selected prior run, and each flag replaces its inherited value. Inherited values are available if this rerun creates a PR; only flags freshly passed on this rerun update an existing PR.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("intent") && strings.TrimSpace(intent) == "" {
@@ -42,6 +42,10 @@ func newRerunCmd() *cobra.Command {
 				return err
 			}
 			prText, err := resolvePRTextFlags(cmd, prTitle, prBodyFile, false)
+			if err != nil {
+				return err
+			}
+			restrictions, err := captureCallerRestrictions(cmd)
 			if err != nil {
 				return err
 			}
@@ -73,6 +77,9 @@ func newRerunCmd() *cobra.Command {
 					return fmt.Errorf("connect to daemon: %w", err)
 				}
 				defer client.Close()
+				if err := requireDaemonCallerRestrictions(client, restrictions); err != nil {
+					return err
+				}
 				reviewer, err = resolveReviewer(client, repo.ID, reviewer)
 				if err != nil {
 					return err
@@ -114,7 +121,7 @@ func newRerunCmd() *cobra.Command {
 					return err
 				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{CommitIdentity: identity, TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{CommitIdentity: identity, CallerRestrictions: restrictions, TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -130,6 +137,7 @@ func newRerunCmd() *cobra.Command {
 	bindPRTextFlags(cmd, &prTitle, &prBodyFile)
 	bindPiProfileFlags(cmd, &model, &effort)
 	bindReviewerFlags(cmd)
+	bindCallerRestrictionsFlag(cmd)
 	return cmd
 }
 

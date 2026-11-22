@@ -23,6 +23,20 @@ import (
 
 func TestMain(m *testing.M) {
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
+	case "integration-remote":
+		p := paths.WithRoot(os.Getenv("NM_HOME"))
+		database, err := db.Open(p.DB())
+		if err == nil {
+			err = RunWithOptions(p, database, func() []pipeline.Step {
+				return integrationRecoverySteps()
+			})
+			_ = database.Close()
+		}
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
+		os.Exit(0)
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
 			// Atomic rename so a poller that treats "file exists" as "content
@@ -128,6 +142,9 @@ func TestMain(m *testing.M) {
 	globalConfig := filepath.Join(globalConfigDir, "gitconfig")
 	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	code := m.Run()
+	if integrationCLI.dir != "" {
+		os.RemoveAll(integrationCLI.dir)
+	}
 	os.RemoveAll(globalConfigDir)
 	os.Exit(code)
 }

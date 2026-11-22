@@ -26,7 +26,7 @@ func findingType(c Case) string {
 	bestAction := ""
 	sevRank := map[string]int{"none": 0, "info": 1, "warning": 2, "error": 3}
 	byID := roundFindingsByID(c)
-	for _, gold := range c.Labels.Findings {
+	for _, gold := range c.Labels.ActiveFindings() {
 		switch {
 		case isTrueIssueGold(gold.Kind):
 			hasTrueIssue = true

@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -22,6 +23,7 @@ const (
 	MethodProbeOmitIntent           = "probe_omit_intent"
 	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodProbeTranscriptHomes      = "probe_transcript_homes"
+	MethodProbeCallerRestrictions   = "probe_caller_restrictions"
 	MethodProbeCommitIdentity       = "probe_commit_identity"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
@@ -91,11 +93,12 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts. LaunchNonce and ValidationGeneration together
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
-	CommitIdentity     *git.CommitIdentity       `json:"commit_identity,omitempty"`
-	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
+	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -106,6 +109,7 @@ type PushReceivedParams struct {
 	LaunchNonce          string           `json:"launch_nonce,omitempty"`
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	BaseRemote           string           `json:"base_remote,omitempty"`
 	// OmitIntent carries the caller-side, tighten-only request to keep the
 	// generated Intent section out of the PR body. It never publishes intent
 	// a repository's trusted config disabled.
@@ -119,8 +123,8 @@ type PushReceivedParams struct {
 	// generated PR should close.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
 	// PRTitle and PRBody are the caller-supplied PR title and description
-	// (axi run --pr-title / --pr-body-file), used only when the run creates
-	// the PR.
+	// (axi run --pr-title / --pr-body-file), used when the run creates the PR
+	// and, when freshly supplied, to update an existing PR.
 	PRTitle string `json:"pr_title,omitempty"`
 	PRBody  string `json:"pr_body,omitempty"`
 }
@@ -129,11 +133,12 @@ type PushReceivedParams struct {
 // branch head. The daemon checks the gate while holding the branch lock, so a
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
-	CommitIdentity     *git.CommitIdentity       `json:"commit_identity,omitempty"`
-	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
+	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -143,6 +148,7 @@ type StartFreshRunParams struct {
 	LaunchNonce          string           `json:"launch_nonce"`
 	ValidationGeneration string           `json:"validation_generation"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	BaseRemote           string           `json:"base_remote,omitempty"`
 	OmitIntent           bool             `json:"omit_intent,omitempty"`
 	ClosingIssueRefs     []string         `json:"closing_issue_refs,omitempty"`
 	PRTitle              string           `json:"pr_title,omitempty"`
@@ -182,12 +188,13 @@ type ProbeOmitIntentResult struct {
 // ProbeRunPRTextParams is the empty request for MethodProbeRunPRText.
 type ProbeRunPRTextParams struct{}
 
-// ProbeRunPRTextResult answers MethodProbeRunPRText, the capability check for
-// pr_title and pr_body. An older daemon would drop those unknown fields and
-// open a PR with drafted text instead; it refuses the unknown method, so a
-// client that reaches OK=true knows the supplied text is honored.
+// ProbeRunPRTextResult answers MethodProbeRunPRText. OK confirms the daemon
+// accepts supplied text on PR creation. ExistingPRUpdates is a separate
+// capability: a create-only daemon already returns OK=true, so a new client
+// must require this field before it starts a run with supplied text.
 type ProbeRunPRTextResult struct {
-	OK bool `json:"ok"`
+	OK                bool `json:"ok"`
+	ExistingPRUpdates bool `json:"existing_pr_updates"`
 }
 
 // ProbeTranscriptHomesResult confirms that launch requests preserve the caller's
@@ -210,10 +217,14 @@ type ClaimLaunchReceiptParams struct {
 	ValidationGeneration string `json:"validation_generation"`
 	IntentDigest         string `json:"intent_digest"`
 	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
+	BaseRemote           string `json:"base_remote,omitempty"`
 	OmitIntent           bool   `json:"omit_intent,omitempty"`
 	// PRTextDigest is db.PRTextDigest of the supplied PR title and
 	// description, "" for none. A replay must match the run's stored text.
 	PRTextDigest string `json:"pr_text_digest,omitempty"`
+	// CallerRestrictionsDigest binds the requested captured record without
+	// disclosing its private content or provenance path.
+	CallerRestrictionsDigest string `json:"caller_restrictions_digest,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -267,12 +278,13 @@ type GetActiveRunParams struct {
 // leaves the new run to perform fresh inference.
 // ClosingIssueRefs are merged with the selected run's persisted references.
 type RerunParams struct {
-	CommitIdentity     *git.CommitIdentity       `json:"commit_identity,omitempty"`
-	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
-	FreshLaunch        bool                      `json:"fresh_launch,omitempty"`
-	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
-	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
+	CallerRestrictions *callerrestrictions.Record `json:"caller_restrictions,omitempty"`
+	CommitIdentity     *git.CommitIdentity        `json:"commit_identity,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes    `json:"transcript_homes,omitempty"`
+	FreshLaunch        bool                       `json:"fresh_launch,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                     `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -280,6 +292,7 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	BaseRemote    string           `json:"base_remote,omitempty"`
 	// OmitIntent requests omission of the public Intent section for the new
 	// run. It is tighten-only: the selected prior run's decision is always
 	// inherited and this can only add to it.
@@ -577,9 +590,10 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ReviewerProfile  *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
-	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
-	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	CallerRestrictionsDigest string                     `json:"caller_restrictions_digest,omitempty"`
+	ReviewerProfile          *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
+	VerificationPlan         *verificationplan.Snapshot `json:"verification_plan"`
+	PiProfile                *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`
@@ -595,15 +609,19 @@ type RunInfo struct {
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
+	BaseRemote   string  `json:"base_remote,omitempty"`
 	// OmitIntent is true when this run was started with the caller-side,
 	// tighten-only request to keep the generated Intent section out of the
 	// PR body (see runs.omit_intent).
 	OmitIntent bool `json:"omit_intent,omitempty"`
 	// PRTitleDigest and PRBodyDigest identify the run's caller-supplied PR
 	// title and description (db.PRTextDigest of each alone), so a reattach can
-	// refuse different text without the text riding every run listing.
+	// refuse different text without the text riding every run listing. Freshness
+	// must also match: inherited text cannot honor a fresh update request.
 	PRTitleDigest string `json:"pr_title_digest,omitempty"`
 	PRBodyDigest  string `json:"pr_body_digest,omitempty"`
+	PRTitleFresh  bool   `json:"pr_title_fresh,omitempty"`
+	PRBodyFresh   bool   `json:"pr_body_fresh,omitempty"`
 	// QuotaRouting is the run's quota-aware agent-ordering record (the raw
 	// quotarouting.Record JSON) when the feature is on for this run, empty
 	// otherwise. Local-only observability; see internal/quotarouting.

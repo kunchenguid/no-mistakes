@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -236,21 +237,29 @@ func ciCheckDescription(check scm.Check) string {
 // reviewBotFindings renders red review-bot checks as ask-user findings for
 // their unresolved comments, bounded once across the complete observation.
 // A red check with no unresolved comment still needs a decision, so it becomes
-// one finding of its own rather than disappearing.
+// one finding of its own rather than disappearing. Evidence a required-review
+// adapter attached to its own check (scm.Check.ReviewFindings) belongs to that
+// check by construction and comes first, so a separately read copy of the same
+// comment is not rendered twice.
 func reviewBotFindings(provider scm.Provider, checks []reviewBotCheck, comments []scm.ReviewComment) []Finding {
 	var candidates []Finding
 	seenComments := map[string]bool{}
 	for _, checked := range checks {
 		matched := false
 		hasComments := false
-		for _, comment := range comments {
-			author, ok := scm.ReviewBotForLogin(provider, comment.Author)
-			identityMatches := ok && (author.AuthorID == 0 || comment.AuthorID == author.AuthorID)
-			if checked.check.ExternalReview != "" && comment.VerifiedAuthor {
-				identityMatches, ok, author = true, true, checked.bot
-			}
-			if !ok || author.AppSlug != checked.bot.AppSlug || !identityMatches {
-				continue
+		attached := len(checked.check.ReviewFindings)
+		for i, comment := range append(append([]scm.ReviewComment(nil), checked.check.ReviewFindings...), comments...) {
+			if i >= attached {
+				author, ok := scm.ReviewBotForLogin(provider, comment.Author)
+				identityMatches := ok && (author.AuthorID == 0 || comment.AuthorID == author.AuthorID)
+				// An adapter-verified instance identity stands in for the
+				// registry's GitHub.com ID, but only for the same bot.
+				if checked.check.ExternalReview != "" && comment.VerifiedAuthor && ok && author.Identity() == checked.bot.Identity() {
+					identityMatches = true
+				}
+				if !ok || author.Identity() != checked.bot.Identity() || !identityMatches {
+					continue
+				}
 			}
 			hasComments = true
 			key := "id:" + comment.ID
@@ -262,9 +271,9 @@ func reviewBotFindings(provider scm.Provider, checks []reviewBotCheck, comments 
 			}
 			seenComments[key] = true
 			matched = true
-			body := strings.TrimSpace(comment.Body)
-			if len(body) > maxReviewBotCommentBytes {
-				body = body[:maxReviewBotCommentBytes] + "..."
+			body := clipUTF8(strings.TrimSpace(comment.Body), maxReviewBotCommentBytes)
+			if url := strings.TrimSpace(comment.URL); i < attached && url != "" {
+				body += " - " + url
 			}
 			candidates = append(candidates, Finding{
 				Severity:    types.FindingSeverityWarning,
@@ -342,6 +351,19 @@ func reviewBotFindings(provider scm.Provider, checks []reviewBotCheck, comments 
 	return append(items, marker)
 }
 
+// clipUTF8 shortens s to at most limit bytes without splitting a character,
+// marking the cut.
+func clipUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
 func reviewBotSummary(items []Finding) string {
 	byCheck := map[string]int{}
 	var order []string
@@ -391,13 +413,13 @@ func greenReviewBotChecks(bots []scm.ReviewBot, checks []scm.Check) []reviewBotC
 		if !ok {
 			continue
 		}
-		present[bot.AppSlug] = true
+		present[bot.Identity()] = true
 		if check.Bucket == scm.CheckBucketPass || check.Bucket == scm.CheckBucketSkip {
 			green = append(green, reviewBotCheck{check: check, bot: bot, green: true})
 		}
 	}
 	for _, bot := range bots {
-		if !present[bot.AppSlug] {
+		if !present[bot.Identity()] {
 			green = append(green, reviewBotCheck{bot: bot, green: true})
 		}
 	}

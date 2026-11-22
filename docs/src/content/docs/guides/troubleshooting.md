@@ -179,6 +179,17 @@ The retry keeps every committed correction, carries the steps before the failed 
 It refuses, naming the proof that failed, when the failure is about the change itself, the branch or head moved, or the configuration changed; use `no-mistakes rerun` then.
 See [`no-mistakes axi retry`](/no-mistakes/reference/cli/#no-mistakes-axi-retry) for every proof.
 
+### A run pushed, then failed in PR or CI
+
+When Push succeeded and the PR or CI step then failed, for example on a transient forge API error, continue only the delivery:
+
+```sh
+no-mistakes axi retry --run <id>
+```
+
+The new run carries every validation step and Push, runs only PR and CI, and never pushes.
+It refuses when the remote branch cannot be read or no longer has the run's pushed head; use `no-mistakes rerun` then.
+
 ### Push fails with `refusing to force-push`
 
 This means the live remote branch changed after the pipeline's last observed head and contains commit(s) the validated worktree did not incorporate.
@@ -234,10 +245,9 @@ A branch that touches no `.github/workflows/*.yml` or `*.yaml` pushes normally w
 
 ### Rebase pauses because the branch carries unpushed default-branch commits
 
-This means a local default branch ahead of `origin/<default_branch>` is a strict ancestor of your branch, so the branch may contain unrelated local-default work.
-`no-mistakes` pauses with an `ask-user` finding instead of silently bundling that ambiguous work into the PR. If the local default tip and your branch `HEAD` are equal, it treats the commits as the intended delivery work and continues.
+The branch may contain unrelated local-default work. The [Rebase reference](/no-mistakes/reference/pipeline-steps/#rebase) owns the exact conditions for this pause.
 
-Push the default branch to `origin` if those commits belong in the shared base, or rebuild the feature branch from `origin/<default_branch>` to remove the unrelated work before running the gate again.
+Publish those commits to the run's integration base if they belong in the shared base, or rebuild the feature branch from that base to remove the unrelated work before running the gate again.
 Approve the finding only when you have confirmed the local default-branch work belongs in the delivery branch.
 
 ## `git push no-mistakes` doesn't start a pipeline
@@ -296,7 +306,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - Self-hosted Gitea isn't detected because `tea` has no login configured for the host; run `tea logins add --url https://your-gitea.example.com --token <token> --name <name>` (tea 0.x) or `tea auth login --host https://your-gitea.example.com --with-token < token-file` (tea 1.0) so detection finds it. tea 1.0 does not read tea 0.x logins, so after upgrading tea the PR step is skipped with `no tea 1.0 account configured` until you log in again. See [Self-hosted Gitea](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
-- Self-hosted Forgejo reached over an SSH origin isn't detected until `FORGEJO_BASE_URL` is set in the daemon's environment; when the instance serves SSH from a hostname other than its web host (Forgejo's `SSH_DOMAIN` setting), also set `FORGEJO_SSH_DOMAIN`, or the origin still fails to match the instance. See [Forgejo](/no-mistakes/guides/provider-integration/#forgejo).
+- The integration remote isn't recognized as Forgejo. Check [`FORGEJO_BASE_URL`](/no-mistakes/reference/environment/#forgejo_base_url) and, for a separate SSH hostname, [`FORGEJO_SSH_DOMAIN`](/no-mistakes/reference/environment/#forgejo_ssh_domain).
 - `FORGEJO_SSH_DOMAIN` is set, but a `tea` login for the same host, such as one left from an earlier split-host workaround, is matched first and routes the repository to Gitea; with `tea` not installed or not logged in, the PR step is skipped with `tea CLI is not installed` or `tea CLI is not authenticated`. Remove the login with `tea logins delete <name>` (tea 0.x) or `tea auth logout --host <url>` (tea 1.0). See [`FORGEJO_SSH_DOMAIN`](/no-mistakes/reference/environment/#forgejo_ssh_domain).
 - A non-GitHub repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the effective PR base branch (see the [PR step's skip rules](/no-mistakes/reference/pipeline-steps/#pr))

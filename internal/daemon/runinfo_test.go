@@ -31,6 +31,9 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload run: %v", err)
 	}
+	title, body := "Title", "Description"
+	run.PRTitle, run.PRBody = &title, &body
+	run.PRTitleFresh, run.PRBodyFresh = true, false
 
 	info := runToInfo(d, run, nil)
 	if info.HeadSHA != "pipeline-fix-head" {
@@ -38,6 +41,9 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	}
 	if info.SubmittedHeadSHA == nil || *info.SubmittedHeadSHA != "submitted-head" {
 		t.Fatalf("submitted head = %v, want submitted-head", info.SubmittedHeadSHA)
+	}
+	if !info.PRTitleFresh || info.PRBodyFresh {
+		t.Fatalf("PR text freshness = %v/%v, want true/false", info.PRTitleFresh, info.PRBodyFresh)
 	}
 	step, err := d.InsertStepResult(run.ID, types.StepCI)
 	if err != nil {

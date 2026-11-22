@@ -93,6 +93,24 @@ func TestPROwnershipUpdateSettlesAfterLatestAuthorEdit(t *testing.T) {
 	}
 }
 
+func TestPRSuppliedDescriptionRefusesConcurrentAuthorEdit(t *testing.T) {
+	t.Parallel()
+	content, appendix := ownedFixture(t)
+	latest := content.Body + "\nNew author note"
+	host := &ownershipRaceHost{body: content.Body}
+	host.read = func(h *ownershipRaceHost) error {
+		if h.reads == 1 {
+			h.body = latest
+		}
+		return nil
+	}
+	narrative := "Replacement author narrative"
+	err := updateOwnedPRWithNarrative(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent{Body: content.Body}, "", "", appendix, 0, &narrative)
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite newer author text") || host.writes != 0 || host.body != latest {
+		t.Fatalf("concurrent edit was not preserved: err=%v, writes=%d, body=%q", err, host.writes, host.body)
+	}
+}
+
 func TestPROwnershipUpdateSettleRefusesUnverifiedBodies(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"stale", "foreign-author", "foreign-appendix", "ownership-marker", "media-url", "foreign-after-stale", "read-error", "read-error-after-stale", "write-error"} {

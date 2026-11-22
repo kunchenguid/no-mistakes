@@ -2,13 +2,17 @@ package intent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 )
 
 func TestAgentSummarizer_PreservesNewestOverBudgetTurn(t *testing.T) {
@@ -32,8 +36,9 @@ func TestAgentSummarizer_PreservesNewestOverBudgetTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			var packet struct{ Transcript string }
-			_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
-			if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+			_, framed, started := strings.Cut(fa.lastPrompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+			data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+			if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 				t.Fatal("summary request must carry a JSON packet")
 			}
 			if !strings.HasSuffix(packet.Transcript, "NEWEST_REQUEST") {
@@ -108,8 +113,9 @@ func TestAgentSummarizer_PiMessageTimes(t *testing.T) {
 					t.Fatal(err)
 				}
 				var packet struct{ Transcript string }
-				_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
-				if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+				_, framed, started := strings.Cut(fa.lastPrompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+				data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+				if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 					t.Fatal("summary request must carry a JSON packet")
 				}
 				for _, role := range []string{"user", "assistant"} {
@@ -159,8 +165,9 @@ func TestAgentSummarizer_CommitSecondPrecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var packet struct{ Transcript string }
-	_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
-	if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+	_, framed, started := strings.Cut(fa.lastPrompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+	data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+	if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 		t.Fatal("summary request must carry a JSON packet")
 	}
 	for _, want := range []string{"same-second request", "same-second completion"} {
@@ -298,5 +305,48 @@ func TestExtract_CacheTracksScopedContent(t *testing.T) {
 				t.Fatalf("summary agent invocation did not match cache reuse = %v", tc.wantReuse)
 			}
 		})
+	}
+}
+
+func TestExtractCallerRestrictionsCacheIsolation(t *testing.T) {
+	now := time.Now()
+	sess := &Session{AgentName: "codex", SessionID: "shared", LastMsgKey: "same", LastActivity: now, Messages: []Message{{Text: "edit current.txt", Timestamp: now.Add(-time.Minute)}}}
+	cache := NewMemCache()
+	fa := &fakeAgent{}
+	p := ExtractParams{OriginCWD: "/tmp/repo", DiffFiles: []string{"current.txt"}, BaseTime: now.Add(-time.Hour), HeadTime: now, Readers: []Reader{&staticReader{name: "codex", sessions: []*Session{sess}}}, Cache: cache, Summarizer: NewAgentSummarizer(fa, ""), Change: ChangeContext{Base: "base", Head: "head", Diff: "patch"}}
+	record := &callerrestrictions.Record{Source: callerrestrictions.Source, SourcePath: filepath.Join(t.TempDir(), "caller.txt"), Content: "No installs.", SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("No installs."))), CapturedAt: 1}
+	other := *record
+	other.Content = "No downloads."
+	other.SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(other.Content)))
+	reattributed := *record
+	reattributed.SourcePath = filepath.Join(t.TempDir(), "caller.txt")
+	cases := []struct {
+		record  *callerrestrictions.Record
+		summary string
+	}{
+		{record, "summary under the first record"},
+		{&other, "summary under the second record"},
+		{nil, "summary without restrictions"},
+		{&reattributed, "summary under different provenance"},
+	}
+	for _, tc := range cases {
+		if err := tc.record.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		p.CallerRestrictionsDigest = tc.record.Digest()
+		fa.output = fmt.Sprintf(`{"summary":%q}`, tc.summary)
+		got, err := Extract(context.Background(), p)
+		if err != nil || got.Summary != tc.summary {
+			t.Fatalf("extraction reused another restrictions record: %+v, %v", got, err)
+		}
+	}
+	for i := len(cases) - 1; i >= 0; i-- {
+		tc := cases[i]
+		p.CallerRestrictionsDigest = tc.record.Digest()
+		fa.output = `{"summary":"unexpected cache miss"}`
+		got, err := Extract(context.Background(), p)
+		if err != nil || got.Summary != tc.summary {
+			t.Fatalf("identical record missed its own cached summary: %+v, %v", got, err)
+		}
 	}
 }
