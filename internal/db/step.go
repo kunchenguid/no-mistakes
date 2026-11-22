@@ -148,6 +148,44 @@ func (s *StepResult) RoundsStepID() string {
 	return s.ID
 }
 
+func RecordedDocumentEdits(raw *string, rounds []*StepRound) types.Findings {
+	if metadata := types.DocumentOffChangeMetadata(raw); metadata.HasDocumentOffChangePaths() {
+		return metadata
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		if metadata := types.DocumentOffChangeMetadata(rounds[i].FindingsJSON); metadata.HasDocumentOffChangePaths() {
+			return metadata
+		}
+	}
+	return types.Findings{}
+}
+
+func (d *DB) DocumentStepReport(step *StepResult) (string, *string, error) {
+	if step.RoundsStepID() == step.ID {
+		return step.RunID, step.FindingsJSON, nil
+	}
+	source, err := d.GetStepResult(step.RoundsStepID())
+	if err != nil {
+		return "", nil, err
+	}
+	if source == nil || source.StepName != types.StepDocument {
+		return "", nil, fmt.Errorf("no source Document result for carried step %s", step.ID)
+	}
+	metadata := types.DocumentOffChangeMetadata(source.FindingsJSON)
+	if !metadata.HasDocumentOffChangePaths() {
+		rounds, err := d.GetRoundsByStep(source.ID)
+		if err != nil {
+			return source.RunID, nil, err
+		}
+		metadata = RecordedDocumentEdits(nil, rounds)
+	}
+	if !metadata.HasDocumentOffChangePaths() {
+		return source.RunID, nil, nil
+	}
+	raw, err := types.MarshalFindingsJSON(metadata)
+	return source.RunID, &raw, err
+}
+
 // GetStepResult returns a step result by ID.
 func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	columns, err := d.readableStepResultColumns()

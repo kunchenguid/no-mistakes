@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Finding action constants.
@@ -335,7 +338,7 @@ type Findings struct {
 	// never read as resolution. Empty on every non-review payload.
 	ReviewedPaths       []string             `json:"reviewed_paths,omitempty"`
 	ReviewCoverageScope *ReviewCoverageScope `json:"review_coverage_scope,omitempty"`
-	// DocumentOffChangePaths records Git-observed edits from Document rounds
+	// DocumentOffChangePaths records paths committed by Document rounds
 	// outside the submitted change. It is metadata, so it never needs a verdict.
 	DocumentOffChangePaths   []string `json:"document_off_change_paths,omitempty"`
 	DocumentOffChangeOmitted bool     `json:"document_off_change_omitted,omitempty"`
@@ -416,6 +419,28 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 }
 
 const DocumentOffChangeOmission = "More paths in the Document step log."
+
+func DocumentPathSpelling(path string) string {
+	if !utf8.ValidString(path) || strings.HasPrefix(path, `"`) ||
+		strings.ContainsFunc(path, func(r rune) bool { return !unicode.IsPrint(r) }) ||
+		strings.HasPrefix(path, " ") || strings.HasSuffix(path, " ") || strings.Contains(path, "  ") {
+		return strings.ReplaceAll(strconv.Quote(path), " ", `\x20`)
+	}
+	return path
+}
+
+func DocumentOffChangeMetadata(raw *string) Findings {
+	if raw == nil {
+		return Findings{}
+	}
+	f, _ := ParseFindingsJSON(*raw)
+	paths, omitted := DocumentOffChangePreview(f.DocumentOffChangePaths)
+	return Findings{DocumentOffChangePaths: paths, DocumentOffChangeOmitted: omitted || f.DocumentOffChangeOmitted}
+}
+
+func (f Findings) HasDocumentOffChangePaths() bool {
+	return len(f.DocumentOffChangePaths) != 0 || f.DocumentOffChangeOmitted
+}
 
 func DocumentOffChangePreview(paths []string) ([]string, bool) {
 	const maxPaths = 8

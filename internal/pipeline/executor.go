@@ -572,7 +572,13 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 				return e.failRun(run, repo, err, ctx)
 			}
 			stepRecords[step.Name()] = sr
-			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(sr.Status), "", "", sr.DurationMS)
+			var findings string
+			if step.Name() == types.StepDocument {
+				if _, raw, _ := e.db.DocumentStepReport(sr); raw != nil {
+					findings = *raw
+				}
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(sr.Status), findings, "", sr.DurationMS)
 			continue
 		}
 		sr, err := e.db.InsertStepResult(run.ID, step.Name())
@@ -2126,15 +2132,11 @@ done:
 }
 
 func documentCompletionFindings(raw string) string {
-	findings, _ := types.ParseFindingsJSON(raw)
-	paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
-	if len(paths) == 0 && !omitted && !findings.DocumentOffChangeOmitted {
+	metadata := types.DocumentOffChangeMetadata(&raw)
+	if !metadata.HasDocumentOffChangePaths() {
 		return ""
 	}
-	completion, _ := types.MarshalFindingsJSON(types.Findings{
-		DocumentOffChangePaths:   paths,
-		DocumentOffChangeOmitted: omitted || findings.DocumentOffChangeOmitted,
-	})
+	completion, _ := types.MarshalFindingsJSON(metadata)
 	return completion
 }
 

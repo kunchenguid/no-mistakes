@@ -35,7 +35,7 @@ func TestDocumentGateShowsOffChangePaths(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	raw, err := types.MarshalFindingsJSON(types.Findings{
 		Summary:                "Documentation needs a decision",
-		Items:                  []types.Finding{{ID: "doc-1", Severity: "warning", Description: "Decide whether to remove the old example."}},
+		Items:                  []types.Finding{{ID: "doc-1", Severity: "warning", Description: "Decide whether to remove the old example. " + strings.Repeat("More detail about the example. ", 48)}},
 		DocumentOffChangePaths: []string{"README.md"},
 	})
 	if err != nil {
@@ -43,10 +43,13 @@ func TestDocumentGateShowsOffChangePaths(t *testing.T) {
 	}
 	run.Steps[0].FindingsJSON = &raw
 	model := NewModel("/tmp/sock", nil, run)
-	view := stripANSI(model.View())
-	for _, want := range []string{"Decide whether to remove the old example.", "Document edits outside the submitted change", "README.md"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("gate view missing %q:\n%s", want, view)
+	for _, height := range []int{0, 24} {
+		model.height = height
+		view := stripANSI(model.View())
+		for _, want := range []string{"Decide whether to remove the old example.", `Outside submission: "README.md"`} {
+			if !strings.Contains(view, want) {
+				t.Errorf("gate view at height %d missing %q:\n%s", height, want, view)
+			}
 		}
 	}
 }

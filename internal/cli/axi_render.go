@@ -219,6 +219,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		rv.PRURL = *r.PRURL
 	}
 	for _, s := range steps {
+		findings := s.FindingsJSON
 		sv := stepView{
 			ID:             s.ID,
 			Name:           string(s.StepName),
@@ -241,12 +242,14 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 			sv.DurationMS = *s.DurationMS
 		}
 		if database != nil && s.StepName == types.StepDocument {
-			if combined, err := database.HasAgentInvocationPurpose(s.RunID, string(s.StepName), "housekeeping"); err == nil && combined {
+			sourceRun, raw, _ := database.DocumentStepReport(s)
+			findings = raw
+			if combined, err := database.HasAgentInvocationPurpose(sourceRun, string(s.StepName), "housekeeping"); err == nil && combined {
 				sv.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
 			}
 		}
-		if s.FindingsJSON != nil {
-			sv.FindingsJSON = *s.FindingsJSON
+		if findings != nil {
+			sv.FindingsJSON = *findings
 		}
 		if reason := s.TestOverrideReason(); reason != "" {
 			rv.TestOverrideReason = reason

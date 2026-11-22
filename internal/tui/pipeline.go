@@ -185,22 +185,8 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 
 		b.WriteString(line)
 		b.WriteString("\n")
-		if step.StepName == types.StepDocument && step.Status == types.StepStatusCompleted && step.FindingsJSON != nil {
-			findings, _ := types.ParseFindingsJSON(*step.FindingsJSON)
-			paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
-			if len(paths) > 0 || omitted || findings.DocumentOffChangeOmitted {
-				quoted := make([]string, len(paths))
-				for i, path := range paths {
-					quoted[i] = strconv.Quote(path)
-				}
-				detail := "  Outside submission: " + strings.Join(quoted, ", ")
-				if omitted || findings.DocumentOffChangeOmitted || lipgloss.Width(detail) > contentWidth {
-					const suffix = " (see step log)"
-					detail, _ = cutText(detail, contentWidth-lipgloss.Width(suffix))
-					detail += suffix
-				}
-				b.WriteString(dimStyle.Render(detail) + "\n")
-			}
+		if detail := documentPipelinePreview(step, contentWidth); detail != "" {
+			b.WriteString(dimStyle.Render(detail) + "\n")
 		}
 
 		// Connector between steps (suppressed in compact mode for small terminals).
@@ -217,6 +203,49 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString("\n" + errStyle.Render(errText) + "\n")
 	}
 	return renderBox("Pipeline", b.String(), boxWidth)
+}
+
+func documentPipelinePreview(step ipc.StepResultInfo, width int) string {
+	if step.StepName != types.StepDocument {
+		return ""
+	}
+	switch step.Status {
+	case types.StepStatusAwaitingApproval, types.StepStatusFixReview, types.StepStatusCompleted:
+	default:
+		return ""
+	}
+	metadata := types.DocumentOffChangeMetadata(step.FindingsJSON)
+	if !metadata.HasDocumentOffChangePaths() {
+		return ""
+	}
+	const label = "  Outside submission:"
+	const suffix = " (see step log)"
+	detail := label
+	for i, path := range metadata.DocumentOffChangePaths {
+		if !strings.HasPrefix(path, `"`) {
+			path = strconv.Quote(path)
+		}
+		part := " " + path
+		if i > 0 {
+			part = "," + part
+		}
+		needed := lipgloss.Width(detail + part)
+		if i+1 < len(metadata.DocumentOffChangePaths) || metadata.DocumentOffChangeOmitted {
+			needed += len(suffix)
+		}
+		if needed > width {
+			metadata.DocumentOffChangeOmitted = true
+			break
+		}
+		detail += part
+	}
+	if metadata.DocumentOffChangeOmitted {
+		if len(label)+len(suffix) > width {
+			return "  See step log"
+		}
+		detail += suffix
+	}
+	return detail
 }
 
 func appendRightLabel(line, label string, width int) string {

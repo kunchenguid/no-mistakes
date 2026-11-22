@@ -3,8 +3,6 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -134,7 +132,8 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		}
 		return outcome, nil
 	}
-	submittedPaths, err := documentSubmittedPaths(sctx, baseSHA)
+	submittedRange := documentSubmittedRange(sctx, baseSHA)
+	submittedPaths, err := documentDiffPaths(sctx, submittedRange)
 	if err != nil {
 		return nil, fmt.Errorf("get submitted changed paths for Document: %w", err)
 	}
@@ -145,7 +144,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		sctx.Log("updating documentation...")
 	}
 
-	prompt := s.buildPrompt(sctx, baseSHA, ignorePatterns, combinedLint, submittedPaths)
+	prompt := s.buildPrompt(sctx, baseSHA, ignorePatterns, combinedLint, submittedPaths, submittedRange)
 	schema := findingsSchema
 	purpose := "document"
 	if combinedLint {
@@ -160,10 +159,6 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	headBefore, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("read pre-Document head: %w", err)
-	}
-	snapshot, snapshotErr := snapshotDocumentWorktree(sctx)
-	if snapshot.dir != "" {
-		defer os.RemoveAll(snapshot.dir)
 	}
 
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
@@ -222,12 +217,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		}
 	}
 
-	paths := previous.DocumentOffChangePaths
-	if snapshotErr != nil {
-		sctx.Log(fmt.Sprintf("could not snapshot pre-Document edits: %v", snapshotErr))
-	} else {
-		paths = append(paths, documentOffChangePaths(sctx, submittedPaths, headBefore, snapshot)...)
-	}
+	paths := append(previous.DocumentOffChangePaths, documentOffChangePaths(sctx, submittedPaths, headBefore)...)
 	slices.Sort(paths)
 	docFindings.DocumentOffChangePaths, docFindings.DocumentOffChangeOmitted = types.DocumentOffChangePreview(slices.Compact(paths))
 	docFindings.DocumentOffChangeOmitted = docFindings.DocumentOffChangeOmitted || previous.DocumentOffChangeOmitted
@@ -264,12 +254,17 @@ func validateDocumentAnalyzerFindings(raw []byte, findings *Findings, changesCom
 // buildPrompt assembles the document (or combined document+lint) prompt: the
 // placement policy, scope discipline, trusted repository-specific policy,
 // the task, and - in combined mode - the lint duty.
-func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePatterns string, combinedLint bool, submittedPaths []string) string {
+func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePatterns string, combinedLint bool, submittedPaths []string, submittedRange string) string {
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 	var submission strings.Builder
 	submission.WriteString("Submitted changed paths:\n")
 	for _, path := range submittedPaths {
-		fmt.Fprintf(&submission, "- %s\n", strconv.Quote(path))
+		line := "- " + strconv.Quote(path) + "\n"
+		if submission.Len()+len(line) > 8192 {
+			fmt.Fprintf(&submission, "More paths omitted. From the repository root, read the complete NUL-delimited list with `git %s`.\n", strings.Join(documentPathDiffArgs(submittedRange), " "))
+			break
+		}
+		submission.WriteString(line)
 	}
 	if len(submittedPaths) == 0 {
 		submission.WriteString("(none)\n")
@@ -351,7 +346,7 @@ Previous findings to address:
 // Use the original submitted head even when rebase or an earlier step moved
 // the working head. The three-dot diff finds the submitted head's own merge
 // base, so an upstream change picked up during rebase cannot enter this list.
-func documentSubmittedPaths(sctx *pipeline.StepContext, baseSHA string) ([]string, error) {
+func documentSubmittedRange(sctx *pipeline.StepContext, baseSHA string) string {
 	headSHA := sctx.Run.HeadSHA
 	separator := ".."
 	if submitted := sctx.Run.SubmittedHeadSHA; submitted != nil && *submitted != "" {
@@ -360,15 +355,19 @@ func documentSubmittedPaths(sctx *pipeline.StepContext, baseSHA string) ([]strin
 			separator = "..."
 		}
 	}
-	return documentDiffPaths(sctx, baseSHA+separator+headSHA)
+	return baseSHA + separator + headSHA
 }
 
 func documentDiffPaths(sctx *pipeline.StepContext, revisionRange string) ([]string, error) {
-	raw, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--name-only", "-z", "--no-renames", revisionRange, "--")
+	raw, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, documentPathDiffArgs(revisionRange)...)
 	if err != nil {
 		return nil, err
 	}
 	return changedPathList(string(raw)), nil
+}
+
+func documentPathDiffArgs(revisionRange string) []string {
+	return []string{"diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", revisionRange, "--"}
 }
 
 func previousDocumentEdits(sctx *pipeline.StepContext) types.Findings {
@@ -379,75 +378,10 @@ func previousDocumentEdits(sctx *pipeline.StepContext) types.Findings {
 	if err != nil {
 		sctx.Log(fmt.Sprintf("could not read earlier Document edit paths: %v", err))
 	}
-	return recordedDocumentEdits(nil, rounds)
+	return db.RecordedDocumentEdits(nil, rounds)
 }
 
-func recordedDocumentEdits(raw *string, rounds []*db.StepRound) types.Findings {
-	var preview types.Findings
-	for i := len(rounds); ; i-- {
-		if raw != nil {
-			findings, _ := types.ParseFindingsJSON(*raw)
-			if len(findings.DocumentOffChangePaths) > 0 || findings.DocumentOffChangeOmitted {
-				paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
-				preview.DocumentOffChangePaths = paths
-				preview.DocumentOffChangeOmitted = omitted || findings.DocumentOffChangeOmitted
-				break
-			}
-		}
-		if i == 0 {
-			break
-		}
-		raw = rounds[i-1].FindingsJSON
-	}
-	return preview
-}
-
-type documentWorktreeSnapshot struct {
-	dir   string
-	index string
-	env   []string
-	tree  string
-}
-
-func snapshotDocumentWorktree(sctx *pipeline.StepContext) (documentWorktreeSnapshot, error) {
-	var snapshot documentWorktreeSnapshot
-	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none")
-	if err != nil || status == "" {
-		return snapshot, err
-	}
-	snapshot.index, err = preparationGitPath(sctx.Ctx, sctx.WorkDir, "index")
-	if err != nil {
-		return snapshot, err
-	}
-	objects, err := preparationGitPath(sctx.Ctx, sctx.WorkDir, "objects")
-	if err != nil {
-		return snapshot, err
-	}
-	snapshot.dir, err = os.MkdirTemp("", "no-mistakes-document-")
-	if err != nil {
-		return snapshot, err
-	}
-	snapshot.env = []string{
-		"GIT_INDEX_FILE=" + filepath.Join(snapshot.dir, "index"),
-		"GIT_OBJECT_DIRECTORY=" + snapshot.dir,
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + strconv.Quote(objects),
-	}
-	snapshot.tree, err = snapshot.worktreeTree(sctx)
-	return snapshot, err
-}
-
-func (snapshot documentWorktreeSnapshot) worktreeTree(sctx *pipeline.StepContext) (string, error) {
-	if err := copyFile(snapshot.index, filepath.Join(snapshot.dir, "index"), 0o600); err != nil {
-		return "", err
-	}
-	config := []string{"-c", "core.splitIndex=false", "-c", "core.hooksPath=" + filepath.Join(snapshot.dir, "hooks"), "-c", "core.fsmonitor=false"}
-	if _, err := git.RunWithEnv(sctx.Ctx, sctx.WorkDir, snapshot.env, append(slices.Clone(config), "add", "-A")...); err != nil {
-		return "", err
-	}
-	return git.RunWithEnv(sctx.Ctx, sctx.WorkDir, snapshot.env, append(config, "write-tree")...)
-}
-
-func documentOffChangePaths(sctx *pipeline.StepContext, submittedPaths []string, headBefore string, snapshot documentWorktreeSnapshot) []string {
+func documentOffChangePaths(sctx *pipeline.StepContext, submittedPaths []string, headBefore string) []string {
 	if headBefore == sctx.Run.HeadSHA {
 		return nil
 	}
@@ -456,35 +390,17 @@ func documentOffChangePaths(sctx *pipeline.StepContext, submittedPaths []string,
 		sctx.Log(fmt.Sprintf("could not list Document edit paths: %v", err))
 		return nil
 	}
-	var changed map[string]bool
-	if snapshot.tree != "" {
-		treeAfter, err := snapshot.worktreeTree(sctx)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("could not snapshot post-Document edits: %v", err))
-			return nil
-		}
-		raw, err := git.RunWithEnv(sctx.Ctx, sctx.WorkDir, snapshot.env, "diff", "--name-status", "-z", "--no-renames", snapshot.tree, treeAfter, "--")
-		if err != nil {
-			sctx.Log(fmt.Sprintf("could not compare Document worktree edits: %v", err))
-			return nil
-		}
-		fields := changedPathList(raw)
-		changed = make(map[string]bool, len(fields)/2)
-		for i := 1; i < len(fields); i += 2 {
-			changed[fields[i]] = true
-		}
-	}
 	submitted := make(map[string]bool, len(submittedPaths))
 	for _, path := range submittedPaths {
 		submitted[path] = true
 	}
 	var paths []string
 	for _, path := range edited {
-		if !submitted[path] && (changed == nil || changed[path]) {
+		if !submitted[path] {
 			if sctx.LogFile != nil {
-				sctx.LogFile("Document edited outside the submitted change: " + strconv.Quote(path))
+				sctx.LogFile("Document committed outside the submitted change: " + strconv.Quote(path))
 			}
-			paths = append(paths, path)
+			paths = append(paths, types.DocumentPathSpelling(path))
 		}
 	}
 	return paths

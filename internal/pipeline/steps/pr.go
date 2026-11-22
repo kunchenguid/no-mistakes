@@ -1010,6 +1010,11 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
 	for _, sr := range steps {
+		if sr.StepName == types.StepDocument && sr.CarriedFrom != nil {
+			if _, findings, err := sctx.DB.DocumentStepReport(sr); err == nil {
+				sr.FindingsJSON = findings
+			}
+		}
 		r, err := sctx.DB.GetRoundsByStep(sr.RoundsStepID())
 		if err != nil {
 			slog.Warn("failed to query rounds for step", "step", sr.StepName, "error", err)

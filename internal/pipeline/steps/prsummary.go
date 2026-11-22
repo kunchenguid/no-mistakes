@@ -10,10 +10,8 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -1514,11 +1512,11 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 }
 
 func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
-	preview := recordedDocumentEdits(sr.FindingsJSON, rounds)
-	if len(preview.DocumentOffChangePaths) == 0 && !preview.DocumentOffChangeOmitted {
+	preview := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)
+	if !preview.HasDocumentOffChangePaths() {
 		return
 	}
-	b.WriteString("Document edits outside the submitted change\n\n")
+	b.WriteString("Paths Document committed outside the submitted change\n\n")
 	for _, path := range preview.DocumentOffChangePaths {
 		fmt.Fprintf(b, "- %s\n", renderDocumentPath(path, flavor))
 	}
@@ -1529,13 +1527,10 @@ func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds [
 }
 
 func renderDocumentPath(path string, flavor prBodyFlavor) string {
-	if strings.ContainsFunc(path, unicode.IsControl) {
-		path = strconv.Quote(path)
-	}
-	if flavor == prBodyHTML || strings.Contains(path, "<!--") {
+	if flavor == prBodyHTML || strings.Contains(path, "<!--") || jsonControlEscapePattern.MatchString(path) {
 		var escaped strings.Builder
 		for _, r := range path {
-			if r == ' ' || strings.ContainsRune("&<>\\`*_[]~!:#\"", r) {
+			if r == ' ' || strings.ContainsRune("&<>\\`*_[]~!:#\"|", r) {
 				fmt.Fprintf(&escaped, "&#%d;", r)
 			} else {
 				escaped.WriteRune(r)
@@ -1550,7 +1545,7 @@ func renderDocumentPath(path string, flavor prBodyFlavor) string {
 	for strings.Contains(path, fence) {
 		fence += "`"
 	}
-	if strings.Contains(path, "`") || (strings.HasPrefix(path, " ") && strings.HasSuffix(path, " ") && strings.TrimSpace(path) != "") {
+	if len(fence) > 1 {
 		path = " " + path + " "
 	}
 	return fence + path + fence
