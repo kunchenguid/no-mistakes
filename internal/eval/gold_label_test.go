@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -278,33 +279,44 @@ func TestCaptureShippedUnfixedLeavesSelectedSiblingAsTP(t *testing.T) {
 }
 
 func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T) {
-	findingsForRound := func(realBugID, reusedIDFile, reusedIDDescription string, shift int, extra ...findingSpec) string {
-		findings := []findingSpec{
-			{ID: realBugID, Severity: "error", File: "main.go", Line: 3, Description: "bug", Action: "auto-fix"},
-			{ID: "curated-bug", Severity: "error", File: "main.go", Line: 2, Description: "another bug", Action: "ask-user"},
-			{ID: "unfixed", Severity: "warning", File: "main.go", Line: 1, Description: "style", Action: "ask-user"},
-			{ID: "review-1", Severity: "error", File: reusedIDFile, Line: 1, Description: reusedIDDescription, Action: "ask-user"},
-			{ID: "shifted-bug", Severity: "error", File: "service.go", Line: 40 + shift, Description: "service ignores startup errors", Action: "auto-fix"},
-			{ID: "ambiguous-bug", Severity: "error", File: "cache.go", Line: 3 + shift, Description: "stale cache entry", Action: "auto-fix"},
-		}
-		return findingsJSON(append(findings, extra...)...)
+	findingsForRound := func(description, reusedIDFile, renumberedID, reusedIDDescription string, distinctLine, movedLine int) string {
+		return findingsJSON(
+			findingSpec{ID: "real-bug", Severity: "error", File: "main.go", Line: 1, Description: description, Action: "auto-fix"},
+			findingSpec{ID: "curated-bug", Severity: "error", File: "main.go", Line: 2, Description: "another bug", Action: "ask-user"},
+			findingSpec{ID: "unfixed", Severity: "warning", File: "main.go", Line: 1, Description: "style", Action: "ask-user"},
+			findingSpec{ID: "review-1", Severity: "error", File: reusedIDFile, Line: 1, Description: "unchecked startup error", Action: "ask-user"},
+			findingSpec{ID: renumberedID, Severity: "warning", File: "main.go", Line: 1, Description: "missing package documentation", Action: "ask-user"},
+			findingSpec{ID: "review-4", Severity: "warning", File: ".no-mistakes.yaml", Line: 3, Description: reusedIDDescription, Action: "ask-user"},
+			findingSpec{ID: "distinct-site", Severity: "warning", File: ".no-mistakes.yaml", Line: distinctLine, Description: "review scope is too broad", Action: "ask-user"},
+			findingSpec{ID: "moved-bug", Severity: "error", File: "main.go", Line: movedLine, Description: "Changed does nothing", Action: "auto-fix"},
+		)
 	}
-	realBugIDs := []string{"real-bug", "reraised-bug"}
 	reusedIDFiles := []string{"service.go", "cache.go"}
-	firstFindings := findingsForRound(realBugIDs[0], reusedIDFiles[0], "service initialization fails", 0)
-	secondFindings := findingsForRound(realBugIDs[1], reusedIDFiles[1], "cache retains stale entries", 3,
-		findingSpec{ID: "ambiguous-sibling", Severity: "error", File: "cache.go", Line: 9, Description: "stale cache entry", Action: "auto-fix"})
+	renumberedIDs := []string{"review-2", "review-3"}
+	distinctLines := []int{2, 3}
+	movedLines := []int{3, 6}
+	firstFindings := findingsForRound("missing build tag", reusedIDFiles[0], renumberedIDs[0], "path rule is redundant", distinctLines[0], movedLines[0])
+	secondFindings := findingsForRound("  MISSING  Build Tag  ", reusedIDFiles[1], renumberedIDs[1], "path rule misses shell scripts", distinctLines[1], movedLines[1])
 	for selectedIndex, timing := range []string{"earlier", "later"} {
 		for _, operation := range []string{"capture", "recapture", "relabel"} {
 			t.Run(timing+"/"+operation, func(t *testing.T) {
 				ctx := context.Background()
-				p, sourceDB, run, _, first := setupCapturedRunWithFindings(t, ctx, firstFindings)
+				p, sourceDB, run, repo, first := setupCapturedRunWithFindings(t, ctx, firstFindings)
 				defer sourceDB.Close()
+				if err := os.WriteFile(filepath.Join(repo.WorkingPath, "main.go"), []byte("package sample\n\n\n\n\nfunc Changed() {}\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, ctx, repo.WorkingPath, "commit", "-am", "move Changed down three lines")
+				mustGit(t, ctx, repo.WorkingPath, "push", "origin", "feature/eval")
+				secondHead := mustGit(t, ctx, repo.WorkingPath, "rev-parse", "HEAD")
+				if err := sourceDB.UpdateRunHeadSHA(run.ID, secondHead); err != nil {
+					t.Fatal(err)
+				}
 				steps, err := sourceDB.GetStepsByRun(run.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				second, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", strPtr(secondFindings), nil, run.HeadSHA, stringValue(first.ReviewedHeadSHA), stringValue(first.TrustedConfigSHA), first.GlobalConfigYAML, first.RepoConfigYAML, 25)
+				second, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "initial", strPtr(secondFindings), nil, secondHead, secondHead, stringValue(first.TrustedConfigSHA), first.GlobalConfigYAML, first.RepoConfigYAML, 25)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -337,7 +349,7 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 						}
 					}
 				}
-				selection := strPtr(`["` + realBugIDs[selectedIndex] + `","curated-bug","review-1","shifted-bug","ambiguous-bug"]`)
+				selection := strPtr(`["real-bug","curated-bug","review-1","` + renumberedIDs[selectedIndex] + `","review-4","distinct-site","moved-bug"]`)
 				if err := sourceDB.SetStepRoundSelection(selected.ID, selection, db.RoundSelectionSourceAutoFix); err != nil {
 					t.Fatal(err)
 				}
@@ -362,14 +374,9 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 					if got := byID["unfixed"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
 						t.Errorf("round %s unselected sibling = %#v, want shipped-unfixed false-positive", c.SourceRoundID, got)
 					}
-					if c.SourceRoundID == second.ID {
-						if got := byID["ambiguous-sibling"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
-							t.Errorf("unselected duplicate = %#v, want shipped-unfixed false-positive", got)
-						}
-					}
 					switch c.SourceRoundID {
 					case selected.ID:
-						for _, id := range []string{realBugIDs[selectedIndex], "curated-bug", "shifted-bug", "ambiguous-bug"} {
+						for _, id := range []string{"real-bug", "curated-bug", renumberedIDs[selectedIndex], "review-4", "distinct-site", "moved-bug"} {
 							if got := byID[id]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged {
 								t.Errorf("selected finding %s = %#v, want auto-fix-merged true-positive", id, got)
 							}
@@ -381,14 +388,20 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 						if got := byID["review-1"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.File != reusedIDFiles[declinedIndex] {
 							t.Errorf("unrelated review-1 = %#v, want shipped-unfixed false-positive in %s", got, reusedIDFiles[declinedIndex])
 						}
-						if got, exists := byID[realBugIDs[declinedIndex]]; exists {
+						if got, exists := byID["real-bug"]; exists {
 							t.Errorf("declined round's selected-elsewhere finding = %#v, want no gold label", got)
 						}
-						if got, exists := byID["shifted-bug"]; exists {
-							t.Errorf("declined round's shifted finding = %#v, want no gold label", got)
+						if got := byID[renumberedIDs[declinedIndex]]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+							t.Errorf("unselected finding with a different ID = %#v, want shipped-unfixed false-positive", got)
 						}
-						if got := byID["ambiguous-bug"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
-							t.Errorf("ambiguous shifted finding = %#v, want shipped-unfixed false-positive", got)
+						if got := byID["review-4"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+							t.Errorf("unselected finding with a different description = %#v, want shipped-unfixed false-positive", got)
+						}
+						if got := byID["distinct-site"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.Line != distinctLines[declinedIndex] {
+							t.Errorf("unselected site in unchanged file = %#v, want shipped-unfixed false-positive at line %d", got, distinctLines[declinedIndex])
+						}
+						if got := byID["moved-bug"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.Line != movedLines[declinedIndex] {
+							t.Errorf("unselected report of moved finding = %#v, want shipped-unfixed false-positive at line %d", got, movedLines[declinedIndex])
 						}
 						got, exists := byID["curated-bug"]
 						if operation != "capture" {

@@ -101,21 +101,6 @@ func hasFindingMatch(item types.Finding, exact map[types.Finding]bool, itemCount
 	return itemCounts[fingerprint] == 1 && candidateCounts[fingerprint] == 1
 }
 
-func FindingSelectionMatcher(items, candidates, selected []types.Finding) func(types.Finding) bool {
-	itemCounts := countFindingFingerprints(items)
-	candidateCounts := countFindingFingerprints(candidates)
-	exact := make(map[types.Finding]bool, len(selected))
-	eligibleCounts := make(map[types.Finding]int, len(selected))
-	for _, item := range selected {
-		exact[findingKey(item)] = true
-		fingerprint := findingFingerprint(item)
-		eligibleCounts[fingerprint] = candidateCounts[fingerprint]
-	}
-	return func(item types.Finding) bool {
-		return hasFindingMatch(item, exact, itemCounts, eligibleCounts)
-	}
-}
-
 func normalizeFindingsJSON(raw string, prefix string) string {
 	if raw == "" {
 		return ""
