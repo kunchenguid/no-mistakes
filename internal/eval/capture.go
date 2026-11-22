@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
@@ -184,7 +186,7 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			}
 		}
 	}
-	selectedInRun := selectedFindingIDsForRun(reviewRounds)
+	selectedInRun := selectedFindingsForRun(reviewRounds)
 	prState := runPRState(run)
 	captured := make([]Case, 0, len(reviewRounds))
 	for _, round := range reviewRounds {
@@ -497,12 +499,17 @@ func selectedFindingIDs(round *db.StepRound) []string {
 	return ids
 }
 
-func selectedFindingIDsForRun(rounds []*db.StepRound) map[string]bool {
-	selected := map[string]bool{}
+func selectedFindingsForRun(rounds []*db.StepRound) []types.Finding {
+	var selected []types.Finding
 	for _, round := range rounds {
-		for _, id := range selectedFindingIDs(round) {
-			if id = strings.TrimSpace(id); id != "" {
-				selected[id] = true
+		ids := selectedFindingIDs(round)
+		if len(ids) == 0 {
+			continue
+		}
+		byID := findingIndex(round)
+		for _, id := range ids {
+			if finding, ok := byID[strings.TrimSpace(id)]; ok {
+				selected = append(selected, finding)
 			}
 		}
 	}
@@ -563,7 +570,7 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 //
 // A user-added finding is false-negative gold. Confirmed post-PR misses are
 // written later by IngestPostPRMiss, not here.
-func goldFromRound(round *db.StepRound, decision Decision, prState string, selectedInRun map[string]bool) Labels {
+func goldFromRound(round *db.StepRound, decision Decision, prState string, selectedInRun []types.Finding) Labels {
 	labels := Labels{Version: labelsVersion}
 	byID := findingIndex(round)
 	seen := map[string]bool{}
@@ -623,10 +630,15 @@ func goldFromRound(round *db.StepRound, decision Decision, prState string, selec
 	if prState == prStateMerged && hasRecordedDecision(decision) && round.FindingsJSON != nil {
 		for _, finding := range parseFindingItems(*round.FindingsJSON) {
 			id := strings.TrimSpace(finding.ID)
-			if id == "" || seen[id] || selected[id] || selectedInRun[id] {
+			if id == "" || seen[id] || selected[id] {
 				continue
 			}
 			if finding.ActionOrDefault() == types.ActionNoOp {
+				continue
+			}
+			if slices.ContainsFunc(selectedInRun, func(selected types.Finding) bool {
+				return pipeline.SameFinding(finding, selected)
+			}) {
 				continue
 			}
 			seen[id] = true
@@ -795,7 +807,7 @@ func relabelRunLocked(store *Store, database *db.DB, runID string) ([]Case, erro
 	for _, round := range reviewRounds {
 		byRound[round.ID] = round
 	}
-	selectedInRun := selectedFindingIDsForRun(reviewRounds)
+	selectedInRun := selectedFindingsForRun(reviewRounds)
 	prState := runPRState(run)
 	out := make([]Case, 0, len(existing))
 	for _, c := range existing {

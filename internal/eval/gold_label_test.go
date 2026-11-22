@@ -278,18 +278,29 @@ func TestCaptureShippedUnfixedLeavesSelectedSiblingAsTP(t *testing.T) {
 }
 
 func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T) {
-	const findings = `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"auto-fix","review_scope":"source"},{"id":"curated-bug","severity":"error","file":"main.go","line":2,"description":"another bug","action":"ask-user","review_scope":"source"},{"id":"unfixed","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	findingsForRound := func(realBugID, reusedIDFile, reusedIDDescription string) string {
+		return findingsJSON(
+			findingSpec{ID: realBugID, Severity: "error", File: "main.go", Line: 3, Description: "bug", Action: "auto-fix"},
+			findingSpec{ID: "curated-bug", Severity: "error", File: "main.go", Line: 2, Description: "another bug", Action: "ask-user"},
+			findingSpec{ID: "unfixed", Severity: "warning", File: "main.go", Line: 1, Description: "style", Action: "ask-user"},
+			findingSpec{ID: "review-1", Severity: "error", File: reusedIDFile, Line: 1, Description: reusedIDDescription, Action: "ask-user"},
+		)
+	}
+	realBugIDs := []string{"real-bug", "reraised-bug"}
+	reusedIDFiles := []string{"service.go", "cache.go"}
+	firstFindings := findingsForRound(realBugIDs[0], reusedIDFiles[0], "service initialization fails")
+	secondFindings := findingsForRound(realBugIDs[1], reusedIDFiles[1], "cache retains stale entries")
 	for selectedIndex, timing := range []string{"earlier", "later"} {
-		for _, operation := range []string{"capture", "relabel"} {
+		for _, operation := range []string{"capture", "recapture", "relabel"} {
 			t.Run(timing+"/"+operation, func(t *testing.T) {
 				ctx := context.Background()
-				p, sourceDB, run, _, first := setupCapturedRunWithFindings(t, ctx, findings)
+				p, sourceDB, run, _, first := setupCapturedRunWithFindings(t, ctx, firstFindings)
 				defer sourceDB.Close()
 				steps, err := sourceDB.GetStepsByRun(run.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				second, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", strPtr(findings), nil, run.HeadSHA, stringValue(first.ReviewedHeadSHA), stringValue(first.TrustedConfigSHA), first.GlobalConfigYAML, first.RepoConfigYAML, 25)
+				second, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", strPtr(secondFindings), nil, run.HeadSHA, stringValue(first.ReviewedHeadSHA), stringValue(first.TrustedConfigSHA), first.GlobalConfigYAML, first.RepoConfigYAML, 25)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -304,10 +315,11 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 				}
 
 				selected := rounds[selectedIndex]
-				declined := rounds[1-selectedIndex]
+				declinedIndex := 1 - selectedIndex
+				declined := rounds[declinedIndex]
 				store := mustOpenEval(t, p)
 				const adjudicationReason = "confirmed against the reviewed head"
-				if operation == "relabel" {
+				if operation != "capture" {
 					cases, err := Capture(ctx, store, p, sourceDB, run.ID)
 					if err != nil {
 						t.Fatal(err)
@@ -321,7 +333,8 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 						}
 					}
 				}
-				if err := sourceDB.SetStepRoundSelection(selected.ID, strPtr(`["real-bug","curated-bug"]`), db.RoundSelectionSourceAutoFix); err != nil {
+				selection := strPtr(`["` + realBugIDs[selectedIndex] + `","curated-bug","review-1"]`)
+				if err := sourceDB.SetStepRoundSelection(selected.ID, selection, db.RoundSelectionSourceAutoFix); err != nil {
 					t.Fatal(err)
 				}
 
@@ -347,17 +360,23 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 					}
 					switch c.SourceRoundID {
 					case selected.ID:
-						for _, id := range []string{"real-bug", "curated-bug"} {
+						for _, id := range []string{realBugIDs[selectedIndex], "curated-bug"} {
 							if got := byID[id]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged {
 								t.Errorf("selected finding %s = %#v, want auto-fix-merged true-positive", id, got)
 							}
 						}
+						if got := byID["review-1"]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged || got.File != reusedIDFiles[selectedIndex] {
+							t.Errorf("selected review-1 = %#v, want auto-fix-merged true-positive in %s", got, reusedIDFiles[selectedIndex])
+						}
 					case declined.ID:
-						if got, exists := byID["real-bug"]; exists {
+						if got := byID["review-1"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.File != reusedIDFiles[declinedIndex] {
+							t.Errorf("unrelated review-1 = %#v, want shipped-unfixed false-positive in %s", got, reusedIDFiles[declinedIndex])
+						}
+						if got, exists := byID[realBugIDs[declinedIndex]]; exists {
 							t.Errorf("declined round's selected-elsewhere finding = %#v, want no gold label", got)
 						}
 						got, exists := byID["curated-bug"]
-						if operation == "relabel" {
+						if operation != "capture" {
 							if got.Adjudication == nil || got.Adjudication.Kind != GoldTruePositive || got.Adjudication.Reason != adjudicationReason {
 								t.Errorf("adjudicated finding = %#v, want preserved explicit true-positive", got)
 							}
