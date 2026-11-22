@@ -60,7 +60,7 @@ by the very PR the gate is judging.
 name: Require no-mistakes
 on:
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, synchronize, reopened]
     branches: [main]
 
 permissions:
@@ -85,9 +85,10 @@ that contains this action.
 The job name must stay exactly `PR must be raised via no-mistakes` so branch
 rulesets keep matching the same check across the fleet.
 
-An ordinary `pull_request`-triggered caller forwards no PR facts: the action
-reads the body, head SHA, head branch, author, and number from the workflow
-event payload. Pass the `pr-*` inputs only when driving it from another event.
+An ordinary `pull_request`-triggered caller forwards no PR facts. The action
+reads the head branch, author, and number from the event payload and fetches
+the body and head SHA from the GitHub API. Pass the `pr-*` inputs when driving
+the action from another event.
 
 ## Inputs
 

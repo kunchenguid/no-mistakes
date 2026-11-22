@@ -13,10 +13,8 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
 - The stable check name is `PR must be raised via no-mistakes`.
 - The reusable check implementation is the shared composite action in [`.github/actions/require-no-mistakes`](.github/actions/require-no-mistakes/README.md). Consumers pin it to a release tag or commit SHA rather than copying the enforcement shell. This repository uses the same action through a thin workflow caller.
 - The workflow run's `display_title` identifies the PR number, event action, `run_number`, and immutable `run_id`. For a PR, increasing `run_number` orders distinct events; a re-run retains that event identity and increments `run_attempt`.
-- The run's `head_sha` binds the evidence to the reviewed commit. After the latest `opened` or `edited` run reaches `status: completed`, `conclusion: success` means that event's body contained the signature and a parseable v1 pipeline attestation whose `head_sha` matches `github.event.pull_request.head.sha` and whose `review`, `test`, and `document` steps are `completed`. `conclusion: failure` means it did not. `action_required` or `cancelled` is not compliance evidence and must be handled conservatively.
+- For a non-exempt PR, wait for the latest check run to complete. A successful conclusion means the live PR body and head satisfied the action version pinned by the workflow. That pin determines which steps must be completed. Treat `action_required` and `cancelled` as unresolved.
 - Fork runs stay on the `pull_request` boundary with read-only contents permission, no repository secrets, and no checkout or execution of fork code. Approval permits only this body check; it does not grant write authority.
-
-The required steps depend on the shared action version pinned by the workflow. Versions that enforce Rebase also require `rebase` to be `completed`.
 
 ## Workflow
 
