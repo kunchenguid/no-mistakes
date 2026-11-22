@@ -12,8 +12,8 @@ It verifies, in order:
    comment;
 3. the attestation's `head_sha` equals the PR head SHA, so a later push cannot
    pass on an older attestation;
-4. `review`, `test`, and `document` each recorded `status == "completed"`.
-   Quota skips and agent skips are not compliant.
+4. `rebase`, `review`, `test`, and `document` each recorded
+   `status == "completed"`. A skipped, missing, or incomplete step fails the check.
 5. a `test` step whose attestation carries a non-empty `override_reason` is
    treated as approved over a failing configured `commands.test`. That is
    non-compliant unless the attestation also carries a non-empty
@@ -23,6 +23,9 @@ It verifies, in order:
 
 Missing or unparseable attestation reports the no-mistakes `>= 1.46.0` floor;
 a missing signature reports the not-raised-via-no-mistakes guidance.
+
+To integrate a moved base on an open PR without rewriting the branch, see the
+[guide to updating a published PR](../../../docs/src/content/docs/guides/update-published-prs.md).
 
 Step 3's body/head SHA are read **live from the GitHub API** whenever a token
 and PR number are available, not from the workflow's cached event payload.

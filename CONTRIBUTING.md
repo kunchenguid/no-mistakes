@@ -16,6 +16,8 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
 - The run's `head_sha` binds the evidence to the reviewed commit. After the latest `opened` or `edited` run reaches `status: completed`, `conclusion: success` means that event's body contained the signature and a parseable v1 pipeline attestation whose `head_sha` matches `github.event.pull_request.head.sha` and whose `review`, `test`, and `document` steps are `completed`. `conclusion: failure` means it did not. `action_required` or `cancelled` is not compliance evidence and must be handled conservatively.
 - Fork runs stay on the `pull_request` boundary with read-only contents permission, no repository secrets, and no checkout or execution of fork code. Approval permits only this body check; it does not grant write authority.
 
+The required steps depend on the shared action version pinned by the workflow. Versions that enforce Rebase also require `rebase` to be `completed`.
+
 ## Workflow
 
 1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent repo (`git@github.com:kunchenguid/no-mistakes.git`). If you instead cloned your fork directly (`gh repo fork --clone`, which leaves `origin` pointing at your fork and adds an `upstream` remote for the parent), `no-mistakes init` detects that layout and refuses with guidance instead of silently opening PRs against your own fork: `git remote set-url origin <parent-url>`, then pass your fork as `--fork-url` in step 3.
