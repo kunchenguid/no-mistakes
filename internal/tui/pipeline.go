@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -184,6 +185,23 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 
 		b.WriteString(line)
 		b.WriteString("\n")
+		if step.StepName == types.StepDocument && step.Status == types.StepStatusCompleted && step.FindingsJSON != nil {
+			findings, _ := types.ParseFindingsJSON(*step.FindingsJSON)
+			paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
+			if len(paths) > 0 || omitted || findings.DocumentOffChangeOmitted {
+				quoted := make([]string, len(paths))
+				for i, path := range paths {
+					quoted[i] = strconv.Quote(path)
+				}
+				detail := "  Outside submission: " + strings.Join(quoted, ", ")
+				if omitted || findings.DocumentOffChangeOmitted || lipgloss.Width(detail) > contentWidth {
+					const suffix = " (see step log)"
+					detail, _ = cutText(detail, contentWidth-lipgloss.Width(suffix))
+					detail += suffix
+				}
+				b.WriteString(dimStyle.Render(detail) + "\n")
+			}
+		}
 
 		// Connector between steps (suppressed in compact mode for small terminals).
 		if i < len(steps)-1 && height >= 30 {

@@ -51,6 +51,28 @@ func TestDocumentGateShowsOffChangePaths(t *testing.T) {
 	}
 }
 
+func TestDocumentCompletionShowsOffChangePaths(t *testing.T) {
+	run := testRun()
+	document := types.StepDocument
+	run.Steps[0].StepName = document
+	run.Steps[0].Status = types.StepStatusRunning
+	model := NewModel("/tmp/sock", nil, run)
+	raw := `{"findings":[],"document_off_change_paths":["README.md"]}`
+	status := string(types.StepStatusCompleted)
+	model.applyEvent(ipc.Event{Type: ipc.EventStepCompleted, RunID: run.ID, StepName: &document, Status: &status, Findings: &raw})
+	if view := stripANSI(model.View()); !strings.Contains(view, `Outside submission: "README.md"`) || strings.Contains(view, "awaiting approval") {
+		t.Fatalf("ordinary completion did not show the Document edit without approval:\n%s", view)
+	}
+	snapshot := testRun()
+	snapshot.Steps[0].StepName = document
+	snapshot.Steps[0].Status = types.StepStatusCompleted
+	snapshot.Steps[0].FindingsJSON = &raw
+	reattached := NewModel("/tmp/sock", nil, snapshot)
+	if view := stripANSI(reattached.View()); !strings.Contains(view, `Outside submission: "README.md"`) {
+		t.Fatalf("reattached view lost the completed Document edit:\n%s", view)
+	}
+}
+
 func TestModel_View_LogTailWrappedInBox(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

@@ -339,10 +339,16 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 			b.WriteString(blueStyle.Render(instr) + "\n")
 		}
 	}
-	if end == len(f.Items) && len(f.DocumentOffChangePaths) > 0 {
-		b.WriteString("\n" + wrapIndentedText("Document edits outside the submitted change", width, 0) + "\n")
-		for _, path := range f.DocumentOffChangePaths {
-			b.WriteString(wrapIndentedText(strconv.Quote(path), width, 2) + "\n")
+	if end == len(f.Items) {
+		paths, omitted := nmtypes.DocumentOffChangePreview(f.DocumentOffChangePaths)
+		if len(paths) > 0 || omitted || f.DocumentOffChangeOmitted {
+			b.WriteString("\n" + wrapIndentedText("Document edits outside the submitted change", width, 0) + "\n")
+			for _, path := range paths {
+				b.WriteString(wrapIndentedText(strconv.Quote(path), width, 2) + "\n")
+			}
+			if omitted || f.DocumentOffChangeOmitted {
+				b.WriteString(wrapIndentedText(nmtypes.DocumentOffChangeOmission, width, 2) + "\n")
+			}
 		}
 	}
 

@@ -3,8 +3,11 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"html"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -410,6 +414,12 @@ func TestDocumentStep_SubmittedScope(t *testing.T) {
 			gitCmd(t, dir, "add", "--", "README.md", "earlier.txt")
 			gitCmd(t, dir, "commit", "-m", "Earlier pipeline edits")
 			head := gitCmd(t, dir, "rev-parse", "HEAD")
+			if tc.intent != scope {
+				write("README.md", "# Settings (in development)\n\nThe default is 1.\n")
+				write("earlier.txt", "earlier staged work\n")
+				gitCmd(t, dir, "add", "--", "earlier.txt")
+				write("regression.txt", "earlier untracked work\n")
+			}
 
 			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 				if !strings.Contains(opts.Prompt, "Submitted changed paths:\n- \""+settings+"\"\n") {
@@ -466,7 +476,7 @@ func TestDocumentStep_SubmittedScope(t *testing.T) {
 			if outcome.NeedsApproval || outcome.AutoFixable {
 				t.Fatalf("visibility should leave approval semantics unchanged: %+v", outcome)
 			}
-			if got := gitCmd(t, dir, "diff", "--name-only", head, "HEAD"); got != "README.md\n"+settings {
+			if got := gitCmd(t, dir, "diff", "--name-only", head, "HEAD"); got != "README.md\n"+settings+"\nearlier.txt\nregression.txt" {
 				t.Fatalf("Document commit changed %q", got)
 			}
 			gate, err := types.ParseFindingsJSON(outcome.Findings)
@@ -480,7 +490,7 @@ func TestDocumentStep_SubmittedScope(t *testing.T) {
 				ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &outcome.Findings,
 			}}, map[string][]*db.StepRound{"document": {{Round: 1, Trigger: "initial", FindingsJSON: &outcome.Findings}}}, sctx.Run.HeadSHA)
 			if !strings.Contains(md, "Document edits outside the submitted change") || !strings.Contains(md, "README.md") ||
-				strings.Contains(md, settings) || strings.Contains(md, "earlier.txt") {
+				strings.Contains(md, settings) || strings.Contains(md, "earlier.txt") || strings.Contains(md, "regression.txt") {
 				t.Errorf("PR summary does not identify the Document-only change:\n%s", md)
 			}
 			step, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepDocument)
@@ -490,10 +500,18 @@ func TestDocumentStep_SubmittedScope(t *testing.T) {
 			if _, err := sctx.DB.InsertStepRound(step.ID, 1, "initial", &outcome.Findings, nil, 0); err != nil {
 				t.Fatal(err)
 			}
+			empty := `{"findings":[]}`
+			if _, err := sctx.DB.InsertStepRound(step.ID, 2, "user_fix", &empty, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.ResetStepsFrom(sctx.Run.ID, types.StepDocument.Order()); err != nil {
+				t.Fatal(err)
+			}
 			sctx.StepResultID = step.ID
-			sctx.Fixing = true
+			sctx.Fixing = false
 			ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
-				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","document_off_change_paths":["invented.md"]}`)}, nil
+				write("owner.md", "Another Document edit.\n")
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"Update the owner doc","document_off_change_paths":["invented.md"]}`)}, nil
 			}
 			outcome, err = (&DocumentStep{}).Execute(sctx)
 			if err != nil {
@@ -503,10 +521,112 @@ func TestDocumentStep_SubmittedScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(gate.DocumentOffChangePaths) != 1 || gate.DocumentOffChangePaths[0] != "README.md" {
-				t.Errorf("Document fix round kept edit paths %v, want only the recorded README.md", gate.DocumentOffChangePaths)
+			want := []string{"README.md", "owner.md"}
+			if !slices.Equal(gate.DocumentOffChangePaths, want) {
+				t.Fatalf("Document re-entry kept paths %v, want %v", gate.DocumentOffChangePaths, want)
+			}
+			if _, err := sctx.DB.InsertStepRound(step.ID, 3, "initial", &outcome.Findings, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Config.ProtectedPaths = []string{"protected.md"}
+			ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				write("protected.md", "Do not commit this edit.\n")
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"Update protected doc"}`)}, nil
+			}
+			outcome, err = (&DocumentStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err = types.ParseFindingsJSON(outcome.Findings)
+			if err != nil || !outcome.NeedsApproval || !pipeline.HasProtectedPathRefusal(outcome.Findings) || !slices.Equal(gate.DocumentOffChangePaths, want) {
+				t.Fatalf("Document refusal lost recorded paths or approval: %+v, %v", outcome, err)
+			}
+			if _, err := sctx.DB.InsertStepRound(step.ID, 4, "user_fix", &outcome.Findings, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Config.IgnorePatterns = []string{"*", "config/**"}
+			sctx.Fixing = true
+			ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				t.Fatal("Document called the agent with no changes to document")
+				return nil, nil
+			}
+			outcome, err = (&DocumentStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err = types.ParseFindingsJSON(outcome.Findings)
+			if err != nil || outcome.NeedsApproval || !slices.Equal(gate.DocumentOffChangePaths, want) {
+				t.Fatalf("Document no-op lost recorded paths or added approval: %+v, %v", outcome, err)
 			}
 		})
+	}
+}
+
+func TestDocumentStep_BoundsOffChangeReportAndLogsEveryPath(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		for i := 0; i < 20; i++ {
+			path := fmt.Sprintf("owner-%02d-%s.md", i, strings.Repeat("x", 180))
+			if err := os.WriteFile(filepath.Join(dir, path), []byte("Document edit\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"Update owner docs"}`)}, nil
+	}}
+	sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "lint"})
+	var log []string
+	sctx.LogFile = func(line string) { log = append(log, line) }
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil || outcome.NeedsApproval || !preview.DocumentOffChangeOmitted || len(preview.DocumentOffChangePaths) != 5 {
+		t.Fatalf("expected five preview paths and an omission notice without approval, got %+v, %v", outcome, err)
+	}
+	omitted := "owner-19-" + strings.Repeat("x", 180) + ".md"
+	if len(log) != 20 || !strings.Contains(strings.Join(log, "\n"), omitted) {
+		t.Fatalf("expected all twenty paths in the step log, got %v", log)
+	}
+	md, _ := BuildPipelineSummary([]*db.StepResult{{
+		ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &outcome.Findings,
+	}}, nil, sctx.Run.HeadSHA)
+	if !strings.Contains(md, preview.DocumentOffChangePaths[0]) || strings.Contains(md, omitted) ||
+		!strings.Contains(md, "More paths in the Document step log.") {
+		t.Fatalf("PR summary did not show the bounded preview and point to the log:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_DocumentFilenames(t *testing.T) {
+	t.Parallel()
+	raw, err := types.MarshalFindingsJSON(types.Findings{DocumentOffChangePaths: []string{
+		"docs/R&D.md", "docs/a`b.md", "docs/two\nlines.md",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := &db.StepResult{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &raw}
+	for _, tc := range []struct {
+		provider scm.Provider
+		want     []string
+	}{
+		{scm.ProviderGitHub, []string{
+			"<code>docs/R&D.md</code>", "<code>docs/a`b.md</code>", "<code>\"docs/two\\nlines.md\"</code>",
+		}},
+		{scm.ProviderBitbucket, []string{
+			"`docs/R&D.md`", "`` docs/a`b.md ``", "`\"docs/two\\nlines.md\"`",
+		}},
+	} {
+		md, _ := BuildPipelineSummaryFor([]*db.StepResult{step}, nil, "head", tc.provider)
+		if tc.provider == scm.ProviderGitHub {
+			md = html.UnescapeString(md)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(md, "- "+want+"\n") {
+				t.Errorf("%s summary missing %q:\n%s", tc.provider, want, md)
+			}
+		}
 	}
 }
 

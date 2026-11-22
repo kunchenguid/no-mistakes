@@ -337,7 +337,8 @@ type Findings struct {
 	ReviewCoverageScope *ReviewCoverageScope `json:"review_coverage_scope,omitempty"`
 	// DocumentOffChangePaths records Git-observed edits from Document rounds
 	// outside the submitted change. It is metadata, so it never needs a verdict.
-	DocumentOffChangePaths []string `json:"document_off_change_paths,omitempty"`
+	DocumentOffChangePaths   []string `json:"document_off_change_paths,omitempty"`
+	DocumentOffChangeOmitted bool     `json:"document_off_change_omitted,omitempty"`
 	// WithdrawnFindings is an answer round's explicit re-adjudication: the
 	// carried findings the reviewer now says no longer hold, each with its
 	// reason. On an answer round a carried finding leaves the outstanding set
@@ -377,7 +378,8 @@ type findingsWire struct {
 	RiskRationale       string               `json:"risk_rationale"`
 	RiskScope           string               `json:"risk_scope"`
 
-	DocumentOffChangePaths []string `json:"document_off_change_paths"`
+	DocumentOffChangePaths   []string `json:"document_off_change_paths"`
+	DocumentOffChangeOmitted bool     `json:"document_off_change_omitted"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -408,8 +410,23 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		RiskRationale:       wire.RiskRationale,
 		RiskScope:           wire.RiskScope,
 
-		DocumentOffChangePaths: wire.DocumentOffChangePaths,
+		DocumentOffChangePaths:   wire.DocumentOffChangePaths,
+		DocumentOffChangeOmitted: wire.DocumentOffChangeOmitted,
 	}, nil
+}
+
+const DocumentOffChangeOmission = "More paths in the Document step log."
+
+func DocumentOffChangePreview(paths []string) ([]string, bool) {
+	const maxPaths = 8
+	remaining := 1024
+	for i, path := range paths {
+		if i == maxPaths || len(path) > remaining {
+			return paths[:i], true
+		}
+		remaining -= len(path)
+	}
+	return paths, false
 }
 
 // FindingsMetadata returns findings with its items dropped, so every helper

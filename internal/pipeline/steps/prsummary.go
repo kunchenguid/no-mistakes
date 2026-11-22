@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -1513,26 +1514,46 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 }
 
 func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
-	var paths []string
-	if sr.FindingsJSON != nil {
-		findings, _ := types.ParseFindingsJSON(*sr.FindingsJSON)
-		paths = findings.DocumentOffChangePaths
-	}
-	for i := len(rounds) - 1; len(paths) == 0 && i >= 0; i-- {
-		if raw := rounds[i].FindingsJSON; raw != nil {
-			findings, _ := types.ParseFindingsJSON(*raw)
-			paths = findings.DocumentOffChangePaths
-		}
-	}
-	if len(paths) == 0 {
+	preview := recordedDocumentEdits(sr.FindingsJSON, rounds)
+	if len(preview.DocumentOffChangePaths) == 0 && !preview.DocumentOffChangeOmitted {
 		return
 	}
 	b.WriteString("Document edits outside the submitted change\n\n")
-	for _, path := range paths {
-		quoted := strings.ReplaceAll(strconv.Quote(path), "`", `\x60`)
-		fmt.Fprintf(b, "- `%s`\n", escapePRText(quoted, flavor))
+	for _, path := range preview.DocumentOffChangePaths {
+		fmt.Fprintf(b, "- %s\n", renderDocumentPath(path, flavor))
+	}
+	if preview.DocumentOffChangeOmitted {
+		b.WriteString("\n" + types.DocumentOffChangeOmission + "\n")
 	}
 	b.WriteString("\n")
+}
+
+func renderDocumentPath(path string, flavor prBodyFlavor) string {
+	if strings.ContainsFunc(path, unicode.IsControl) {
+		path = strconv.Quote(path)
+	}
+	if flavor == prBodyHTML || strings.Contains(path, "<!--") {
+		var escaped strings.Builder
+		for _, r := range path {
+			if r == ' ' || strings.ContainsRune("&<>\\`*_[]~!:#\"", r) {
+				fmt.Fprintf(&escaped, "&#%d;", r)
+			} else {
+				escaped.WriteRune(r)
+			}
+		}
+		if flavor == prBodyHTML {
+			return "<code>" + escaped.String() + "</code>"
+		}
+		return escaped.String()
+	}
+	fence := "`"
+	for strings.Contains(path, fence) {
+		fence += "`"
+	}
+	if strings.Contains(path, "`") || (strings.HasPrefix(path, " ") && strings.HasSuffix(path, " ") && strings.TrimSpace(path) != "") {
+		path = " " + path + " "
+	}
+	return fence + path + fence
 }
 
 func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {

@@ -1294,6 +1294,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
+	var completedDocumentFindings string
 	autoFixLimit := e.autoFixLimit(stepName)
 	maxReviewFixRounds, reviewFixRounds := 0, 0
 	if stepName == types.StepReview {
@@ -1689,6 +1690,9 @@ rounds:
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
+		if stepName == types.StepDocument {
+			completedDocumentFindings = documentCompletionFindings(outcome.Findings)
+		}
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
@@ -2114,11 +2118,24 @@ done:
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
-	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
+	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), completedDocumentFindings, "", &durationMS)
 	if stepName == types.StepCI && !stepSkipped && ciReadyNoCIOnCompletion != nil {
 		ciReadinessChanged(true, *ciReadyNoCIOnCompletion)
 	}
 	return skipRemaining, restartFrom, nil
+}
+
+func documentCompletionFindings(raw string) string {
+	findings, _ := types.ParseFindingsJSON(raw)
+	paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
+	if len(paths) == 0 && !omitted && !findings.DocumentOffChangeOmitted {
+		return ""
+	}
+	completion, _ := types.MarshalFindingsJSON(types.Findings{
+		DocumentOffChangePaths:   paths,
+		DocumentOffChangeOmitted: omitted || findings.DocumentOffChangeOmitted,
+	})
+	return completion
 }
 
 // applyApprovalOverride is the single place both ActionApprove sites (the

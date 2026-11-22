@@ -329,6 +329,39 @@ func TestExecutor_LogFileWritten(t *testing.T) {
 	}
 }
 
+func TestExecutor_DocumentCompletionReportsOffChangePaths(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &adaptiveCallStep{
+		name: types.StepDocument,
+		fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: `{"findings":[],"document_off_change_paths":["README.md"]}`}, nil
+		},
+	}
+	var completion *string
+	executor := NewExecutor(database, p, nil, nil, []Step{step}, func(event ipc.Event) {
+		if event.Type == ipc.EventStepCompleted && event.StepName != nil && *event.StepName == types.StepDocument &&
+			event.Status != nil && *event.Status == string(types.StepStatusCompleted) {
+			completion = event.Findings
+		}
+	})
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(rows) != 1 || rows[0].Status != types.StepStatusCompleted {
+		t.Fatalf("expected a completed Document step, got %v, %v", rows, err)
+	}
+	for _, raw := range []*string{completion, rows[0].FindingsJSON} {
+		if raw == nil {
+			t.Fatal("missing Document path data on completion")
+		}
+		findings, err := types.ParseFindingsJSON(*raw)
+		if err != nil || len(findings.Items) != 0 || len(findings.DocumentOffChangePaths) != 1 || findings.DocumentOffChangePaths[0] != "README.md" {
+			t.Fatalf("completed Document findings = %s, %v", *raw, err)
+		}
+	}
+}
+
 func TestExecutor_LogFileWritten_OnStepError(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

@@ -51,18 +51,22 @@ func TestRunViewFromDBAwaitingStep(t *testing.T) {
 }
 
 func TestAxiDocumentOffChangePaths(t *testing.T) {
-	raw, err := types.MarshalFindingsJSON(types.Findings{DocumentOffChangePaths: []string{"README.md"}})
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		DocumentOffChangePaths: []string{"README.md"}, DocumentOffChangeOmitted: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	step := stepView{Name: string(types.StepDocument), Status: string(types.StepStatusAwaitingApproval), FindingsJSON: raw}
 	gate := axiDoc(gateFields(step)...)
-	if !strings.Contains(gate, "document_off_change_paths[1]") || !strings.Contains(gate, "README.md") {
+	if !strings.Contains(gate, "document_off_change_paths[1]") || !strings.Contains(gate, "README.md") ||
+		!strings.Contains(gate, "More paths in the Document step log.") {
 		t.Fatalf("Document gate omitted the recorded edit:\n%s", gate)
 	}
 	step.Status = string(types.StepStatusCompleted)
 	status := axiDoc(runObjectField(runView{Steps: []stepView{step}}))
-	if !strings.Contains(status, "document_off_change_paths[1]") || !strings.Contains(status, "README.md") {
+	if !strings.Contains(status, "document_off_change_paths[1]") || !strings.Contains(status, "README.md") ||
+		!strings.Contains(status, "More paths in the Document step log.") {
 		t.Fatalf("run view omitted the edit from a completed Document step:\n%s", status)
 	}
 }

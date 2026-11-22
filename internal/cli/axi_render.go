@@ -560,9 +560,7 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		rows = append(rows, stepRow{Step: s.Name, Status: s.Status, Findings: s.findingCount(), DurationMS: s.DurationMS})
 		if s.Name == string(types.StepDocument) && s.Status != string(types.StepStatusAwaitingApproval) && s.Status != string(types.StepStatusFixReview) {
 			findings, _ := types.ParseFindingsJSON(s.FindingsJSON)
-			if len(findings.DocumentOffChangePaths) > 0 {
-				fields = append(fields, toon.Field{Key: "document_off_change_paths", Value: findings.DocumentOffChangePaths})
-			}
+			fields = appendDocumentOffChangeFields(fields, findings)
 		}
 		if s.WorkScope != "" {
 			sharedRows = append(sharedRows, sharedWorkRow{AttributedTo: s.Name, Scope: s.WorkScope, DurationMS: s.DurationMS})
@@ -737,6 +735,17 @@ func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	})
 }
 
+func appendDocumentOffChangeFields(fields []toon.Field, findings types.Findings) []toon.Field {
+	paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
+	if len(paths) > 0 {
+		fields = append(fields, toon.Field{Key: "document_off_change_paths", Value: paths})
+	}
+	if omitted || findings.DocumentOffChangeOmitted {
+		fields = append(fields, toon.Field{Key: "document_off_change_note", Value: types.DocumentOffChangeOmission})
+	}
+	return fields
+}
+
 func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	parsed, _ := types.ParseFindingsJSON(gate.FindingsJSON)
 	gfields := []toon.Field{
@@ -749,8 +758,8 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
 	}
-	if gate.Name == string(types.StepDocument) && len(parsed.DocumentOffChangePaths) > 0 {
-		gfields = append(gfields, toon.Field{Key: "document_off_change_paths", Value: parsed.DocumentOffChangePaths})
+	if gate.Name == string(types.StepDocument) {
+		gfields = appendDocumentOffChangeFields(gfields, parsed)
 	}
 	// Point-of-use reminder at the review gate: review auto-fix defaults to
 	// disabled, so agents should expect blocking and ask-user findings to park
