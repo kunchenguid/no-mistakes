@@ -31,6 +31,24 @@ func TestParseRepoRefRejectsLookalikeHosts(t *testing.T) {
 			name: "accepts subdomain host",
 			raw:  "https://foo.bitbucket.org/workspace/repo.git",
 		},
+		{
+			name: "accepts scp-style exact host",
+			raw:  "git@bitbucket.org:workspace/repo.git",
+		},
+		{
+			name: "accepts scp-style ssh subdomain host",
+			raw:  "git@ssh.bitbucket.org:workspace/repo.git",
+		},
+		{
+			name:    "rejects scp-style lookalike host",
+			raw:     "git@bitbucket.org.evil.example:workspace/repo.git",
+			wantErr: `unsupported Bitbucket host "bitbucket.org.evil.example"`,
+		},
+		{
+			name:    "rejects scp-style lookalike suffix host",
+			raw:     "git@evilbitbucket.org:workspace/repo.git",
+			wantErr: `unsupported Bitbucket host "evilbitbucket.org"`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -90,20 +90,32 @@ func ParseRepoRef(raw string) (RepoRef, error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimSuffix(trimmed, ".git")
 
-	if strings.HasPrefix(trimmed, "git@bitbucket.org:") {
-		path := strings.TrimPrefix(trimmed, "git@bitbucket.org:")
-		return parseRepoPath(path)
+	// scp-style remote: git@<host>:<workspace>/<repo>. Bitbucket serves SSH
+	// on both bitbucket.org and ssh.bitbucket.org.
+	if rest, ok := strings.CutPrefix(trimmed, "git@"); ok {
+		if host, path, ok := strings.Cut(rest, ":"); ok && !strings.Contains(host, "/") {
+			if !isBitbucketHost(host) {
+				return RepoRef{}, fmt.Errorf("unsupported Bitbucket host %q", host)
+			}
+			return parseRepoPath(path)
+		}
 	}
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
 		return RepoRef{}, fmt.Errorf("parse bitbucket repo URL: %w", err)
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host != "bitbucket.org" && !strings.HasSuffix(host, ".bitbucket.org") {
+	if !isBitbucketHost(parsed.Hostname()) {
 		return RepoRef{}, fmt.Errorf("unsupported Bitbucket host %q", parsed.Host)
 	}
 	return parseRepoPath(strings.TrimPrefix(parsed.Path, "/"))
+}
+
+// isBitbucketHost reports whether host is bitbucket.org or one of its
+// subdomains, rejecting lookalikes such as bitbucket.org.evil.example.
+func isBitbucketHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "bitbucket.org" || strings.HasSuffix(host, ".bitbucket.org")
 }
 
 func parseRepoPath(path string) (RepoRef, error) {

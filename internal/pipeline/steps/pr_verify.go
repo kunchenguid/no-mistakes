@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
@@ -89,6 +90,15 @@ func NewPRAppendixReader(ctx context.Context, cfg *config.Config, repoURL string
 			return nil, fmt.Errorf("cannot resolve requested Azure repository identity")
 		}
 		expected = azuredevops.RepositoryIdentity(org, project, repo)
+	case scm.ProviderBitbucket:
+		// Bitbucket's SSH remotes (e.g. ssh.bitbucket.org) and its web PR links
+		// use different hosts. ParseRepoRef accepts only bitbucket.org and its
+		// subdomains, so the remote is compared by the PR's web identity.
+		ref, err := bitbucket.ParseRepoRef(repoURL)
+		if err != nil {
+			return nil, err
+		}
+		expected = scm.RepositoryIdentity{Host: "bitbucket.org", Path: ref.Workspace + "/" + ref.RepoSlug}
 	case scm.ProviderOrigin:
 		expected = scm.RepositoryIdentity{Host: "origin.cursor.com", Path: origin.RepoSlug(repoURL)}
 	case scm.ProviderForgejo:
