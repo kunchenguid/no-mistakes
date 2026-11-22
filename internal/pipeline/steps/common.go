@@ -291,6 +291,20 @@ var testFindingsSchema = json.RawMessage(`{
 			"type": "string",
 			"enum": ["go", "no-go", "inconclusive", "no-surface"],
 			"description": "go when every scenario that could be driven passed and nothing untested puts the intent in doubt; no-go when a scenario failed or the change is not safe to ship; inconclusive when the change has a live-exercisable product surface but too little could be driven live to judge; no-surface when this change has no runtime product surface no-mistakes can drive live"
+		},
+		"documentation_applicability": {
+			"type": "object",
+			"description": "Optional semantic assessment of the complete base-to-head documentation diff, including both old and new content. Omit or set any conclusion false when uncertain. This is evidence, not a static proof.",
+			"properties": {
+				"docs_only": {"type": "boolean"},
+				"no_executable_examples": {"type": "boolean"},
+				"no_live_surface": {"type": "boolean"},
+				"reason": {"type": "string"},
+				"base_sha": {"type": "string"},
+				"head_sha": {"type": "string"},
+				"reviewed_paths": {"type": "array", "items": {"type": "string"}}
+			},
+			"required": ["docs_only", "no_executable_examples", "no_live_surface", "reason", "base_sha", "head_sha", "reviewed_paths"]
 		}
 	},
 	"required": ["findings", "summary", "tested", "testing_summary", "artifacts", "scenarios", "verdict"]

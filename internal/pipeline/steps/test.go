@@ -293,7 +293,8 @@ Drive each scenario:
 - Read each required child's actual exit status and retained result evidence. Do not mask a failed check with a later successful shell command or report detached work as completed.
 - If any required check is still running, has an unknown result, or lacks evidence, do not report "go". Use "no-go" for a known failure or unsafe change, and "inconclusive" when completion or evidence cannot be established. Record the outstanding check and the missing result.
 - Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when the change has a live-exercisable product surface but too little could be driven live to judge, "no-surface" when this change has no runtime product surface no-mistakes can drive live (a CI-workflow-only change, a docs-only change, a pure non-runtime refactor, or anything else with no live-exercisable scenario).
-- A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" after exhausting your workarounds costs nothing and a guessed "pass" costs everything.
+- A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation unless the gate independently classifies the complete diff as simple documentation prose and records live validation as not applicable; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" after exhausting your workarounds costs nothing and a guessed "pass" costs everything.
+- Report the absence of a live surface through the "no-surface" verdict and scenario reasons, not a duplicate finding. The gate alone decides documentation-only eligibility; filenames or your verdict alone never authorize the exception. Still perform applicable targeted documentation/link/example checks and report their failures or missing evidence honestly.
 - A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent.
 
 Evidence:
@@ -338,7 +339,10 @@ Rules:
 		fallbackGuidance,
 		reassessHistory,
 		agent.MemoryFilesRule,
-	) + testRepairScopeRules
+	) + testRepairScopeRules + fmt.Sprintf(`
+
+Documentation applicability (optional structured field): Inspect the complete Git diff from %s to %s, including every changed path and both old and new blob contents. If and only if you can affirm that all changes are ordinary human-facing documentation, neither version contains any runnable example (including prose commands), and the change has no live-validatable surface, return documentation_applicability with docs_only, no_executable_examples, and no_live_surface all true; a specific nonempty reason; base_sha and head_sha exactly as shown; and reviewed_paths containing every changed path exactly once. If uncertain, omit the object or set the uncertain conclusion false. Do not infer this from filenames or the verdict alone. The gate independently verifies Git, syntax, path coverage, and head binding; your semantic assessment of prose remains evidence, not a machine proof.
+`, baseSHA, sctx.Run.HeadSHA)
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
 		if errors.Is(err, errTestAgentTimeout) {
@@ -362,7 +366,24 @@ Rules:
 		findings.Summary = strings.TrimSpace(strings.Join([]string{baselineSummary, findings.Summary}, "\n"))
 	}
 
-	findings.Items = append(findings.Items, verdictFindings(findings)...)
+	// No-surface alone is not permission to bypass live-validation approval:
+	// workflows, configuration and non-runtime code still need that decision.
+	// Only a complete, independently inspected prose-only diff qualifies.
+	docsOnly := false
+	if findings.Verdict == types.TestVerdictNoSurface {
+		var classificationErr error
+		docsOnly, classificationErr = documentationOnlyDiff(sctx, baseSHA, findings.DocumentationApplicability)
+		if classificationErr != nil {
+			sctx.Log(fmt.Sprintf("documentation-only classification unavailable; retaining live-validation approval: %v", classificationErr))
+		}
+	}
+	if docsOnly {
+		note := documentationNotApplicableEvidence(baseSHA, sctx.Run.HeadSHA)
+		findings.TestingSummary = strings.TrimSpace(findings.TestingSummary + " " + note)
+		sctx.Log(note)
+	} else {
+		findings.Items = append(findings.Items, verdictFindings(findings)...)
+	}
 	findings.Items = append(findings.Items, unselectedTestFindings(sctx, findings.Items)...)
 
 	needsApproval := hasBlockingFindings(findings.Items)
@@ -526,7 +547,9 @@ func repositoryTestInstructionsSection(sctx *pipeline.StepContext) string {
 //   - "no-surface" is a warning finding: the change itself has nothing
 //     no-mistakes can drive live, so it parks and asks whether proceeding
 //     without live validation is acceptable. It is not a silent pass and
-//     not a hard fail. A change that claimed a pass/fail or drove anything
+//     not a hard fail. Execute bypasses this finding only for an independently
+//     classified simple documentation-prose diff, recording N/A evidence.
+//     A change that claimed a pass/fail or drove anything
 //     live cannot reach this branch (unmarshalRequiredTestFindings rejects
 //     that masquerade).
 //   - "go" adds nothing.
