@@ -23,6 +23,8 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 			if recoverableBranchSync(state) {
 				if archiveKeepLocalRecovery(state) {
 					message = "Later pipeline work is preserved by a verified archive. Recover custody while keeping the exact required local head."
+				} else if availableKeepLocalRecovery(state) {
+					message = "Explicit recovery will preserve the pipeline commits at the recovery ref and keep the current local head. The unpublished commits remain off the branch."
 				} else if pinnedKeepLocalRecovery(state) {
 					message = "Pipeline commits stay at the recovery ref and are not on the branch. Custody returns at the current local head."
 				} else {
@@ -122,6 +124,10 @@ func pinnedKeepLocalRecovery(state *branchsync.State) bool {
 	return state != nil && state.Recovery != nil && state.Recovery.Source == "pinned_head" && state.Recovery.KeepLocal && state.Recovery.Proof == "verified"
 }
 
+func availableKeepLocalRecovery(state *branchsync.State) bool {
+	return state != nil && state.Recovery != nil && state.Recovery.Source == "available_head" && state.Recovery.KeepLocal && state.Recovery.Proof == "verified"
+}
+
 func renderRecoverConfirmation(state branchsync.State, width int) string {
 	if width < 40 {
 		width = 80
@@ -132,6 +138,9 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 		fmt.Fprintf(&b, "A verified archive preserves the divergent later head. Recovery keeps the\n")
 		fmt.Fprintf(&b, "working branch at the exact required head and returns custody through the\n")
 		fmt.Fprintf(&b, "guarded keep-local path. It never selects or replays the archive.\n\n")
+	} else if availableKeepLocalRecovery(&state) {
+		fmt.Fprintf(&b, "Recovery keeps the current local head and first preserves the available\n")
+		fmt.Fprintf(&b, "pipeline commits at the recovery ref. They remain off the branch.\n\n")
 	} else if pinnedKeepLocalRecovery(&state) {
 		fmt.Fprintf(&b, "Recovery keeps the current local head.\n")
 		fmt.Fprintf(&b, "The pipeline commits stay at the recovery ref and are not on the branch.\n\n")
@@ -147,7 +156,7 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 		fmt.Fprintf(&b, "Archive ref:    %s\n", state.Recovery.ArchiveRef)
 		fmt.Fprintf(&b, "Required HEAD:  %s\n\n", state.Recovery.RequiredHead)
 		b.WriteString("Any changed archive, head, branch, run, repository, or gate evidence makes recovery refuse without selecting the divergent head.")
-	} else if pinnedKeepLocalRecovery(&state) {
+	} else if pinnedKeepLocalRecovery(&state) || availableKeepLocalRecovery(&state) {
 		b.WriteString("\nThe worktree does not move.")
 	} else {
 		b.WriteString("\nDirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead.")
