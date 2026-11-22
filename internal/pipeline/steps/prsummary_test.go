@@ -216,8 +216,8 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 		{types.StepDocument, types.StepStatusSkipped},
 		{types.StepLint, types.StepStatusAwaitingApproval},
 		{types.StepPush, types.StepStatusCompleted},
-		{types.StepPR, types.StepStatusRunning},
-		{types.StepCI, types.StepStatusPending},
+		{types.StepPR, attestationStatusUnreported},
+		{types.StepCI, attestationStatusUnreported},
 	}
 	if len(attestation.Steps) != len(want) {
 		t.Fatalf("attested %d steps, want %d: %+v", len(attestation.Steps), len(want), attestation.Steps)
