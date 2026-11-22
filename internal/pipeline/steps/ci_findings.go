@@ -603,12 +603,15 @@ func (t ciFixTargets) description() string {
 }
 
 func ciVerificationFailedOutcome(selected Findings, deferredRaw string, repair ciRepairResult) *pipeline.StepOutcome {
+	return withCIVerificationFailedFinding(ciRepairParkOutcome(selected, deferredRaw, repair.Summary), repair)
+}
+
+func withCIVerificationFailedFinding(outcome *pipeline.StepOutcome, repair ciRepairResult) *pipeline.StepOutcome {
 	detail := "The CI fixer reported that its own verification failed."
 	if ran := strings.TrimSpace(repair.VerificationRan); ran != "" {
 		detail += " It ran: " + ran + "."
 	}
 	detail += " The repair stays in the run and was not published."
-	outcome := ciRepairParkOutcome(selected, deferredRaw, repair.Summary)
 	parsed, err := types.ParseFindingsJSON(outcome.Findings)
 	if err != nil {
 		return outcome

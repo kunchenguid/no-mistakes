@@ -438,11 +438,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := clearCIMonitorReadyForIssues(sctx); err != nil {
 			return nil, err
 		}
-		repair, err := s.retryProtectedPathRepair(sctx)
+		var failedVerification *ciRepairVerification
+		if findingsCarryFailedVerification(refusalFindings) {
+			failedVerification = &ciRepairVerification{reported: true}
+		}
+		repair, err := s.retryProtectedPathRepair(sctx, failedVerification)
 		if err != nil {
 			return nil, err
 		}
 		retryRefusal = false
+		if repair.VerificationFailed {
+			return ciVerificationFailedOutcome(Findings{}, "", repair), nil
+		}
 		if repair.HeadAdvanced {
 			s.pendingFixSummary = ciRepairSummary(repair.Summary, sctx.Config.CI.RemoteOnlyVerification)
 		}

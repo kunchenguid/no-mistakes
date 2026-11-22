@@ -141,6 +141,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+		if repair.VerificationFailed {
+			outcome = withCIVerificationFailedFinding(outcome, repair)
+		}
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
@@ -182,25 +185,11 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		// executor retries while auto_fix.ci allows.
 		if errors.Is(err, errCIFixAgentCrash) {
 			s.fixAgentCrashes++
-			cause := intent.RedactSecrets(safeurl.RedactText(err.Error()))
-			cause = strings.Map(func(r rune) rune {
-				if unicode.IsControl(r) {
-					return ' '
-				}
-				return r
-			}, cause)
-			cause = strings.Join(strings.Fields(cause), " ")
-			// Error text can contain a whole agent transcript. Keep the
-			// published finding below the IPC frame budget, even for UTF-8.
-			runes := []rune(cause)
-			if len(runes) > 256 {
-				cause = string(runes[:256]) + "..."
-			}
-			s.lastFixAgentCrash = cause
+			s.lastFixAgentCrash = boundedErrorText(err)
 		}
 		sctx.Log(fmt.Sprintf("warning: CI fix failed: %v", err))
 		if pinnedByFailedVerification(sctx, sctx.Run.HeadSHA) {
-			return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
+			return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, boundedErrorText(err)), nil
 		}
 		return nil, nil
 	}
@@ -400,7 +389,7 @@ CI logs:
 	// Failed verification still pins an agent commit and does not publish it.
 	if !rebase && conclusionErr == nil && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
 		if s.repairVerification.failed() {
-			return s.pinReportedVerificationFailure(sctx, conclusion.Summary)
+			return s.pinReportedVerificationFailure(sctx, conclusion.Summary, result)
 		}
 		return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
 	}
@@ -412,8 +401,14 @@ CI logs:
 	if errors.As(err, &refusal) {
 		head, recordErr := stepGitHeadSHA(sctx)
 		if recordErr == nil && head != sctx.Run.HeadSHA {
-			_, recordErr = s.recordLocalRepair(sctx, head)
+			if s.repairVerification.failed() {
+				_, recordErr = s.pinFailedVerificationRepair(sctx, head)
+			} else {
+				_, recordErr = s.recordLocalRepair(sctx, head)
+			}
 		}
+		repair.VerificationFailed = s.repairVerification.failed()
+		repair.VerificationRan = s.repairVerification.ran
 		return repair, errors.Join(err, recordErr)
 	}
 	if err != nil {
@@ -428,6 +423,25 @@ CI logs:
 		repair.Summary = conclusion.Summary
 	}
 	return repair, nil
+}
+
+// boundedErrorText redacts and flattens an error for a published finding.
+// Error text can contain a whole agent transcript, so it is cut below the IPC
+// frame budget, even for UTF-8. The full error stays in the run log.
+func boundedErrorText(err error) string {
+	text := intent.RedactSecrets(safeurl.RedactText(err.Error()))
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > 256 {
+		text = string(runes[:256]) + "..."
+	}
+	return text
 }
 
 func ciRepairSummary(summary string, remoteOnlyVerification bool) string {
@@ -789,7 +803,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, erro
 	return s.commitRepair(sctx, "", nil)
 }
 
-func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairResult, error) {
+func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext, failedVerification *ciRepairVerification) (ciRepairResult, error) {
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return ciRepairResult{}, err
 	}
@@ -797,6 +811,11 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 	sctx.Log("retrying retained CI repair after protected-path refusal")
 	// The retained changes outlived the invocation that made them, so no
 	// producer is known here and the commit carries no trailers.
+	s.repairVerification = ciRepairVerification{}
+	if failedVerification != nil {
+		s.repairVerification = *failedVerification
+	}
+	defer func() { s.repairVerification = ciRepairVerification{} }()
 	repair, err := s.commitRepair(sctx, "", nil)
 	if err != nil || repair.HeadAdvanced {
 		return repair, err
@@ -823,11 +842,8 @@ func unfinishedGitRepairOutcome(err error, findings Findings, deferred string) *
 	return ciRepairParkOutcome(findings, deferred, unfinished.Error())
 }
 
-func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
-	if err := refuseUnfinishedGitOperation(sctx); err != nil {
-		return ciRepairResult{}, err
-	}
-	render := func() (string, error) {
+func ciRepairMessageRenderer(sctx *pipeline.StepContext, summary string, producer *agent.Result) func() (string, error) {
+	return func() (string, error) {
 		repairSummary := summary
 		if repairSummary == "" {
 			repairSummary = "repair failing checks"
@@ -842,6 +858,13 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 		}
 		return message, nil
 	}
+}
+
+func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
+	if err := refuseUnfinishedGitOperation(sctx); err != nil {
+		return ciRepairResult{}, err
+	}
+	render := ciRepairMessageRenderer(sctx, summary, producer)
 	if err := conformAgentCommits(sctx, types.StepCI, render); err != nil {
 		return ciRepairResult{}, err
 	}
@@ -921,7 +944,11 @@ func pinnedByFailedVerification(sctx *pipeline.StepContext, headSHA string) bool
 	if !ciRepairUnpublished(sctx, headSHA) {
 		return false
 	}
-	for _, raw := range []string{sctx.PreviousFindings, sctx.DeferredFindings} {
+	return findingsCarryFailedVerification(sctx.PreviousFindings, sctx.DeferredFindings)
+}
+
+func findingsCarryFailedVerification(raws ...string) bool {
+	for _, raw := range raws {
 		parsed, err := types.ParseFindingsJSON(raw)
 		if err != nil {
 			continue
@@ -1016,7 +1043,7 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 	return s.publishRepair(sctx, headSHA)
 }
 
-func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
+func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
 	headSHA, err := stepGitHeadSHA(sctx)
 	if err != nil {
 		return ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran, Summary: summary}, fmt.Errorf("resolve head after failed verification: %w", err)
@@ -1028,6 +1055,12 @@ func (s *CIStep) pinReportedVerificationFailure(sctx *pipeline.StepContext, summ
 			VerificationFailed: true,
 			VerificationRan:    s.repairVerification.ran,
 		}, nil
+	}
+	if err := conformAgentCommits(sctx, types.StepCI, ciRepairMessageRenderer(sctx, summary, producer)); err != nil {
+		return ciRepairResult{}, err
+	}
+	if headSHA, err = stepGitHeadSHA(sctx); err != nil {
+		return ciRepairResult{}, fmt.Errorf("resolve head after applying commit settings: %w", err)
 	}
 	repair, err := s.recordRepair(sctx, headSHA)
 	repair.Summary = summary

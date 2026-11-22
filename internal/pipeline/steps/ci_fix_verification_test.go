@@ -384,3 +384,38 @@ func newFixerOutputFixture(t *testing.T, revalidate bool, output string) *attest
 	}}
 	return &attestationFixture{ciRepairFixture: f, attestation: original, bodyFile: bodyFile}
 }
+
+func TestCIStep_ProtectedPathRefusalKeepsFailedVerificationThroughTheRetry(t *testing.T) {
+	t.Parallel()
+	f := newCIGuardFixture(t, false, func(dir string) {
+		for name, body := range map[string]string{"ordinary.txt": "fix\n", "secret.txt": "keep out\n"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}, `{"summary":"repair the check","code_change_needed":true,"verification_passed":false,"verification_ran":"`+failedVerificationRan+`"}`)
+	f.sctx.Config.ProtectedPaths = []string{"secret.txt"}
+	f.sctx.Fixing = true
+	parked := f.repairRound(t)
+	if parked == nil || !pipeline.HasProtectedPathRefusal(parked.Findings) || !findingsCarryFailedVerification(parked.Findings) {
+		t.Fatalf("parked findings = %v, want the protected-path refusal and the failed verification", parked)
+	}
+	if err := os.Remove(filepath.Join(f.dir, "secret.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &CIStep{}
+	repair, err := step.retryProtectedPathRepair(f.sctx, &ciRepairVerification{reported: true})
+	if err != nil {
+		t.Fatalf("retry: %v\nlog:\n%s", err, f.log())
+	}
+	if !repair.VerificationFailed {
+		t.Fatalf("retry result = %+v, want the failed verification kept", repair)
+	}
+	if f.remoteHead(t) != f.headSHA {
+		t.Fatalf("remote head = %s, want the unpublished pre-repair head %s", f.remoteHead(t), f.headSHA)
+	}
+	if f.localHead(t) == f.headSHA {
+		t.Fatal("retry did not commit the remaining ordinary edit")
+	}
+}
