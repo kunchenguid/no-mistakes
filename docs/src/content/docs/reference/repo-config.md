@@ -1162,7 +1162,9 @@ Like the rest of the `ci` block, it is read only from the trusted default-branch
 
 ### ci.remote_only_verification
 
-Leaves verification of CI repairs to the pipeline's next CI run. When enabled, the CI repair prompt forbids local tests and checks, and the repair summary records that verification was left to CI. The pipeline still monitors the CI result.
+Set `true` to tell the CI repair agent to skip local tests and checks and leave verification to the next CI run. This applies to every CI repair prompt, including rebase repairs and fixes selected at the CI gate. When a repair advances the run's head, the pipeline adds `Verification was left to CI.` to the repair summary.
+
+With `false`, the agent is asked to run the most relevant commands locally for failing checks and selected findings. For a repair that only rebases the branch, the agent is asked to verify that the rebase completes cleanly. That rebase instruction also applies when remote-only verification is enabled.
 
 | | |
 |---|---|
@@ -1175,7 +1177,7 @@ ci:
   remote_only_verification: true
 ```
 
-This setting applies to CI repair only. The Test step and per-run Test skips are independent of it. When the trusted repository config omits the key, the [machine-local value](/no-mistakes/reference/global-config/#ciremote_only_verification) applies.
+The pipeline still follows its [repair revalidation policy](#cirevalidate_repairs) and monitors CI after publication. The CI fixer uses this setting even when the run skips Test. When the trusted repository config omits the key, the [machine-local value](/no-mistakes/reference/global-config/#ciremote_only_verification) applies.
 
 ### rebase.strategy
 
