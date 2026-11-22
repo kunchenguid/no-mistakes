@@ -1124,6 +1124,22 @@ ci:
 
 A value in the trusted repository config overrides this global value in both directions: an explicit repository `true` enables revalidation when this is `false`, and an explicit repository `false` disables opt-in revalidation when this is `true`. When the trusted repository config omits the key, this global value applies.
 
+### ci.remote_only_verification
+
+The machine-local default for [remote-only CI repair verification](/no-mistakes/reference/repo-config/#ciremote_only_verification).
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+```yaml
+ci:
+  remote_only_verification: true
+```
+
+An explicit value in the trusted repository config overrides this value in either direction.
+
 ### ci.review_bot_comments
 
 The operator-level fallback for [`ci.review_bot_comments`](/no-mistakes/reference/repo-config/#cireview_bot_comments), whose per-repository reference owns the semantics and the trust boundary.
