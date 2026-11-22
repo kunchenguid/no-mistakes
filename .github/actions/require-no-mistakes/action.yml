@@ -2,7 +2,7 @@ name: Require no-mistakes
 description: >-
   Verify that a pull request body declares a no-mistakes pipeline run: the body
   carries the signature line and a v1 pipeline-step attestation bound to the
-  current PR head, with review, test, and document all completed.
+  current PR head, with rebase, review, test, and document all completed.
 
 inputs:
   pr-body:

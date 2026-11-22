@@ -24,9 +24,6 @@ It verifies, in order:
 Missing or unparseable attestation reports the no-mistakes `>= 1.46.0` floor;
 a missing signature reports the not-raised-via-no-mistakes guidance.
 
-To integrate a moved base on an open PR without rewriting the branch, see the
-[guide to updating a published PR](../../../docs/src/content/docs/guides/update-published-prs.md).
-
 Step 3's body/head SHA are read **live from the GitHub API** whenever a token
 and PR number are available, not from the workflow's cached event payload.
 A GitHub Actions job *rerun* replays the event payload archived at the run's
@@ -43,6 +40,16 @@ the action **fails the whole gate closed** instead of falling back to the
 event payload: evaluating compliance against that cached payload is the exact
 staleness hole described above, so a lookup failure must never itself become
 a route to a passing verdict on stale data.
+
+## Updating a published PR
+
+To bring a moved base into an open PR while preserving the published branch
+history, set [`rebase.strategy: merge`](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#rebasestrategy)
+in `.no-mistakes.yaml` on the repository's trusted default branch.
+
+Run the full pipeline for the updated head. Rebase can complete when the heads
+are equal, when the branch is already ahead, or when it fast-forwards.
+Passing `--skip=rebase` records a skip and fails this check.
 
 ## Usage
 
