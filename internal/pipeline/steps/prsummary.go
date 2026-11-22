@@ -1527,10 +1527,10 @@ func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds [
 }
 
 func renderDocumentPath(path string, flavor prBodyFlavor) string {
-	if flavor == prBodyHTML || strings.Contains(path, "<!--") || jsonControlEscapePattern.MatchString(path) {
+	if flavor == prBodyHTML || strings.ContainsAny(path, `/\`) || strings.Contains(path, "<!--") {
 		var escaped strings.Builder
 		for _, r := range path {
-			if r == ' ' || strings.ContainsRune("&<>\\`*_[]~!:#\"|", r) {
+			if r == ' ' || strings.ContainsRune("/&<>\\`*_[]~!:#\"|", r) {
 				fmt.Fprintf(&escaped, "&#%d;", r)
 			} else {
 				escaped.WriteRune(r)

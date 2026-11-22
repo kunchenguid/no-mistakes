@@ -445,13 +445,20 @@ func (f Findings) HasDocumentOffChangePaths() bool {
 func DocumentOffChangePreview(paths []string) ([]string, bool) {
 	const maxPaths = 8
 	remaining := 1024
-	for i, path := range paths {
-		if i == maxPaths || len(path) > remaining {
-			return paths[:i], true
+	var preview []string
+	omitted := false
+	for _, path := range paths {
+		if len(preview) == maxPaths {
+			return preview, true
 		}
+		if len(path) > remaining {
+			omitted = true
+			continue
+		}
+		preview = append(preview, path)
 		remaining -= len(path)
 	}
-	return paths, false
+	return preview, omitted
 }
 
 // FindingsMetadata returns findings with its items dropped, so every helper

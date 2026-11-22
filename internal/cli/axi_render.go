@@ -242,9 +242,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 			sv.DurationMS = *s.DurationMS
 		}
 		if database != nil && s.StepName == types.StepDocument {
-			sourceRun, raw, _ := database.DocumentStepReport(s)
+			_, raw, _ := database.DocumentStepReport(s)
 			findings = raw
-			if combined, err := database.HasAgentInvocationPurpose(sourceRun, string(s.StepName), "housekeeping"); err == nil && combined {
+			if combined, err := database.HasAgentInvocationPurpose(s.RunID, string(s.StepName), "housekeeping"); err == nil && combined {
 				sv.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
 			}
 		}

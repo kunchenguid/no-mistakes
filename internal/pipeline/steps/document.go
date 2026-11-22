@@ -120,7 +120,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// Skip entirely when nothing the agent would document has changed. No
 	// lint result is stashed, so the lint step falls back to its own pass -
 	// neither duty is ever silently skipped.
-	changedFiles, err := git.Run(ctx, sctx.WorkDir, "diff", "--name-only", baseSHA+".."+sctx.Run.HeadSHA)
+	changedFiles, err := documentDiffPaths(sctx, baseSHA+".."+sctx.Run.HeadSHA)
 	if err != nil {
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
@@ -258,13 +258,17 @@ func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePa
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 	var submission strings.Builder
 	submission.WriteString("Submitted changed paths:\n")
+	omitted := false
 	for _, path := range submittedPaths {
 		line := "- " + strconv.Quote(path) + "\n"
 		if submission.Len()+len(line) > 8192 {
-			fmt.Fprintf(&submission, "More paths omitted. From the repository root, read the complete NUL-delimited list with `git %s`.\n", strings.Join(documentPathDiffArgs(submittedRange), " "))
-			break
+			omitted = true
+			continue
 		}
 		submission.WriteString(line)
+	}
+	if omitted {
+		fmt.Fprintf(&submission, "More paths omitted. From the repository root, read the complete NUL-delimited list with `git %s`.\n", strings.Join(documentPathDiffArgs(submittedRange), " "))
 	}
 	if len(submittedPaths) == 0 {
 		submission.WriteString("(none)\n")
@@ -367,7 +371,7 @@ func documentDiffPaths(sctx *pipeline.StepContext, revisionRange string) ([]stri
 }
 
 func documentPathDiffArgs(revisionRange string) []string {
-	return []string{"diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", revisionRange, "--"}
+	return []string{"diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", revisionRange, "--"}
 }
 
 func previousDocumentEdits(sctx *pipeline.StepContext) types.Findings {
@@ -462,12 +466,8 @@ func splitHousekeepingFindings(findings Findings) (doc Findings, lint Findings) 
 	return doc, lint
 }
 
-func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) bool {
-	for _, path := range strings.Split(changedFiles, "\n") {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
+func hasNonIgnoredDocumentChanges(changedFiles, ignorePatterns []string) bool {
+	for _, path := range changedFiles {
 		ignored := false
 		for _, pattern := range ignorePatterns {
 			if matchIgnorePattern(path, pattern) {

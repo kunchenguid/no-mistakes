@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -59,6 +60,13 @@ func TestAxiDocumentOffChangePathsOnDeliveryRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.InsertAgentInvocation(db.AgentInvocation{
+		RunID: source.ID, StepName: string(types.StepDocument), Round: 1,
+		Purpose: "housekeeping", Agent: "codex", SessionMode: db.InvocationModeCold,
+		StartedAt: 1, CompletedAt: 2, DurationMS: 1000, ExitStatus: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	raw := `{"findings":[],"document_off_change_paths":["README.md"],"document_off_change_omitted":true}`
 	insertAxiRound(t, database, document.ID, 1, "initial", &raw)
 	if err := database.UpdateStepStatus(document.ID, types.StepStatusCompleted); err != nil {
@@ -97,6 +105,9 @@ func TestAxiDocumentOffChangePathsOnDeliveryRetry(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "README.md") || !strings.Contains(out.String(), "More paths in the Document step log.") {
 		t.Fatalf("retry status lost original Document metadata:\n%s", &out)
+	}
+	if strings.Contains(out.String(), "shared_work") {
+		t.Fatalf("retry status reported source-run housekeeping:\n%s", &out)
 	}
 	out.Reset()
 	if err := runAxiLogs(cmd, "document", runID, true); err != nil {

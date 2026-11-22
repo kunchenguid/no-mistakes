@@ -54,6 +54,65 @@ func TestDocumentGateShowsOffChangePaths(t *testing.T) {
 	}
 }
 
+func TestDocumentGateShowsOffChangePathsOnCompactTerminal(t *testing.T) {
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			run := testRun()
+			run.Steps = nil
+			raw, err := types.MarshalFindingsJSON(types.Findings{
+				Summary: "Documentation needs a decision",
+				Items: []types.Finding{{
+					ID: "doc-1", Severity: "warning", File: "docs/example.md",
+					Description: "Decide whether to remove the old example. " + strings.Repeat("More detail about the example. ", 48),
+				}},
+				DocumentOffChangePaths: []string{"README.md"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range types.AllSteps() {
+				step := ipc.StepResultInfo{StepName: name, StepOrder: name.Order(), Status: types.StepStatusPending}
+				if name.Order() < types.StepDocument.Order() {
+					step.Status = types.StepStatusCompleted
+				}
+				if name == types.StepDocument {
+					step.Status, step.FindingsJSON = status, &raw
+				}
+				run.Steps = append(run.Steps, step)
+			}
+			model := NewModel("/tmp/sock", nil, run)
+			model.width, model.height = 80, 23
+			view := stripANSI(model.View())
+			if !strings.Contains(view, "Decide whether to remove the old example.") {
+				t.Fatalf("compact gate hid the decision:\n%s", view)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if strings.Contains(line, "Document") && strings.Contains(line, "see step log") {
+					return
+				}
+			}
+			t.Fatalf("compact gate omitted the log pointer from the Document row:\n%s", view)
+		})
+	}
+}
+
+func TestDocumentCompletionSkipsPathsTooWideForPreview(t *testing.T) {
+	run := testRun()
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		DocumentOffChangePaths: []string{strings.Repeat("x", 100), "README.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Steps[0].StepName = types.StepDocument
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].FindingsJSON = &raw
+	view := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	if !strings.Contains(view, `Outside submission: "README.md" (see step log)`) {
+		t.Fatalf("the first path hid an available preview:\n%s", view)
+	}
+}
+
 func TestDocumentCompletionShowsOffChangePaths(t *testing.T) {
 	run := testRun()
 	document := types.StepDocument
