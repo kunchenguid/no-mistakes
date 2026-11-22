@@ -386,6 +386,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	if remoteOnlyVerification {
 		verificationRule = "\n\t\t- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair."
 	}
+	failingCheckRules := promptRules == ciFailingCheckFixRules
 	promptRules += verificationRule
 
 	prompt := fmt.Sprintf(
@@ -415,7 +416,7 @@ Context:
 	if rebase {
 		prompt += fmt.Sprintf("\n- rebase target commit: %s", rebaseBaseSHA)
 	}
-	if promptRules == ciFailingCheckFixRules {
+	if failingCheckRules {
 		prompt += baseBranchTestAssertionContext(ctx, sctx.WorkDir, promptBaseSHA, sctx.Run.HeadSHA)
 	}
 	if logOutput != "" {
@@ -490,7 +491,7 @@ CI logs:
 		repair.Summary = ciRepairSummary(conclusion.Summary, remoteOnlyVerification)
 		return repair, nil
 	}
-	if (!rebase || promptRules == ciFailingCheckFixRules) && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+	if (!rebase || failingCheckRules) && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
 		repair.NoCodeChangeNeeded = true
 		repair.Summary = conclusion.Summary
 	}
