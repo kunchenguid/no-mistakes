@@ -278,18 +278,22 @@ func TestCaptureShippedUnfixedLeavesSelectedSiblingAsTP(t *testing.T) {
 }
 
 func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T) {
-	findingsForRound := func(realBugID, reusedIDFile, reusedIDDescription string) string {
-		return findingsJSON(
-			findingSpec{ID: realBugID, Severity: "error", File: "main.go", Line: 3, Description: "bug", Action: "auto-fix"},
-			findingSpec{ID: "curated-bug", Severity: "error", File: "main.go", Line: 2, Description: "another bug", Action: "ask-user"},
-			findingSpec{ID: "unfixed", Severity: "warning", File: "main.go", Line: 1, Description: "style", Action: "ask-user"},
-			findingSpec{ID: "review-1", Severity: "error", File: reusedIDFile, Line: 1, Description: reusedIDDescription, Action: "ask-user"},
-		)
+	findingsForRound := func(realBugID, reusedIDFile, reusedIDDescription string, shift int, extra ...findingSpec) string {
+		findings := []findingSpec{
+			{ID: realBugID, Severity: "error", File: "main.go", Line: 3, Description: "bug", Action: "auto-fix"},
+			{ID: "curated-bug", Severity: "error", File: "main.go", Line: 2, Description: "another bug", Action: "ask-user"},
+			{ID: "unfixed", Severity: "warning", File: "main.go", Line: 1, Description: "style", Action: "ask-user"},
+			{ID: "review-1", Severity: "error", File: reusedIDFile, Line: 1, Description: reusedIDDescription, Action: "ask-user"},
+			{ID: "shifted-bug", Severity: "error", File: "service.go", Line: 40 + shift, Description: "service ignores startup errors", Action: "auto-fix"},
+			{ID: "ambiguous-bug", Severity: "error", File: "cache.go", Line: 3 + shift, Description: "stale cache entry", Action: "auto-fix"},
+		}
+		return findingsJSON(append(findings, extra...)...)
 	}
 	realBugIDs := []string{"real-bug", "reraised-bug"}
 	reusedIDFiles := []string{"service.go", "cache.go"}
-	firstFindings := findingsForRound(realBugIDs[0], reusedIDFiles[0], "service initialization fails")
-	secondFindings := findingsForRound(realBugIDs[1], reusedIDFiles[1], "cache retains stale entries")
+	firstFindings := findingsForRound(realBugIDs[0], reusedIDFiles[0], "service initialization fails", 0)
+	secondFindings := findingsForRound(realBugIDs[1], reusedIDFiles[1], "cache retains stale entries", 3,
+		findingSpec{ID: "ambiguous-sibling", Severity: "error", File: "cache.go", Line: 9, Description: "stale cache entry", Action: "auto-fix"})
 	for selectedIndex, timing := range []string{"earlier", "later"} {
 		for _, operation := range []string{"capture", "recapture", "relabel"} {
 			t.Run(timing+"/"+operation, func(t *testing.T) {
@@ -333,7 +337,7 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 						}
 					}
 				}
-				selection := strPtr(`["` + realBugIDs[selectedIndex] + `","curated-bug","review-1"]`)
+				selection := strPtr(`["` + realBugIDs[selectedIndex] + `","curated-bug","review-1","shifted-bug","ambiguous-bug"]`)
 				if err := sourceDB.SetStepRoundSelection(selected.ID, selection, db.RoundSelectionSourceAutoFix); err != nil {
 					t.Fatal(err)
 				}
@@ -358,9 +362,14 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 					if got := byID["unfixed"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
 						t.Errorf("round %s unselected sibling = %#v, want shipped-unfixed false-positive", c.SourceRoundID, got)
 					}
+					if c.SourceRoundID == second.ID {
+						if got := byID["ambiguous-sibling"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+							t.Errorf("unselected duplicate = %#v, want shipped-unfixed false-positive", got)
+						}
+					}
 					switch c.SourceRoundID {
 					case selected.ID:
-						for _, id := range []string{realBugIDs[selectedIndex], "curated-bug"} {
+						for _, id := range []string{realBugIDs[selectedIndex], "curated-bug", "shifted-bug", "ambiguous-bug"} {
 							if got := byID[id]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged {
 								t.Errorf("selected finding %s = %#v, want auto-fix-merged true-positive", id, got)
 							}
@@ -374,6 +383,12 @@ func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T
 						}
 						if got, exists := byID[realBugIDs[declinedIndex]]; exists {
 							t.Errorf("declined round's selected-elsewhere finding = %#v, want no gold label", got)
+						}
+						if got, exists := byID["shifted-bug"]; exists {
+							t.Errorf("declined round's shifted finding = %#v, want no gold label", got)
+						}
+						if got := byID["ambiguous-bug"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+							t.Errorf("ambiguous shifted finding = %#v, want shipped-unfixed false-positive", got)
 						}
 						got, exists := byID["curated-bug"]
 						if operation != "capture" {

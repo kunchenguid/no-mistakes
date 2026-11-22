@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -499,21 +500,30 @@ func selectedFindingIDs(round *db.StepRound) []string {
 	return ids
 }
 
-func selectedFindingsForRun(rounds []*db.StepRound) []types.Finding {
-	var selected []types.Finding
+type roundFindingSelection struct {
+	findings []types.Finding
+	selected []types.Finding
+}
+
+func selectedFindingsForRun(rounds []*db.StepRound) map[string]roundFindingSelection {
+	selections := make(map[string]roundFindingSelection)
 	for _, round := range rounds {
 		ids := selectedFindingIDs(round)
 		if len(ids) == 0 {
 			continue
 		}
 		byID := findingIndex(round)
+		var selected []types.Finding
 		for _, id := range ids {
 			if finding, ok := byID[strings.TrimSpace(id)]; ok {
 				selected = append(selected, finding)
 			}
 		}
+		if len(selected) > 0 {
+			selections[round.ID] = roundFindingSelection{findings: slices.Collect(maps.Values(byID)), selected: selected}
+		}
 	}
-	return selected
+	return selections
 }
 
 func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
@@ -570,7 +580,7 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 //
 // A user-added finding is false-negative gold. Confirmed post-PR misses are
 // written later by IngestPostPRMiss, not here.
-func goldFromRound(round *db.StepRound, decision Decision, prState string, selectedInRun []types.Finding) Labels {
+func goldFromRound(round *db.StepRound, decision Decision, prState string, selectedInRun map[string]roundFindingSelection) Labels {
 	labels := Labels{Version: labelsVersion}
 	byID := findingIndex(round)
 	seen := map[string]bool{}
@@ -628,17 +638,25 @@ func goldFromRound(round *db.StepRound, decision Decision, prState string, selec
 		}
 	}
 	if prState == prStateMerged && hasRecordedDecision(decision) && round.FindingsJSON != nil {
-		for _, finding := range parseFindingItems(*round.FindingsJSON) {
+		findings := parseFindingItems(*round.FindingsJSON)
+		roundFindings := slices.Collect(maps.Values(byID))
+		for roundID, selection := range selectedInRun {
+			if roundID == round.ID {
+				continue
+			}
+			matches := pipeline.FindingSelectionMatcher(roundFindings, selection.findings, selection.selected)
+			for _, finding := range findings {
+				if matches(finding) {
+					selected[strings.TrimSpace(finding.ID)] = true
+				}
+			}
+		}
+		for _, finding := range findings {
 			id := strings.TrimSpace(finding.ID)
 			if id == "" || seen[id] || selected[id] {
 				continue
 			}
 			if finding.ActionOrDefault() == types.ActionNoOp {
-				continue
-			}
-			if slices.ContainsFunc(selectedInRun, func(selected types.Finding) bool {
-				return pipeline.SameFinding(finding, selected)
-			}) {
 				continue
 			}
 			seen[id] = true
