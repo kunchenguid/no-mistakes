@@ -277,6 +277,102 @@ func TestCaptureShippedUnfixedLeavesSelectedSiblingAsTP(t *testing.T) {
 	}
 }
 
+func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T) {
+	const findings = `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"auto-fix","review_scope":"source"},{"id":"curated-bug","severity":"error","file":"main.go","line":2,"description":"another bug","action":"ask-user","review_scope":"source"},{"id":"unfixed","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	for selectedIndex, timing := range []string{"earlier", "later"} {
+		for _, operation := range []string{"capture", "relabel"} {
+			t.Run(timing+"/"+operation, func(t *testing.T) {
+				ctx := context.Background()
+				p, sourceDB, run, _, first := setupCapturedRunWithFindings(t, ctx, findings)
+				defer sourceDB.Close()
+				steps, err := sourceDB.GetStepsByRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				second, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", strPtr(findings), nil, run.HeadSHA, stringValue(first.ReviewedHeadSHA), stringValue(first.TrustedConfigSHA), first.GlobalConfigYAML, first.RepoConfigYAML, 25)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rounds := []*db.StepRound{first, second}
+				for _, round := range rounds {
+					if err := sourceDB.SetStepRoundSelection(round.ID, strPtr(`[]`), db.RoundSelectionSourceUserDeclined); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+					t.Fatal(err)
+				}
+
+				selected := rounds[selectedIndex]
+				declined := rounds[1-selectedIndex]
+				store := mustOpenEval(t, p)
+				const adjudicationReason = "confirmed against the reviewed head"
+				if operation == "relabel" {
+					cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, c := range cases {
+						if c.SourceRoundID == declined.ID {
+							_, err := store.Adjudicate(ctx, c.ID, "curated-bug", 0, Adjudication{Kind: GoldTruePositive, Reason: adjudicationReason})
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+				}
+				if err := sourceDB.SetStepRoundSelection(selected.ID, strPtr(`["real-bug","curated-bug"]`), db.RoundSelectionSourceAutoFix); err != nil {
+					t.Fatal(err)
+				}
+
+				var cases []Case
+				if operation == "relabel" {
+					cases, err = RelabelRun(ctx, store, p, sourceDB, run.ID)
+				} else {
+					cases, err = Capture(ctx, store, p, sourceDB, run.ID)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(cases) != 2 {
+					t.Fatalf("cases = %d, want both review rounds", len(cases))
+				}
+				for _, c := range cases {
+					byID := map[string]FindingGold{}
+					for _, gold := range c.Labels.Findings {
+						byID[gold.ID] = gold
+					}
+					if got := byID["unfixed"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+						t.Errorf("round %s unselected sibling = %#v, want shipped-unfixed false-positive", c.SourceRoundID, got)
+					}
+					switch c.SourceRoundID {
+					case selected.ID:
+						for _, id := range []string{"real-bug", "curated-bug"} {
+							if got := byID[id]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged {
+								t.Errorf("selected finding %s = %#v, want auto-fix-merged true-positive", id, got)
+							}
+						}
+					case declined.ID:
+						if got, exists := byID["real-bug"]; exists {
+							t.Errorf("declined round's selected-elsewhere finding = %#v, want no gold label", got)
+						}
+						got, exists := byID["curated-bug"]
+						if operation == "relabel" {
+							if got.Adjudication == nil || got.Adjudication.Kind != GoldTruePositive || got.Adjudication.Reason != adjudicationReason {
+								t.Errorf("adjudicated finding = %#v, want preserved explicit true-positive", got)
+							}
+						} else if exists {
+							t.Errorf("declined round's other selected-elsewhere finding = %#v, want no gold label", got)
+						}
+					default:
+						t.Errorf("unexpected round %s", c.SourceRoundID)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestRelabelPromotesAutoFixWhenPRLaterMerges(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
@@ -614,7 +710,7 @@ func TestGoldFromRoundLabelsByRecordedDecision(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			round := &db.StepRound{Round: 1, FindingsJSON: strPtr(tc.findings)}
-			got := goldFromRound(round, tc.decision, tc.prState)
+			got := goldFromRound(round, tc.decision, tc.prState, nil)
 			if tc.wantKind == "" {
 				if got.HasGold() {
 					t.Fatalf("labels = %#v, want unlabeled", got)
