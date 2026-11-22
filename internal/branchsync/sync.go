@@ -636,9 +636,10 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 // already carries every local change. That proof is deliberately narrow, and
 // everything it cannot decide - including a rebase whose fix rounds also
 // rewrote the operator's lines - falls through to the plain diverged refusal.
-// Status then offers --recover --keep-local when that verified head is already
-// pinned at the run recovery ref in the gate. The branch stays put. An
-// unverified terminal head is not offered that keep-local command.
+// Status delegates the keep-local offer to pinnedKeepLocalOffer, including
+// its narrower unpinned-head case. Inspection never creates the pin; explicit
+// recovery must preserve the commits before returning custody. The branch stays
+// put. An unverified terminal head is not offered that keep-local command.
 // No-data-loss outranks convenience here: when nothing can distinguish a
 // deliberate pipeline fix from a dropped change, the operator decides.
 //

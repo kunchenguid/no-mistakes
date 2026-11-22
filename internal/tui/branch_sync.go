@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 )
@@ -76,6 +77,9 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 	}
 	if width < 40 {
 		width = 80
+	}
+	if availableKeepLocalRecovery(state) {
+		message = ansi.Wrap(message, width-4, "")
 	}
 	return renderBoxWithFooter("Local branch", message, width, footer)
 }
