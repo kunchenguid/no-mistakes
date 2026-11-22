@@ -151,6 +151,7 @@ func TestPiStrictDeclarationSatisfiesTheStrictFunctionContract(t *testing.T) {
 		"fix summary":           fixSummarySchema,
 		"housekeeping findings": housekeepingFindingsSchema,
 		"ci fix conclusion":     ciFixConclusionSchema,
+		"ci fix remote-only":    ciFixRemoteOnlyConclusionSchema,
 		"pr content":            prContentSchema,
 		"pr title":              prTitleSchema,
 		"pr template":           templatePRContentSchema,

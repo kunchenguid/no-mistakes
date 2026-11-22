@@ -54,8 +54,7 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 ` + ciFixerClassRules + `
-		- Verify the rebase completes cleanly before finishing.
-` + ciVerificationConclusionRules
+		- Verify the rebase completes cleanly before finishing.`
 
 // repairFromFindings runs one CI fix round over the findings the executor
 // selected for it (sctx.PreviousFindings): the auto-fix subset of the last
@@ -361,11 +360,15 @@ CI logs:
 	prompt += executionContextPromptSection(sctx.WorkDir)
 	prompt = fixerPrompt(testguidance.LateRepairPrompt(string(s.Name()), prompt))
 
+	conclusionSchema := ciFixConclusionSchema
+	if remoteOnlyVerification {
+		conclusionSchema = ciFixRemoteOnlyConclusionSchema
+	}
 	sctx.Log("running agent to fix CI issues...")
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
-		JSONSchema: ciFixConclusionSchema,
+		JSONSchema: conclusionSchema,
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
@@ -581,6 +584,15 @@ var ciFixConclusionSchema = json.RawMessage(fmt.Sprintf(`{
 	},
 	"required": ["summary", "code_change_needed", "verification_passed", "verification_ran"]
 }`, config.MaxFixMessageSummaryBytes, maxCIVerificationRanBytes))
+
+var ciFixRemoteOnlyConclusionSchema = json.RawMessage(fmt.Sprintf(`{
+	"type": "object",
+	"properties": {
+		"summary": {"type": "string", "maxLength": %d},
+		"code_change_needed": {"type": "boolean"}
+	},
+	"required": ["summary", "code_change_needed"]
+}`, config.MaxFixMessageSummaryBytes))
 
 func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 	summary, summaryErr := extractCommitSummary(result)
