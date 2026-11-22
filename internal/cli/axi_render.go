@@ -558,6 +558,12 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	sharedRows := make([]sharedWorkRow, 0, 1)
 	for _, s := range rv.Steps {
 		rows = append(rows, stepRow{Step: s.Name, Status: s.Status, Findings: s.findingCount(), DurationMS: s.DurationMS})
+		if s.Name == string(types.StepDocument) && s.Status != string(types.StepStatusAwaitingApproval) && s.Status != string(types.StepStatusFixReview) {
+			findings, _ := types.ParseFindingsJSON(s.FindingsJSON)
+			if len(findings.DocumentOffChangePaths) > 0 {
+				fields = append(fields, toon.Field{Key: "document_off_change_paths", Value: findings.DocumentOffChangePaths})
+			}
+		}
 		if s.WorkScope != "" {
 			sharedRows = append(sharedRows, sharedWorkRow{AttributedTo: s.Name, Scope: s.WorkScope, DurationMS: s.DurationMS})
 		}
@@ -742,6 +748,9 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	}
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
+	}
+	if gate.Name == string(types.StepDocument) && len(parsed.DocumentOffChangePaths) > 0 {
+		gfields = append(gfields, toon.Field{Key: "document_off_change_paths", Value: parsed.DocumentOffChangePaths})
 	}
 	// Point-of-use reminder at the review gate: review auto-fix defaults to
 	// disabled, so agents should expect blocking and ask-user findings to park

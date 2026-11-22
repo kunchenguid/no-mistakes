@@ -335,6 +335,9 @@ type Findings struct {
 	// never read as resolution. Empty on every non-review payload.
 	ReviewedPaths       []string             `json:"reviewed_paths,omitempty"`
 	ReviewCoverageScope *ReviewCoverageScope `json:"review_coverage_scope,omitempty"`
+	// DocumentOffChangePaths records Git-observed edits from Document rounds
+	// outside the submitted change. It is metadata, so it never needs a verdict.
+	DocumentOffChangePaths []string `json:"document_off_change_paths,omitempty"`
 	// WithdrawnFindings is an answer round's explicit re-adjudication: the
 	// carried findings the reviewer now says no longer hold, each with its
 	// reason. On an answer round a carried finding leaves the outstanding set
@@ -373,6 +376,8 @@ type findingsWire struct {
 	RiskLevel           string               `json:"risk_level"`
 	RiskRationale       string               `json:"risk_rationale"`
 	RiskScope           string               `json:"risk_scope"`
+
+	DocumentOffChangePaths []string `json:"document_off_change_paths"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -402,6 +407,8 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		RiskLevel:           wire.RiskLevel,
 		RiskRationale:       wire.RiskRationale,
 		RiskScope:           wire.RiskScope,
+
+		DocumentOffChangePaths: wire.DocumentOffChangePaths,
 	}, nil
 }
 

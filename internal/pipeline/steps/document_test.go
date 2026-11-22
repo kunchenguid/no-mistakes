@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -355,6 +356,157 @@ func TestDocumentStep_UserFix_PassesPreviousFindingsIntoPrompt(t *testing.T) {
 	}
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): address config docs" {
 		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestDocumentStep_SubmittedScope(t *testing.T) {
+	t.Parallel()
+	const settings = "config/settings.yaml"
+	const scope = "Change only config/settings.yaml. Do not edit any other file."
+	const readmeFinding = "Update README.md to document the new default of 2."
+	for _, tc := range []struct {
+		name     string
+		intent   string
+		fixing   bool
+		combined bool
+	}{
+		{name: "explicit combined pass", intent: scope, combined: true},
+		{name: "explicit fix pass", intent: scope, fixing: true},
+		{name: "unrestricted", intent: "Set the default to 2."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, _, _ := setupGitRepo(t)
+			write := func(path, contents string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, path), []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gitCmd(t, dir, "checkout", "main")
+			if err := os.Mkdir(filepath.Join(dir, "config"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(settings, "default: 1\n")
+			write("README.md", "The default is 1.\n")
+			gitCmd(t, dir, "add", "--", settings, "README.md")
+			gitCmd(t, dir, "commit", "-m", "Add setting and its documentation")
+			baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "checkout", "-b", "settings")
+			write(settings, "default: 2\n")
+			gitCmd(t, dir, "commit", "-am", "Change the default")
+			submitted := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "checkout", "main")
+			write("upstream.txt", "new upstream file\n")
+			gitCmd(t, dir, "add", "--", "upstream.txt")
+			gitCmd(t, dir, "commit", "-m", "Advance the upstream base")
+			gitCmd(t, dir, "checkout", "settings")
+			gitCmd(t, dir, "rebase", "main")
+			// An earlier step already touched README without correcting the default.
+			// It still belongs outside the submitted change, and the earlier step's
+			// other file must never be attributed to Document.
+			write("README.md", "# Settings\n\nThe default is 1.\n")
+			write("earlier.txt", "earlier pipeline work\n")
+			gitCmd(t, dir, "add", "--", "README.md", "earlier.txt")
+			gitCmd(t, dir, "commit", "-m", "Earlier pipeline edits")
+			head := gitCmd(t, dir, "rev-parse", "HEAD")
+
+			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				if !strings.Contains(opts.Prompt, "Submitted changed paths:\n- \""+settings+"\"\n") {
+					t.Error("Document prompt does not identify the submitted path")
+				}
+				if !strings.Contains(opts.Prompt, tc.intent) {
+					t.Error("Document prompt does not carry the explicit intent")
+				}
+				if strings.Contains(opts.Prompt, `- "earlier.txt"`) || strings.Contains(opts.Prompt, `- "README.md"`) {
+					t.Error("Document prompt lists an earlier pipeline edit as a submitted path")
+				}
+				if tc.intent == scope {
+					if !strings.Contains(opts.Prompt, `emit an "ask-user" finding naming the file and the proposed repair`) {
+						t.Error("Document prompt does not explain how to report a repair outside the explicit scope")
+					}
+					return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","file":"README.md","description":"` + readmeFinding + `","action":"ask-user","category":"documentation"}],"summary":"README needs a decision"}`)}, nil
+				}
+				write(settings, "# Default for new installs.\ndefault: 2\n")
+				write("README.md", "# Settings\n\nThe default is 2.\n")
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"Update documentation for the new default"}`)}, nil
+			}}
+			cmds := config.Commands{Lint: "lint"}
+			if tc.combined {
+				cmds.Lint = ""
+			}
+			sctx := newHousekeepingContext(t, ag, dir, baseSHA, head, cmds)
+			sctx.Run.SubmittedHeadSHA = &submitted
+			sctx.UserIntent = tc.intent
+			sctx.IntentSource = db.RunIntentSourceAgent
+			sctx.Fixing = tc.fixing
+			if tc.fixing {
+				sctx.PreviousFindings = `{"findings":[{"file":"README.md","description":"The default is stale."}]}`
+			}
+
+			outcome, err := (&DocumentStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.intent == scope {
+				findings, err := types.ParseFindingsJSON(outcome.Findings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !outcome.NeedsApproval || outcome.AutoFixable || len(findings.Items) != 1 ||
+					findings.Items[0].File != "README.md" || findings.Items[0].ActionOrDefault() != types.ActionAskUser ||
+					findings.Items[0].Description != readmeFinding {
+					t.Fatalf("expected a parked README repair, got %+v", outcome)
+				}
+				if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != head {
+					t.Fatalf("Document advanced HEAD from %s to %s", head, got)
+				}
+				return
+			}
+			if outcome.NeedsApproval || outcome.AutoFixable {
+				t.Fatalf("visibility should leave approval semantics unchanged: %+v", outcome)
+			}
+			if got := gitCmd(t, dir, "diff", "--name-only", head, "HEAD"); got != "README.md\n"+settings {
+				t.Fatalf("Document commit changed %q", got)
+			}
+			gate, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gate.DocumentOffChangePaths) != 1 || gate.DocumentOffChangePaths[0] != "README.md" {
+				t.Errorf("Document paths outside the submitted change = %v, want only README.md", gate.DocumentOffChangePaths)
+			}
+			md, _ := BuildPipelineSummary([]*db.StepResult{{
+				ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &outcome.Findings,
+			}}, map[string][]*db.StepRound{"document": {{Round: 1, Trigger: "initial", FindingsJSON: &outcome.Findings}}}, sctx.Run.HeadSHA)
+			if !strings.Contains(md, "Document edits outside the submitted change") || !strings.Contains(md, "README.md") ||
+				strings.Contains(md, settings) || strings.Contains(md, "earlier.txt") {
+				t.Errorf("PR summary does not identify the Document-only change:\n%s", md)
+			}
+			step, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepDocument)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sctx.DB.InsertStepRound(step.ID, 1, "initial", &outcome.Findings, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+			sctx.StepResultID = step.ID
+			sctx.Fixing = true
+			ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","document_off_change_paths":["invented.md"]}`)}, nil
+			}
+			outcome, err = (&DocumentStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err = types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gate.DocumentOffChangePaths) != 1 || gate.DocumentOffChangePaths[0] != "README.md" {
+				t.Errorf("Document fix round kept edit paths %v, want only the recorded README.md", gate.DocumentOffChangePaths)
+			}
+		})
 	}
 }
 

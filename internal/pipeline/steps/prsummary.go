@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1448,6 +1449,9 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // mentally replaying rounds.
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
 	var inner strings.Builder
+	if sr.StepName == types.StepDocument {
+		writeDocumentOffChangePaths(&inner, sr, rounds, flavor)
+	}
 	// A skipped step whose rounds recorded no findings never checked
 	// anything, so "No issues found" under a "skipped" summary would
 	// claim a pass.
@@ -1506,6 +1510,29 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	}
 
 	return foldPRBlock(summaryLine, inner.String(), flavor)
+}
+
+func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
+	var paths []string
+	if sr.FindingsJSON != nil {
+		findings, _ := types.ParseFindingsJSON(*sr.FindingsJSON)
+		paths = findings.DocumentOffChangePaths
+	}
+	for i := len(rounds) - 1; len(paths) == 0 && i >= 0; i-- {
+		if raw := rounds[i].FindingsJSON; raw != nil {
+			findings, _ := types.ParseFindingsJSON(*raw)
+			paths = findings.DocumentOffChangePaths
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	b.WriteString("Document edits outside the submitted change\n\n")
+	for _, path := range paths {
+		quoted := strings.ReplaceAll(strconv.Quote(path), "`", `\x60`)
+		fmt.Fprintf(b, "- `%s`\n", escapePRText(quoted, flavor))
+	}
+	b.WriteString("\n")
 }
 
 func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {

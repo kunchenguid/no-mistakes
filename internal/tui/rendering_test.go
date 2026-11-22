@@ -29,6 +29,28 @@ func TestRenderPipelineView_WrappedInBox(t *testing.T) {
 	}
 }
 
+func TestDocumentGateShowsOffChangePaths(t *testing.T) {
+	run := testRun()
+	run.Steps[0].StepName = types.StepDocument
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		Summary:                "Documentation needs a decision",
+		Items:                  []types.Finding{{ID: "doc-1", Severity: "warning", Description: "Decide whether to remove the old example."}},
+		DocumentOffChangePaths: []string{"README.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Steps[0].FindingsJSON = &raw
+	model := NewModel("/tmp/sock", nil, run)
+	view := stripANSI(model.View())
+	for _, want := range []string{"Decide whether to remove the old example.", "Document edits outside the submitted change", "README.md"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("gate view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestModel_View_LogTailWrappedInBox(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

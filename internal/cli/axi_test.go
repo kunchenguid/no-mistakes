@@ -50,6 +50,23 @@ func TestRunViewFromDBAwaitingStep(t *testing.T) {
 	}
 }
 
+func TestAxiDocumentOffChangePaths(t *testing.T) {
+	raw, err := types.MarshalFindingsJSON(types.Findings{DocumentOffChangePaths: []string{"README.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := stepView{Name: string(types.StepDocument), Status: string(types.StepStatusAwaitingApproval), FindingsJSON: raw}
+	gate := axiDoc(gateFields(step)...)
+	if !strings.Contains(gate, "document_off_change_paths[1]") || !strings.Contains(gate, "README.md") {
+		t.Fatalf("Document gate omitted the recorded edit:\n%s", gate)
+	}
+	step.Status = string(types.StepStatusCompleted)
+	status := axiDoc(runObjectField(runView{Steps: []stepView{step}}))
+	if !strings.Contains(status, "document_off_change_paths[1]") || !strings.Contains(status, "README.md") {
+		t.Fatalf("run view omitted the edit from a completed Document step:\n%s", status)
+	}
+}
+
 // TestRunViewFromDBCarriesCIOverrideReason pins that a completed run whose step
 // recorded an approval override reads as passed-with-override on the DB-backed
 // status path, matching the live IPC path. Regression: runViewFromDB used to

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -336,6 +337,12 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 		if item.DriverInstructions != "" {
 			instr := wrapIndentedText("> driver: "+item.DriverInstructions, width, 8)
 			b.WriteString(blueStyle.Render(instr) + "\n")
+		}
+	}
+	if end == len(f.Items) && len(f.DocumentOffChangePaths) > 0 {
+		b.WriteString("\n" + wrapIndentedText("Document edits outside the submitted change", width, 0) + "\n")
+		for _, path := range f.DocumentOffChangePaths {
+			b.WriteString(wrapIndentedText(strconv.Quote(path), width, 2) + "\n")
 		}
 	}
 
