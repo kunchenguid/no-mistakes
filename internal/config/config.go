@@ -834,6 +834,9 @@ type CIRaw struct {
 	// ReleaseAfterChecksPass is a pointer for the same reason as
 	// RevalidateRepairs: a repository must be able to opt back out.
 	ReleaseAfterChecksPass *bool `yaml:"release_after_checks_pass"`
+	// RemoteOnlyVerification is a pointer so a trusted repository can
+	// override the operator's default in either direction.
+	RemoteOnlyVerification *bool `yaml:"remote_only_verification"`
 	// Instructions is repository-only guidance for the CI fixer; see
 	// CI.Instructions.
 	Instructions string `yaml:"instructions"`
@@ -933,6 +936,9 @@ type CI struct {
 	// (see VISION.md's cost and consent rules). A trusted repository config may
 	// set it for its own workflow.
 	ReleaseAfterChecksPass bool
+	// RemoteOnlyVerification directs the CI fixer to leave verification to
+	// CI and skip local tests and checks.
+	RemoteOnlyVerification bool
 	// Instructions is the trusted repository's guidance for the CI fixer,
 	// added to every CI repair prompt. It is trusted-only with the rest of the
 	// ci block, so a pushed branch cannot steer the agent repairing it.
@@ -1897,6 +1903,8 @@ ci:
   # repository that sets ci.revalidate_repairs on its own default branch
   # overrides this value.
   revalidate_repairs: false
+  # Leave CI repair verification to the pipeline's CI rerun.
+  remote_only_verification: false
   # When the CI step reads a registered review bot's (Greptile's) unresolved
   # review comments. "on_failure" (default) reads them only when the bot's
   # check failed. "always" also reads them when the bot's check completed green
@@ -4200,6 +4208,9 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	}
 	if src.ReleaseAfterChecksPass != nil {
 		dst.ReleaseAfterChecksPass = *src.ReleaseAfterChecksPass
+	}
+	if src.RemoteOnlyVerification != nil {
+		dst.RemoteOnlyVerification = *src.RemoteOnlyVerification
 	}
 }
 
