@@ -1248,7 +1248,7 @@ func TestCIStep_FixPromptLeavesPublicationAndMonitoringToPipeline(t *testing.T) 
 func TestCIStep_FixPromptVerification(t *testing.T) {
 	t.Parallel()
 	const localRule = "- Verify the fix by running the most relevant commands locally before finishing."
-	const remoteRule = "- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair. State in your report that verification was left to CI."
+	const remoteRule = "- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair."
 	const remoteConfig = "ci:\n  remote_only_verification: true\n"
 
 	for _, tc := range []struct {

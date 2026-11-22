@@ -282,7 +282,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	}
 	remoteOnlyVerification := sctx.Config.CI.RemoteOnlyVerification
 	if remoteOnlyVerification {
-		verificationRule = "\n\t\t- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair. State in your report that verification was left to CI."
+		verificationRule = "\n\t\t- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair."
 	}
 	promptRules += verificationRule
 
