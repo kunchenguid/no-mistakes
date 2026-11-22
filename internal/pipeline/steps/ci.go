@@ -440,6 +440,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return nil, err
 		}
 		retryRefusal = false
+		if repair.HeadAdvanced {
+			s.pendingFixSummary = ciRepairSummary(repair.Summary, sctx.Config.CI.RemoteOnlyVerification)
+		}
 		if repair.Revalidate {
 			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom()}, nil
 		}
