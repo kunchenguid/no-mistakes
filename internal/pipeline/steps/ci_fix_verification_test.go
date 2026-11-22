@@ -63,6 +63,30 @@ func TestCIStep_ReportedVerificationPassStillPublishes(t *testing.T) {
 	}
 }
 
+func TestCIStep_RemoteOnlyVerificationNeitherAsksForNorWithholdsOnAReport(t *testing.T) {
+	t.Parallel()
+	f := newFailedVerificationFixture(t, false, false)
+	f.sctx.Config.CI.RemoteOnlyVerification = true
+	var prompt string
+	f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompt = opts.Prompt
+		if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+			return nil, err
+		}
+		return &agent.Result{Output: json.RawMessage(`{"summary":"repair the failing check","code_change_needed":true,"verification_passed":false,"verification_ran":"none"}`)}, nil
+	}}
+	outcome, err := f.run(t)
+	if outcome != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("outcome = %#v err = %v, want monitoring after a published repair", outcome, err)
+	}
+	if strings.Contains(prompt, "verification_passed") || strings.Contains(prompt, "verification_ran") {
+		t.Errorf("remote-only prompt asks for a verification report:\n%s", prompt)
+	}
+	if f.remoteHead(t) != f.localHead(t) || f.remoteHead(t) == f.headSHA {
+		t.Fatalf("repair was withheld: local=%s remote=%s original=%s", f.localHead(t), f.remoteHead(t), f.headSHA)
+	}
+}
+
 func TestCIStep_RejectedSummaryStillWithholdsFailedVerification(t *testing.T) {
 	t.Parallel()
 	overlong := strings.Repeat("x", config.MaxFixMessageSummaryBytes+1)

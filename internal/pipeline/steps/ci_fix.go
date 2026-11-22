@@ -307,7 +307,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		verificationRule = "\n\t\t- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair."
 	}
 	promptRules += verificationRule
-	if promptRules == ciFailingCheckFixRules+verificationRule {
+	if !remoteOnlyVerification {
 		promptRules += "\n\t\t" + strings.TrimSuffix(ciVerificationConclusionRules, "\n")
 	}
 
@@ -379,7 +379,7 @@ CI logs:
 	if conclusionErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
 	}
-	if conclusion.VerificationPassed != nil {
+	if !remoteOnlyVerification && conclusion.VerificationPassed != nil {
 		s.repairVerification = ciRepairVerification{
 			reported: true,
 			passed:   *conclusion.VerificationPassed,
