@@ -49,8 +49,7 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- Make the smallest correct root-cause fix.
 ` + ciFixerClassRules + `
 		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
-		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		- Do not refactor beyond what is needed for that root-cause fix.`
 
 const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
@@ -263,24 +262,29 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 
 	// Build prompt based on what issues are present
 	var promptIntro string
-	var promptRules string
+	promptRules := ciFailingCheckFixRules
+	verificationRule := "\n\t\t- Verify the fix by running the most relevant commands locally before finishing."
 	switch {
 	case len(failingNames) > 0 && mergeConflict:
 		promptIntro = "The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts."
-		promptRules = ciFailingCheckFixRules
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
 		promptRules = ciMergeConflictFixRules
+		verificationRule = ""
 	case targets.BehindBase && len(failingNames) == 0:
 		promptIntro = "The PR has no merge conflicts, but it is behind a base branch that requires branches to be up to date before merging. Rebase onto the base branch, resolving any conflicts the rebase reports."
 		promptRules = ciMergeConflictFixRules
+		verificationRule = ""
 	case len(failingNames) == 0:
 		promptIntro = "Address the following findings selected at the CI gate of this PR."
-		promptRules = ciFailingCheckFixRules
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
-		promptRules = ciFailingCheckFixRules
 	}
+	remoteOnlyVerification := sctx.Config.CI.RemoteOnlyVerification
+	if remoteOnlyVerification {
+		verificationRule = "\n\t\t- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair. State in your report that verification was left to CI."
+	}
+	promptRules += verificationRule
 
 	prompt := fmt.Sprintf(
 		`%s
@@ -379,6 +383,12 @@ CI logs:
 	}
 	if repair.HeadAdvanced {
 		repair.Summary = conclusion.Summary
+		if remoteOnlyVerification {
+			repair.Summary = "Verification was left to CI."
+			if conclusion.Summary != "" {
+				repair.Summary = strings.TrimSuffix(conclusion.Summary, ".") + ". " + repair.Summary
+			}
+		}
 		return repair, nil
 	}
 	if !rebase && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {

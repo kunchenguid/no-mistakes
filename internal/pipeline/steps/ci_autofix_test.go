@@ -1245,6 +1245,66 @@ func TestCIStep_FixPromptLeavesPublicationAndMonitoringToPipeline(t *testing.T) 
 	}
 }
 
+func TestCIStep_FixPromptVerification(t *testing.T) {
+	t.Parallel()
+	const localRule = "- Verify the fix by running the most relevant commands locally before finishing."
+	const remoteRule = "- Do not run tests or checks locally. The pipeline's CI re-run verifies the repair. State in your report that verification was left to CI."
+	const remoteConfig = "ci:\n  remote_only_verification: true\n"
+
+	for _, tc := range []struct {
+		name        string
+		yaml        string
+		targets     ciFixTargets
+		want        string
+		absent      string
+		wantSummary string
+	}{
+		{"unset", "ci: {}\n", ciTargetsFor([]string{"test"}, false), localRule, remoteRule, "repair check fixture"},
+		{"remote_only", remoteConfig, ciTargetsFor([]string{"test"}, false), remoteRule, localRule, "repair check fixture. Verification was left to CI."},
+		{"combined", remoteConfig, ciTargetsFor([]string{"test"}, true), remoteRule, localRule, ""},
+		{"conflict_only", remoteConfig, ciTargetsFor(nil, true), remoteRule, localRule, ""},
+		{"behind_base", remoteConfig, ciFixTargets{BehindBase: true}, remoteRule, localRule, ""},
+		{"selected_finding", remoteConfig, ciFixTargetsFromFindings(Findings{Items: []Finding{{
+			ID: "ci-1", Category: types.FindingCategoryCIReviewBot, Description: "Repair the selected finding",
+		}}}), remoteRule, localRule, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+			repo, err := config.LoadRepoFromBytes([]byte(tc.yaml))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var prompt string
+			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				prompt = opts.Prompt
+				if tc.wantSummary != "" {
+					if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
+						return nil, err
+					}
+				}
+				return &agent.Result{Output: []byte(`{"summary":"repair check fixture","code_change_needed":true}`)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config = config.Merge(config.DefaultGlobalConfig(), repo)
+			sctx.Config.CI.RevalidateRepairs = true
+			pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+			repair, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, tc.targets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !promptHasExactLine(prompt, "\t\t"+tc.want) || strings.Contains(prompt, tc.absent) {
+				t.Errorf("expected %q without %q in the emitted prompt:\n%s", tc.want, tc.absent, prompt)
+			}
+			if tc.wantSummary != "" && (!repair.HeadAdvanced || repair.Summary != tc.wantSummary) {
+				t.Errorf("repair = %+v, want an advanced head with summary %q", repair, tc.wantSummary)
+			}
+		})
+	}
+}
+
 func TestCIStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

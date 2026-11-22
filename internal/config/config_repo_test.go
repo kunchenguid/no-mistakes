@@ -364,6 +364,49 @@ func TestLoadGlobal_CIRerunTransientFromFile(t *testing.T) {
 	}
 }
 
+// ci.remote_only_verification changes what the CI fixer may run, so a pushed
+// branch can neither enable nor disable it: only the trusted default-branch
+// copy or the machine-local config decides.
+func TestEffectiveRepoConfig_CIRemoteOnlyVerificationTrustedOnly(t *testing.T) {
+	const on = "ci:\n  remote_only_verification: true\n"
+	const off = "ci:\n  remote_only_verification: false\n"
+	global, err := LoadGlobalFromBytes([]byte(on))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoOn, err := LoadRepoFromBytes([]byte(on))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoOff, err := LoadRepoFromBytes([]byte(off))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		global  *GlobalConfig
+		pushed  *RepoConfig
+		trusted *RepoConfig
+		want    bool
+	}{
+		{"pushed opt-in ignored without trusted config", DefaultGlobalConfig(), repoOn, nil, false},
+		{"pushed opt-in ignored with trusted config", DefaultGlobalConfig(), repoOn, &RepoConfig{}, false},
+		{"local opt-in survives pushed opt-out", global, repoOff, &RepoConfig{}, true},
+		{"trusted opt-out overrides local opt-in", global, repoOn, repoOff, false},
+		{"trusted opt-in survives pushed opt-out", DefaultGlobalConfig(), repoOff, repoOn, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, allowRepoCommands := range []bool{false, true} {
+				repo := EffectiveRepoConfig(tc.pushed, tc.trusted, allowRepoCommands)
+				got := Merge(tc.global, repo).CI.RemoteOnlyVerification
+				if got != tc.want {
+					t.Errorf("allow_repo_commands=%t: ci.remote_only_verification = %t, want %t", allowRepoCommands, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 // Every rerun ci.rerun_transient authorizes is another provider-side workflow
 // run billed to the repository, so the budget is read only from the trusted
 // default-branch copy: a pushed branch must not be able to raise its own.

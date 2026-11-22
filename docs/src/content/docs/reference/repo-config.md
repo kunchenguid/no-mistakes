@@ -26,7 +26,7 @@ After refusal, run `no-mistakes axi sync --recover` from the registered working 
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch**, never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved. The trusted default branch belongs to the run's [integration remote](/no-mistakes/reference/cli/#other-run-options), which defaults to `origin`. A stale cached ref cannot serve a value the live default branch removed.
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `review.prepare`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `review.prepare`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `ci.remote_only_verification`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.instructions_file`, `test.path_instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -1159,6 +1159,23 @@ ci:
 
 When set, the [CI step](/no-mistakes/reference/pipeline-steps/#ci) adds the text to every CI repair prompt, in a labeled section after the built-in rules. It adds to those rules and never relaxes them: the fixer must still fix a failing check the change caused.
 Like the rest of the `ci` block, it is read only from the trusted default-branch copy of this file, so a pushed branch cannot steer the agent that repairs it. It is not accepted in the global config, since the guidance describes one repository.
+
+### ci.remote_only_verification
+
+Leaves verification of CI repairs to the pipeline's next CI run. When enabled, the CI repair prompt forbids local tests and checks, and the repair summary records that verification was left to CI. The pipeline still monitors the CI result.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  remote_only_verification: true
+```
+
+This setting applies to CI repair only. The Test step and per-run Test skips are independent of it. When the trusted repository config omits the key, the [machine-local value](/no-mistakes/reference/global-config/#ciremote_only_verification) applies.
 
 ### rebase.strategy
 
