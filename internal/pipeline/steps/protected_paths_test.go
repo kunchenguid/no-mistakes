@@ -334,6 +334,36 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 	}
 }
 
+func TestCIStep_ProtectedPathRetryReportsRemoteOnlyVerification(t *testing.T) {
+	f := newCIRepairFixture(t, true, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "package.lock"), []byte("refused\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "fix.go"), []byte("retained repair\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	f.sctx.Config.ProtectedPaths = []string{"*.lock"}
+	f.sctx.Config.CI.RemoteOnlyVerification = true
+	outcome, err := f.run(t)
+	if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) {
+		t.Fatalf("repair did not refuse: %+v, %v", outcome, err)
+	}
+	persistCIRefusal(t, f, outcome)
+	if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = outcome.Findings
+	outcome, err = f.run(t)
+	assertCIRestartsValidation(t, outcome, err)
+	// The documented remote-only repair summary includes this sentence once.
+	const want = "Verification was left to CI."
+	if outcome.FixSummary != want {
+		t.Fatalf("retried repair FixSummary = %q, want %q", outcome.FixSummary, want)
+	}
+}
+
 func TestCIStep_ProtectedPathRetryPublicationFailureKeepsRefusal(t *testing.T) {
 	t.Parallel()
 	f := newCIRepairFixture(t, false, func(dir string) {

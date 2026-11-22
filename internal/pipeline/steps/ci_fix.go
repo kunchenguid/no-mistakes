@@ -382,13 +382,7 @@ CI logs:
 		return repair, err
 	}
 	if repair.HeadAdvanced {
-		repair.Summary = conclusion.Summary
-		if remoteOnlyVerification {
-			repair.Summary = "Verification was left to CI."
-			if conclusion.Summary != "" {
-				repair.Summary = strings.TrimSuffix(conclusion.Summary, ".") + ". " + repair.Summary
-			}
-		}
+		repair.Summary = ciRepairSummary(conclusion.Summary, remoteOnlyVerification)
 		return repair, nil
 	}
 	if !rebase && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
@@ -396,6 +390,17 @@ CI logs:
 		repair.Summary = conclusion.Summary
 	}
 	return repair, nil
+}
+
+func ciRepairSummary(summary string, remoteOnlyVerification bool) string {
+	if !remoteOnlyVerification {
+		return summary
+	}
+	const note = "Verification was left to CI."
+	if summary == "" {
+		return note
+	}
+	return strings.TrimSuffix(summary, ".") + ". " + note
 }
 
 // fetchCILogOutput returns the selected checks' log evidence. A failed
