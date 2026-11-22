@@ -34,6 +34,7 @@ func liveValidatedPipelineBody(t *testing.T, scenarios []types.TestScenario, ver
 	}
 	findingsJSON := string(raw)
 	stepResults := []*db.StepResult{
+		{ID: "rebase", StepName: types.StepRebase, Status: types.StepStatusCompleted},
 		{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "test", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findingsJSON},
 		{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted},
