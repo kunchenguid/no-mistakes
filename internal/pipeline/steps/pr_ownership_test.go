@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func ownedFixture(t *testing.T) (prContent, string) {
@@ -20,6 +22,58 @@ func ownedFixture(t *testing.T) (prContent, string) {
 		t.Fatal(err)
 	}
 	return content, appendix
+}
+
+func TestComposeOwnedPRContent_DropsDocumentPathsBeforeAzureOverflow(t *testing.T) {
+	t.Parallel()
+	const provider = scm.ProviderAzureDevOps
+	const limit = 4000
+	step := &db.StepResult{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted}
+	steps := []*db.StepResult{step}
+	clean := `{"findings":[]}`
+	rounds := map[string][]*db.StepRound{step.ID: {{Round: 1, FindingsJSON: &clean}}}
+	baseAppendix, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, provider)
+	parts := prOwnedBody{before: "## Author notes\n\n", after: "\n\nAuthor follow-up."}
+	previous, err := composeOwnedPRContent(parts, provider, "Owner docs", baseAppendix, limit, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts.before += strings.Repeat("a", limit-24-scm.PRBodyLen(previous.Body))
+	previous, err = composeOwnedPRContent(parts, provider, "Owner docs", baseAppendix, limit, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err = parsePROwnedBody(previous.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var paths []string
+	for i := range 5 {
+		paths = append(paths, fmt.Sprintf("docs/%d-%s.md", i, strings.Repeat("&", 120)))
+	}
+	raw, err := types.MarshalFindingsJSON(types.Findings{DocumentOffChangePaths: paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step.FindingsJSON = &raw
+	appendix, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, provider)
+	full, err := composeOwnedPRContent(parts, provider, "Owner docs", appendix, 0, "", "")
+	if err != nil || scm.PRBodyLen(full.Body) <= limit {
+		t.Fatalf("fixture must exceed the Azure limit with formatted paths, got %d units, %v", scm.PRBodyLen(full.Body), err)
+	}
+	fitted, err := composeOwnedPRContent(parts, provider, "Owner docs", appendix, limit, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fitted.Body != previous.Body {
+		t.Fatalf("dropping the Document detail changed the existing author text, attestation or other appendix content:\n%s", fitted.Body)
+	}
+
+	parts.before += strings.Repeat("b", 100)
+	if _, err := composeOwnedPRContent(parts, provider, "Owner docs", appendix, limit, "", ""); err == nil {
+		t.Fatal("an oversized body must still fail after removing Document paths")
+	}
 }
 
 func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {

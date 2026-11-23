@@ -236,6 +236,12 @@ func fitCollapsed(prefix, risk, testing, pipeline string, limit int, units func(
 	if full := untruncated(testing); units(full) <= limit {
 		return full
 	}
+	if reduced := withoutDocumentPRPaths(pipeline); reduced != pipeline {
+		pipeline = reduced
+		if full := untruncated(testing); units(full) <= limit {
+			return full
+		}
+	}
 	// Testing is the section that inlines evidence logs. Drop it whole before
 	// cutting pipeline history, the same order the ordinary body uses.
 	if testing != "" {

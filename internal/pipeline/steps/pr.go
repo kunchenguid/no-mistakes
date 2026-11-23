@@ -1089,17 +1089,19 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 }
 
 // assemblePRBody composes the final PR body from its sections and keeps it
-// within bodyLimit (0 = unlimited). When the full body overruns the cap it
-// first drops the Testing section - the only one that embeds artifact and log
-// file contents and is therefore effectively unbounded - so the body sheds
-// log dumps while keeping its Intent, What Changed, Risk, and Pipeline
-// narrative intact. prependIntentSectionWithinLimit is the final backstop
-// when even that core overruns.
+// within bodyLimit (0 = unlimited).
 func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD, provider)
 	full := prependIntentSection(sections, sctx)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
+	}
+	if reduced := withoutDocumentPRPaths(pipelineMD); reduced != pipelineMD {
+		pipelineMD = reduced
+		full = prependIntentSection(appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD, provider), sctx)
+		if scm.PRBodyLen(full) <= bodyLimit {
+			return full
+		}
 	}
 	if testingMD != "" {
 		sections = appendGeneratedSections(whatChanged, riskLine, "", pipelineMD, provider)
@@ -1177,6 +1179,13 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 	if len(intent)+len(separator)+len(sections) <= maxBytes {
 		return intent + separator + sections
 	}
+	if reduced := withoutDocumentPRPaths(pipelineMD); reduced != pipelineMD {
+		pipelineMD = reduced
+		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxBytes, provider)
+		if len(intent)+len(separator)+len(sections) <= maxBytes {
+			return intent + separator + sections
+		}
+	}
 	sectionsBudget := maxBytes - len(separator) - len(intent)
 	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
 	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
@@ -1227,6 +1236,10 @@ func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pi
 	if prefix != "" {
 		separator = "\n\n"
 	}
+	if len(prefix+separator+pipelineMD) <= maxBytes {
+		return prefix + separator + pipelineMD
+	}
+	pipelineMD = withoutDocumentPRPaths(pipelineMD)
 	if len(prefix+separator+pipelineMD) <= maxBytes {
 		return prefix + separator + pipelineMD
 	}

@@ -1297,6 +1297,39 @@ func TestAssemblePRBody_DropsTestingEmbedsToFitAzureCap(t *testing.T) {
 	}
 }
 
+func TestAssemblePRBody_DropsDocumentPathsBeforeOtherEvidence(t *testing.T) {
+	t.Parallel()
+	const provider = scm.ProviderAzureDevOps
+	const narrative = "## What Changed\n\nUpdate the owner docs."
+	const testingMD = "## Testing\n\nKeep the recorded checks."
+	step := &db.StepResult{StepName: types.StepDocument, Status: types.StepStatusCompleted}
+	baseline, _ := BuildPipelineSummaryFor([]*db.StepResult{step}, nil, testPipelineHeadSHA, provider)
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		DocumentOffChangePaths: []string{"docs/" + strings.Repeat("&", 120) + ".md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step.FindingsJSON = &raw
+	withPaths, _ := BuildPipelineSummaryFor([]*db.StepResult{step}, nil, testPipelineHeadSHA, provider)
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
+		t.Run(mode, func(t *testing.T) {
+			sctx := &pipeline.StepContext{UserIntent: "Update the owner docs.", Config: &config.Config{}}
+			sctx.Config.PR.Appendix = mode
+			want := assemblePRBody(sctx, narrative, "", testingMD, baseline, 0, provider)
+			got := assemblePRBody(sctx, narrative, "", testingMD, withPaths, scm.PRBodyLen(want), provider)
+			if got != want {
+				t.Fatalf("expected the full body without the Document path detail:\n%s", got)
+			}
+			want = buildPRBodyWithin(narrative, "", testingMD, baseline, sctx, provider, maxPullRequestBodyBytes)
+			got = buildPRBodyWithin(narrative, "", testingMD, withPaths, sctx, provider, len(want))
+			if got != want {
+				t.Fatalf("byte budget changed content outside the Document path detail:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	t.Parallel()
 	// An Intent so long that even Intent + What Changed overruns the cap, with no

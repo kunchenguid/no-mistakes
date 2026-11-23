@@ -128,11 +128,10 @@ func wrapPRAppendix(appendix string) string {
 }
 
 // composeOwnedPRContent uses the same publication redaction owner as ordinary
-// drafting, BEFORE stamping the byte-integrity guard. No clamp or heading-based
-// stripper may run here: if author text and all recorded evidence cannot fit,
-// publication fails. That includes suffix text/closing lines added after the
-// generated block. Model-authored copies of ownership markers in evidence are
-// escaped before the actual delimiters are inserted, like foreign attestations.
+// drafting, BEFORE stamping the byte-integrity guard. Author text and closing
+// lines still count toward the publication budget. Model-authored copies of
+// ownership markers in evidence are escaped before the actual delimiters are
+// inserted, like foreign attestations.
 // provider is the forge the body is written to: the stamped bytes must be the
 // bytes it reads back.
 func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title, appendix string, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
@@ -148,7 +147,14 @@ func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title, appe
 	}
 	content := prContent{Title: redactPRContent(prContent{Title: title}, provider, runWorktree, worktreesRoot).Title, Body: before + wrapPRAppendix(appendix) + after}
 	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
-		return prContent{}, err
+		reduced := withoutDocumentPRPaths(appendix)
+		if reduced == appendix {
+			return prContent{}, err
+		}
+		content.Body = before + wrapPRAppendix(reduced) + after
+		if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
+			return prContent{}, err
+		}
 	}
 	if _, err := parsePROwnedBody(content.Body); err != nil {
 		return prContent{}, err

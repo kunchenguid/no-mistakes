@@ -16,6 +16,33 @@ import (
 
 const testPipelineHeadSHA = "0123456789abcdef0123456789abcdef01234567"
 
+func TestBuildPipelineSummary_DocumentPRPreviewShowsFiveSortedPaths(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, want, unwanted string
+		omitted              bool
+	}{
+		{"known count", "and 2 more (see the Document step log)", "More paths in the Document step log.", false},
+		{"unknown count", "More paths in the Document step log.", "and 2 more", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := types.MarshalFindingsJSON(types.Findings{
+				DocumentOffChangePaths:   []string{"g.md", "c.md", "e.md", "a.md", "f.md", "b.md", "d.md"},
+				DocumentOffChangeOmitted: tc.omitted,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			step := &db.StepResult{StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &raw}
+			md, _ := BuildPipelineSummary([]*db.StepResult{step}, nil, testPipelineHeadSHA)
+			want := "- <code>a.md</code>\n- <code>b.md</code>\n- <code>c.md</code>\n- <code>d.md</code>\n- <code>e.md</code>\n\n" + tc.want
+			if !strings.Contains(md, want) || strings.Contains(md, tc.unwanted) || strings.Contains(md, "f.md") || strings.Contains(md, "g.md") {
+				t.Fatalf("unexpected Document PR preview:\n%s", md)
+			}
+		})
+	}
+}
+
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	t.Parallel()
 	steps := []*db.StepResult{

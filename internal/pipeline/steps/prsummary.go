@@ -9,6 +9,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1511,17 +1513,42 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	return foldPRBlock(summaryLine, inner.String(), flavor)
 }
 
+const (
+	documentPRPathHeading = "Paths Document committed outside the submitted change"
+	documentPRPathMore    = " more (see the Document step log)"
+	maxDocumentPRPaths    = 5
+)
+
+var documentPRPathBlock = regexp.MustCompile(
+	`(?m)^((?:<details>\n<summary>|### )[^\n]* \*\*Document\*\* - [^\n]+\n\n)` +
+		regexp.QuoteMeta(documentPRPathHeading) + `\n\n(?:- [^\n]+\n)*` +
+		`(?:\n(?:and [0-9]+` + regexp.QuoteMeta(documentPRPathMore) + `|` +
+		regexp.QuoteMeta(types.DocumentOffChangeOmission) + `)\n)?\n?`,
+)
+
+func withoutDocumentPRPaths(pipeline string) string {
+	if !strings.Contains(pipeline, documentPRPathHeading) {
+		return pipeline
+	}
+	return documentPRPathBlock.ReplaceAllString(pipeline, "${1}")
+}
+
 func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
 	preview := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)
 	if !preview.HasDocumentOffChangePaths() {
 		return
 	}
-	b.WriteString("Paths Document committed outside the submitted change\n\n")
-	for _, path := range preview.DocumentOffChangePaths {
+	paths := slices.Clone(preview.DocumentOffChangePaths)
+	slices.Sort(paths)
+	shown := min(len(paths), maxDocumentPRPaths)
+	b.WriteString(documentPRPathHeading + "\n\n")
+	for _, path := range paths[:shown] {
 		fmt.Fprintf(b, "- %s\n", renderDocumentPath(path, flavor))
 	}
 	if preview.DocumentOffChangeOmitted {
 		b.WriteString("\n" + types.DocumentOffChangeOmission + "\n")
+	} else if more := len(paths) - shown; more > 0 {
+		fmt.Fprintf(b, "\nand %d%s\n", more, documentPRPathMore)
 	}
 	b.WriteString("\n")
 }
