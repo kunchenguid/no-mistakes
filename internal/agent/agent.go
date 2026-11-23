@@ -327,6 +327,8 @@ type InvocationWorkload struct {
 // ACPRegistryOverrides maps acpx target names, including first-class alias
 // targets, to raw ACP agent commands.
 type Options struct {
+	// CursorModelOwner identifies the configuration field for safe diagnostics.
+	CursorModelOwner     string
 	ACPRegistryOverrides map[string]string
 	Environment          runenv.Overlay
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
@@ -1348,6 +1350,15 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	return NewWithOptions(name, bin, extraArgs, Options{})
 }
 
+// CursorModelConfigOwner names the correction field for the selected spelling.
+// Its value takes precedence over a profile inherited from the sibling alias.
+func CursorModelConfigOwner(name types.AgentName) string {
+	if name == types.AgentCursor {
+		return "agent_config.cursor.model"
+	}
+	return fmt.Sprintf("agent_config['%s'].model", name)
+}
+
 // NewWithOptions creates an agent by name with additional backend-specific options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
 	// Fail closed on a knob this harness cannot express. Config load performs
@@ -1359,7 +1370,11 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
+		owner := opts.CursorModelOwner
+		if target == "cursor" && owner == "" {
+			owner = CursorModelConfigOwner(name)
+		}
+		return &acpxAgent{configOwner: owner, bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	}
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
 	// still precede no-mistakes' managed flags in every adapter's argv. A knob

@@ -5,7 +5,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +37,31 @@ fi
 	return path
 }
 
+func TestCursorOmittedModelRunsWithoutCatalogSDK(t *testing.T) {
+	for _, name := range []types.AgentName{types.AgentCursor, "acp:cursor"} {
+		t.Run(string(name), func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "argv.txt")
+			t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
+			t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
+			a, err := NewWithOptions(name, writeStubAcpx(t, dir), nil, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			result, err := a.Run(context.Background(), RunOpts{CWD: dir, Prompt: "default model control flow"})
+			if err != nil || result == nil || result.Text != "cursor stub reply" {
+				t.Fatalf("default invocation: %+v %v", result, err)
+			}
+			for _, arg := range readStubAcpxArgv(t, argsFile) {
+				if arg == "--model" {
+					t.Fatal("omitted model became an explicit pin")
+				}
+			}
+		})
+	}
+}
+
 // TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides proves both
 // spellings of every first-class ACP alias drive a real acpx spawn with the
 // alias default raw command - no acp_registry_overrides entry configured.
@@ -44,9 +71,12 @@ func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 		agent   types.AgentName
 		target  string
 		command string
+		model   string
 	}{
 		{name: "cursor alias", agent: types.AgentCursor, target: "cursor", command: "cursor-agent acp"},
 		{name: "explicit acp:cursor target", agent: "acp:cursor", target: "cursor", command: "cursor-agent acp"},
+		{name: "cursor base pin", agent: types.AgentCursor, target: "cursor", command: "cursor-agent acp", model: "fixture-base"},
+		{name: "cursor parameterized pin", agent: "acp:cursor", target: "cursor", command: "cursor-agent acp", model: "fixture-model[mode=careful]"},
 		{name: "devin alias", agent: types.AgentDevin, target: "devin", command: "devin acp"},
 		{name: "explicit acp:devin target", agent: "acp:devin", target: "devin", command: "devin acp"},
 	} {
@@ -56,8 +86,11 @@ func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 			t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
 			t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
 			stub := writeStubAcpx(t, dir)
+			if tc.target == "cursor" {
+				stub = writeCursorStubAcpx(t)
+			}
 
-			a, err := New(tc.agent, stub, nil)
+			a, err := NewWithOptions(tc.agent, stub, nil, Options{Profile: agentcfg.Profile{Model: tc.model}})
 			if err != nil {
 				t.Fatalf("New(%q): %v", tc.agent, err)
 			}
@@ -72,7 +105,19 @@ func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 				t.Errorf("result text = %q, want stub acpx output", res.Text)
 			}
 
+			if tc.target == "cursor" {
+				raw, err := os.ReadFile(argsFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(string(raw), "exec\n") != 1 {
+					t.Fatal("expected exactly one model execution")
+				}
+			}
 			argv := readStubAcpxArgv(t, argsFile)
+			if tc.model != "" && !strings.Contains(strings.Join(argv, "\x00"), "--model\x00"+tc.model+"\x00") {
+				t.Fatalf("opaque model pin changed: %q", argv)
+			}
 			if len(argv) < 2 || argv[0] != "--agent" || argv[1] != tc.command {
 				t.Errorf("spawned argv = %q, want leading --agent %q", argv, tc.command)
 			}
@@ -291,26 +336,39 @@ printf 'acpx: unknown option --file\n' >&2
 // OutputTokens=0 - a fabricated zero rather than an unknown.
 func TestAcpxAgent_Run_FailedTurnEstimatesTheOutputItStreamed(t *testing.T) {
 	const streamed = "partial answer before acpx died"
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node required for the fake acpx process")
+	}
 
 	dir := t.TempDir()
-	stub := filepath.Join(dir, "acpx")
-	script := `#!/bin/sh
-cat > /dev/null
-printf '{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":1200}}}\n'
-printf '{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"` + streamed + `"}}}\n'
-exit 1
+	modelCounter := filepath.Join(dir, "model-turns")
+	argsFile := filepath.Join(dir, "model-args.json")
+	quoted := func(value string) string { data, _ := json.Marshal(value); return string(data) }
+	stub := filepath.Join(dir, "acpx.mjs")
+	script := `#!/usr/bin/env node
+import fs from 'node:fs';
+fs.appendFileSync(` + quoted(modelCounter) + `, 'model\n');
+fs.writeFileSync(` + quoted(argsFile) + `,JSON.stringify(process.argv.slice(2)));
+fs.readFileSync(0);
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'usage_update',input_tokens:1200}}}));
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',text:` + quoted(streamed) + `}}}));
+process.exitCode=1;
 `
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	a, err := New(types.AgentCursor, stub, nil)
+	a, err := NewWithOptions(types.AgentCursor, stub, nil, Options{ACPRegistryOverrides: map[string]string{"cursor": "synthetic-cursor --opaque"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	res, err := a.Run(context.Background(), RunOpts{Prompt: "review this change", CWD: dir})
 	if err == nil {
 		t.Fatal("expected the non-zero exit to fail the turn")
+	}
+	var preflight *CursorModelError
+	if errors.As(err, &preflight) {
+		t.Fatalf("usage fixture blocked by Cursor catalog preflight: status=%s; %v", preflight.Status, err)
 	}
 	if res == nil {
 		t.Fatal("a failed turn that reported usage must still return it")
@@ -321,4 +379,38 @@ exit 1
 	if want := estimateAcpxTokens(len(streamed)); res.Usage.OutputTokens != want {
 		t.Errorf("output tokens = %d, want the %d-token estimate of the text acpx streamed", res.Usage.OutputTokens, want)
 	}
+	data, err := os.ReadFile(modelCounter)
+	if err != nil || string(data) != "model\n" {
+		t.Fatalf("fixture invocation counter = %q, %v; want exactly one model turn", data, err)
+	}
+	var args []string
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range args {
+		if arg == "--model" {
+			t.Fatal("omitted model became a fabricated explicit pin")
+		}
+	}
+}
+
+func writeCursorStubAcpx(t *testing.T) string {
+	a, dir := cursorCatalogFixture(t, `export async function inspectAgentModels(){return {availableModelIds:['fixture-base','fixture-model[mode=careful]'],currentModelId:'fixture-base'}}`)
+	registry := `export function createAgentRegistry(){return {inspect:()=>({launch:{kind:'installed',argv:['synthetic-cursor','acp']}})}}`
+	cli := `#!/usr/bin/env node
+import fs from 'node:fs';
+fs.appendFileSync(process.env.NM_TEST_ACPX_ARGS_FILE,process.argv.slice(2).join('\n')+'\n');
+fs.writeFileSync(process.env.NM_TEST_ACPX_STDIN_FILE,fs.readFileSync(0));
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',text:'cursor stub reply'}}}));
+`
+	for name, body := range map[string]string{"cli.js": cli, "registry.js": registry} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return a.bin
 }

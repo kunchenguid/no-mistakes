@@ -283,6 +283,7 @@ func configureRecursiveIncidentAdapter(t *testing.T, h *Harness, agentName, exec
 			t.Fatalf("symlink cursor agent: %v", err)
 		}
 	}
+	acpxPath := filepath.Join(h.BinDir, executable)
 	config := fmt.Sprintf(`agent: %s
 log_level: debug
 acpx_path: %s
@@ -293,7 +294,7 @@ auto_fix:
   review: 0
   document: 0
   ci: 0
-`, agentName, filepath.Join(h.BinDir, executable))
+`, agentName, acpxPath)
 	if err := os.WriteFile(filepath.Join(h.NMHome, "config.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatalf("write %s config: %v", agentName, err)
 	}

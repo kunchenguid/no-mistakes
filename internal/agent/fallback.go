@@ -269,6 +269,10 @@ func (a *fallbackAgent) Close() error {
 }
 
 func isAgentUnavailableError(err error) bool {
+	var refusal *CursorModelError
+	if errors.As(err, &refusal) {
+		return false
+	}
 	if err == nil || IsStructuredOutputRejected(err) {
 		return false
 	}
