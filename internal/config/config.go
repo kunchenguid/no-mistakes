@@ -271,6 +271,9 @@ type GlobalConfig struct {
 	// remote host/owner/repository identities.
 	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
 	AutoFix             AutoFixRaw
+	// AutoFixCeiling caps the resolved core-step auto_fix budgets after the
+	// repository merge. Global-only; see AutoFixCeiling.
+	AutoFixCeiling AutoFixCeiling
 	// CI is the operator's own CI-step floor. It is the only place the rerun
 	// budget can be set for a repository whose default branch this machine's
 	// user does not control (the common case when contributing to someone
@@ -330,6 +333,7 @@ type globalConfigRaw struct {
 	EvidenceDir               string                     `yaml:"evidence_dir"`
 	SessionReuse              *bool                      `yaml:"session_reuse"`
 	AutoFix                   AutoFixRaw                 `yaml:"auto_fix"`
+	AutoFixCeiling            AutoFixCeiling             `yaml:"auto_fix_ceiling"`
 	CI                        CIRaw                      `yaml:"ci"`
 	Rebase                    RebaseRaw                  `yaml:"rebase"`
 	Commit                    GlobalCommitRaw            `yaml:"commit"`
@@ -394,6 +398,9 @@ type RepositoryOverride struct {
 	Document     DocumentRaw                `yaml:"document"`
 	Test         RepositoryTestRaw          `yaml:"test"`
 	ReviewAgents map[string]ReviewAgent     `yaml:"review_agents"`
+	// AutoFixCeiling replaces the global auto_fix_ceiling per field for this
+	// repository only.
+	AutoFixCeiling AutoFixCeiling `yaml:"auto_fix_ceiling"`
 }
 
 // RepositoryTestRaw is the test block a repository_overrides entry may set:
@@ -1050,6 +1057,9 @@ type Config struct {
 	Review         Review
 	PR             PR
 	ForgeProfiles  ForgeProfiles
+	// AutoFixCapped holds, per step, the auto_fix limit the operator's
+	// auto_fix_ceiling lowered AutoFix from; empty when no ceiling applied.
+	AutoFixCapped map[types.StepName]int
 	// ProviderPlugins is copied from global config only (see ProviderPlugin);
 	// no repository layer can add or change an entry.
 	ProviderPlugins ProviderPlugins
@@ -1878,6 +1888,12 @@ auto_fix:
   review: 0
   document: 3
   ci: 3
+
+# Optional cap on the auto_fix values above that a repository's .no-mistakes.yaml,
+# including a pushed branch's copy, cannot raise. Steps left out are uncapped.
+# A repository_overrides entry can set its own auto_fix_ceiling for one repository.
+# auto_fix_ceiling:
+#   ci: 0
 
 # How many times the CI step may re-run a single check the provider reported as
 # cancelled before that check reaches an approval gate instead of the fix agent.
@@ -3136,6 +3152,10 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
 	cfg.AutoFix = raw.AutoFix
+	if err := validateAutoFixCeiling(raw.AutoFixCeiling); err != nil {
+		return nil, err
+	}
+	cfg.AutoFixCeiling = raw.AutoFixCeiling
 	cfg.CI = raw.CI
 	cfg.Rebase = raw.Rebase
 	cfg.Commit = raw.Commit
@@ -3312,8 +3332,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	// keys, so the key is probed by name and refused here - the same shape
 	// LoadGlobalFromBytes uses to refuse the repository-only auto_fix.gates.
 	var globalOnly struct {
-		QuotaRouting yaml.Node `yaml:"quota_routing"`
-		EvidenceDir  yaml.Node `yaml:"evidence_dir"`
+		QuotaRouting   yaml.Node `yaml:"quota_routing"`
+		EvidenceDir    yaml.Node `yaml:"evidence_dir"`
+		AutoFixCeiling yaml.Node `yaml:"auto_fix_ceiling"`
 	}
 	if err := yaml.Unmarshal(data, &globalOnly); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
@@ -3323,6 +3344,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	}
 	if !globalOnly.EvidenceDir.IsZero() {
 		return nil, fmt.Errorf("evidence_dir is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
+	}
+	if !globalOnly.AutoFixCeiling.IsZero() {
+		return nil, fmt.Errorf("auto_fix_ceiling is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
 	}
 	cfg := &RepoConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -4308,6 +4332,8 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 	// Gate budgets are repository-only, unlike the core step budgets.
 	af.Gates = maps.Clone(repo.AutoFix.Gates)
+	// Last, so neither the pushed nor the trusted repository copy can raise it.
+	autoFixCapped := applyAutoFixCeiling(&af, global.AutoFixCeiling, override)
 
 	ci := ciDefaults()
 	// The operator's global value is a machine-wide floor they can always set;
@@ -4459,6 +4485,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		IgnorePatterns: repo.IgnorePatterns,
 		ProtectedPaths: repo.ProtectedPaths,
 		AutoFix:        af,
+		AutoFixCapped:  autoFixCapped,
 		CI:             ci,
 		Rebase:         rebase,
 		Push:           copyPush(repo.Push),

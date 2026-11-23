@@ -806,6 +806,7 @@ Override auto-fix attempt limits for specific steps. Core-step fields not set he
 | `auto_fix.gates.<name>` | Non-negative `int` | `0`, trusted default branch only |
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
+The operator's global [`auto_fix_ceiling`](/no-mistakes/reference/global-config/#auto_fix_ceiling) can lower any core-step value set here; this file cannot raise a step above it.
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
 For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
 

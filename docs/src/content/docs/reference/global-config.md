@@ -82,6 +82,8 @@ auto_fix:
   lint: 3
   ci: 3
 
+auto_fix_ceiling: {} # e.g. ci: 0
+
 ci:
   rerun_transient: 0
   revalidate_repairs: false
@@ -1079,7 +1081,31 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 
 Legacy alias: `auto_fix.babysit`.
 
-These are global defaults. Per-repo config can override individual steps.
+These are global defaults. Per-repo config can override individual steps, up to any [`auto_fix_ceiling`](#auto_fix_ceiling) you set.
+
+### auto_fix_ceiling
+
+Optional upper bound on the core-step `auto_fix` budgets that repository config cannot raise.
+A repository's `.no-mistakes.yaml`, including a pushed branch's copy, sets `auto_fix`, so without a ceiling a branch can raise its own repair budget on a repository you do not own, for example to keep force-publishing CI conflict repairs.
+
+```yaml
+auto_fix_ceiling:
+  ci: 0
+```
+
+|      |          |
+| ---- | -------- |
+| Type | `object` |
+
+Fields are `lint`, `test`, `review`, `document`, `ci`, and `rebase`, each a non-negative `int`; a negative value fails config loading.
+A step you leave out has no ceiling, and with no `auto_fix_ceiling` at all every budget comes from `auto_fix` alone.
+Each step's budget is first resolved from the defaults, global `auto_fix`, and the repository's `auto_fix`, then lowered to the ceiling if it is higher: with `ci: 2`, a repository asking for `1` gets `1` and one asking for `3` gets `2`.
+A ceiling of `0` disables that step's automatic fix rounds, so its findings park for you as they do with `auto_fix.<step>: 0`; no step is skipped.
+Gate budgets (`auto_fix.gates`) are not capped: they already come only from the trusted default branch.
+
+When the ceiling lowers a step's budget, the step log records it, for example `operator auto_fix_ceiling lowered the ci auto-fix limit from 3 to 0`, and the step's recorded auto-fix limit is the capped value.
+A matching [`repository_overrides`](#machine-local-auto-fix-ceiling) entry can set a different ceiling for one repository.
+A repository's `.no-mistakes.yaml` cannot set `auto_fix_ceiling`; config parsing refuses it there.
 
 ### ci.rerun_transient
 
@@ -1382,7 +1408,7 @@ rendering behavior and provider caveats. Invalid modes fail config loading.
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine add checks, lower command scheduling priority, add review, documentation, and live-validation guidance, choose review-loop agents, or apply ticket conventions without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, add review, documentation, and live-validation guidance, choose review-loop agents, cap auto-fix budgets, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -1476,6 +1502,22 @@ Each role the entry names replaces the global entry for that role whole, includi
 Entries are validated at load with the same rules and messages as the global block, prefixed with the override's normalized remote.
 The entry is matched against the registered repository's remote, so a pushed branch can never select it, and the repository's own `.no-mistakes.yaml` still cannot set `review_agents`.
 For run-pin precedence and eligibility, see [per-run Pi profiles](#per-run-pi-profiles) and [per-run reviewer profiles](#per-run-reviewer-profiles).
+
+#### Machine-local auto-fix ceiling
+
+A matching entry's `auto_fix_ceiling` replaces the global [`auto_fix_ceiling`](#auto_fix_ceiling) field by field for that one repository; fields it omits keep the global ceiling.
+
+```yaml
+auto_fix_ceiling:
+  ci: 0
+repository_overrides:
+  https://github.com/you/own-project.git:
+    auto_fix_ceiling:
+      ci: 3
+```
+
+Above, CI repairs are off on every repository except `you/own-project`, where up to 3 are allowed if its `auto_fix.ci` asks for them.
+The entry accepts the same fields and validation as the global key.
 
 #### Machine-local commands
 

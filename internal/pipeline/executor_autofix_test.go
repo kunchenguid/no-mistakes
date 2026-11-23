@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,37 @@ func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {
 	}
 	if steps[0].AutoFixLimit == nil || *steps[0].AutoFixLimit != 2 {
 		t.Fatalf("auto-fix limit = %v, want 2", steps[0].AutoFixLimit)
+	}
+}
+
+func TestExecutor_LogsAutoFixCeiling(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{
+		AutoFix:       config.AutoFix{Test: 1},
+		AutoFixCapped: map[types.StepName]int{types.StepTest: 3},
+	}
+	steps := []Step{
+		&adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) { return &StepOutcome{}, nil }},
+		&adaptiveCallStep{name: types.StepLint, fn: func(*StepContext) (*StepOutcome, error) { return &StepOutcome{}, nil }},
+	}
+
+	if err := NewExecutor(database, p, cfg, nil, steps, nil).Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	testLog, err := os.ReadFile(filepath.Join(p.RunLogDir(run.ID), "test.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "auto_fix_ceiling lowered the test auto-fix limit from 3 to 1"; !strings.Contains(string(testLog), want) {
+		t.Fatalf("test.log = %q, want it to record %q", testLog, want)
+	}
+	lintLog, err := os.ReadFile(filepath.Join(p.RunLogDir(run.ID), "lint.log"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(lintLog), "auto_fix_ceiling") {
+		t.Fatalf("lint.log = %q, want no ceiling line for an uncapped step", lintLog)
 	}
 }
 
