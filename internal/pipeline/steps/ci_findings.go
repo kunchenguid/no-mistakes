@@ -555,7 +555,7 @@ func (s *CIStep) earlyReviewBotFindings(sctx *pipeline.StepContext, host scm.Hos
 		}
 	}
 	sort.Strings(failing)
-	return ciObservationFindings(ciIssues{
+	findings := ciObservationFindings(ciIssues{
 		provider:           host.Provider(),
 		requiredReviews:    requiredReviews(sctx),
 		checks:             completed,
@@ -564,7 +564,61 @@ func (s *CIStep) earlyReviewBotFindings(sctx *pipeline.StepContext, host scm.Hos
 		botComments:        comments,
 		greenBots:          reviewBotCommentsAlways(sctx),
 		registeredBotsOnly: true,
-	}), nil
+	})
+	open := findings.Items[:0:0]
+	for _, item := range findings.Items {
+		if !s.earlyDismissed[earlyFindingKey(item)] {
+			open = append(open, item)
+		}
+	}
+	findings.Items = open
+	return findings, nil
+}
+
+func earlyFindingKey(item Finding) string {
+	return fmt.Sprintf("%s\x00%s\x00%d\x00%s", item.Check, item.File, item.Line, item.Description)
+}
+
+// ContinueAfterApproval keeps the CI step monitoring when an operator approves
+// or skips an early review-bot round while checks are still running: the
+// answer dismisses those comments for the early observation only, and a check
+// that turns red later still gets its own round. Any gate that is not made of
+// review-bot findings alone, or whose live checks cannot be read or have all
+// completed, completes as an ordinary approve or skip does.
+func (s *CIStep) ContinueAfterApproval(sctx *pipeline.StepContext, findingsJSON string) bool {
+	if !reviewBotCommentsEarly(sctx) || sctx.Run == nil || sctx.Run.PRURL == nil {
+		return false
+	}
+	parsed, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil || len(parsed.Items) == 0 {
+		return false
+	}
+	for _, item := range parsed.Items {
+		if item.Category != types.FindingCategoryCIReviewBot {
+			return false
+		}
+	}
+	host, _ := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil || host.Available(sctx.Ctx) != nil {
+		return false
+	}
+	prURL := strings.TrimSpace(*sctx.Run.PRURL)
+	prNumber, err := scm.ExtractPRNumber(prURL)
+	if err != nil {
+		return false
+	}
+	pr := &scm.PR{Number: prNumber, URL: prURL, HeadSHA: sctx.Run.HeadSHA}
+	checks, _, moved, err := getCIChecks(sctx.Ctx, host, pr)
+	if err != nil || moved || !hasExecutingPendingChecks(checks) {
+		return false
+	}
+	if s.earlyDismissed == nil {
+		s.earlyDismissed = map[string]bool{}
+	}
+	for _, item := range parsed.Items {
+		s.earlyDismissed[earlyFindingKey(item)] = true
+	}
+	return true
 }
 
 // reviewBotCommentsReadFailureOutcome parks the step when, under

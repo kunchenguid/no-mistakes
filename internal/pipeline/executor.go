@@ -734,7 +734,10 @@ type stepExecutionState struct {
 	// gate parked as fix_review and the answer round has to keep that context or
 	// the two answer paths disagree about the step's durable status. That is
 	// what skipFixExecution above is for.
-	answering              bool
+	answering bool
+	// monitoring re-enters a step whose parked gate was answered with approve
+	// or skip while the step is still observing (ApprovalContinuer).
+	monitoring             bool
 	completingCoverage     bool
 	coverageRound          *db.StepRound
 	previousFindings       string
@@ -946,6 +949,34 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		approvalFields["selected_findings_count"] = selectedCount
 	}
 	telemetry.Track("approval", approvalFields)
+	if (response.action == types.ActionApprove || response.action == types.ActionSkip) && continuesAfterApproval(gate.step, reconcileCtx, gate.findings) {
+		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
+		if dbErr := e.db.UpdateStepStatus(gate.stepResult.ID, types.StepStatusRunning); dbErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("return recovered step %s to running: %w", gate.step.Name(), dbErr), ctx)
+		}
+		e.emitStepEvent(ipc.EventStepStarted, run, repo, gate.step.Name(), string(types.StepStatusRunning))
+		skipRemaining, restartFrom, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
+			roundNum:        gate.round,
+			autoFixAttempts: gate.autoFixes,
+			executionMS:     duration,
+			currentRoundID:  gate.lastRoundID,
+			monitoring:      true,
+		})
+		if err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
+		if skipRemaining {
+			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+		}
+		if restartFrom != "" {
+			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
+			if indexErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", gate.step.Name(), restartFrom), ctx)
+			}
+			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+		}
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+	}
 	switch response.action {
 	case types.ActionApprove:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
@@ -1615,6 +1646,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// round - which IsFixRound then reads as one.
 	case state.answering:
 		nextTrigger = "answer"
+	case state.monitoring:
+		nextTrigger = "monitor"
 	case sctx.Fixing:
 		nextTrigger = "auto_fix"
 	case state.retrying:
@@ -1946,6 +1979,23 @@ rounds:
 				approvalFields["selected_findings_count"] = selectedCount
 			}
 			telemetry.Track("approval", approvalFields)
+
+			if (response.action == types.ActionApprove || response.action == types.ActionSkip) && continuesAfterApproval(step, sctx, effectiveFindings) {
+				e.recordDeclinedRound(currentRoundID, effectiveFindings, stepName, roundNum)
+				phaseStart = time.Now()
+				writeLog(fmt.Sprintf("%s answered; the step keeps monitoring after round %d", response.action, roundNum))
+				if dbErr := markRunning(); dbErr != nil {
+					slog.Warn("failed to return step status to running", "step", stepName, "error", dbErr)
+				}
+				sctx.Fixing = false
+				sctx.AutoFixRound = false
+				sctx.FinalizingAnswers = false
+				sctx.SkipFixExecution = false
+				sctx.PreviousFindings = ""
+				sctx.DeferredFindings = ""
+				nextTrigger = "monitor"
+				continue rounds
+			}
 
 			switch response.action {
 			case types.ActionApprove:
@@ -2330,6 +2380,11 @@ func restoreRecordedNotes(recorded, stated, other map[string]string) map[string]
 //
 // Best effort by design. This is advisory prompt context for later steps, so a
 // failed write degrades to today's behavior and must never fail the run.
+func continuesAfterApproval(step Step, sctx *StepContext, findingsJSON string) bool {
+	continuer, ok := step.(ApprovalContinuer)
+	return ok && continuer.ContinueAfterApproval(sctx, findingsJSON)
+}
+
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
 	if e == nil || e.db == nil || roundID == "" {
 		return

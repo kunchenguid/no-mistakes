@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -227,5 +228,70 @@ func TestCIObservationFindings_RegisteredBotsOnlyDropsABotWithoutACheck(t *testi
 	issues.registeredBotsOnly = true
 	if got := ciObservationFindings(issues); len(got.Items) != 0 {
 		t.Fatalf("findings = %+v, want none: the bot has no check on this head", got.Items)
+	}
+}
+
+func earlyParkedStep(t *testing.T, checks string) (*CIStep, *pipeline.StepContext, *pipeline.StepOutcome, *int) {
+	t.Helper()
+	env := append(fakeCIGH(t, "OPEN", checks), greenGreptileCommentJSON)
+	sctx, _, _, _, _ := newGreenReviewBotContext(t, config.CIReviewBotCommentsAlways, env)
+	sctx.Config.CI.ReviewBotCommentsEarly = true
+	polls := new(int)
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		*polls++
+		return errors.New(errStopPollingEnd)
+	}}
+	outcome, err := step.Execute(sctx)
+	if err != nil || outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, err = %v, want the early park", outcome, err)
+	}
+	return step, sctx, outcome, polls
+}
+
+// Approving or skipping the early round while a check still runs dismisses
+// only those comments: the step keeps monitoring, and the check that turns red
+// later gets its own round.
+func TestCIStep_ReviewBotEarlyApprovalKeepsMonitoringForALaterRedCheck(t *testing.T) {
+	t.Parallel()
+	step, sctx, parked, polls := earlyParkedStep(t, checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed))
+	if !step.ContinueAfterApproval(sctx, parked.Findings) {
+		t.Fatal("ContinueAfterApproval = false, want the step to keep monitoring while a check runs")
+	}
+
+	outcome, err := step.Execute(sctx)
+	if outcome != nil || err == nil || *polls != 1 {
+		t.Fatalf("after approval: outcome = %#v, err = %v, polls = %d, want the monitor to keep waiting without re-parking on the dismissed comment", outcome, err, *polls)
+	}
+
+	sctx.Env = append(fakeCIGH(t, "OPEN", checksJSON(slowCheckFailed, earlyBuildPassed, greptilePassed)), greenGreptileCommentJSON)
+	step.waitForNextPoll = func(context.Context, time.Duration) error { return nil }
+	outcome, err = step.Execute(sctx)
+	if err != nil || outcome == nil {
+		t.Fatalf("outcome = %#v, err = %v, want the red check's own round", outcome, err)
+	}
+	parsed, perr := types.ParseFindingsJSON(outcome.Findings)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	var sawRedCheck bool
+	for _, item := range parsed.Items {
+		sawRedCheck = sawRedCheck || item.Category == types.FindingCategoryCICheck && item.Check == "test (windows-core)"
+	}
+	if !sawRedCheck {
+		t.Fatalf("findings = %+v, want a finding for the check that failed after the approval", parsed.Items)
+	}
+}
+
+// Once every check has completed there is nothing left to monitor, so the
+// answer completes the step as it always did.
+func TestCIStep_ReviewBotEarlyApprovalCompletesWhenNoCheckIsRunning(t *testing.T) {
+	t.Parallel()
+	step, sctx, parked, _ := earlyParkedStep(t, checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed))
+	sctx.Env = append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, greptilePassed)), greenGreptileCommentJSON)
+	if step.ContinueAfterApproval(sctx, parked.Findings) {
+		t.Fatal("ContinueAfterApproval = true with every check completed, want an ordinary approval")
+	}
+	if step.ContinueAfterApproval(sctx, `{"findings":[{"id":"x","severity":"error","category":"ci-check","description":"red"}]}`) {
+		t.Fatal("ContinueAfterApproval = true for a gate that is not review-bot findings only")
 	}
 }

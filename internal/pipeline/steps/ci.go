@@ -68,6 +68,7 @@ type CIStep struct {
 	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
 	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
+	earlyDismissed       map[string]bool           // early review-bot findings an operator approved or skipped while checks still ran, so the early observation never re-parks on them
 	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
 	pendingRepairPublish bool
 	fixAgentCrashes      int

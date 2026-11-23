@@ -270,6 +270,18 @@ type ApprovalGateResumer interface {
 	ResumeApprovalGate(sctx *StepContext, findingsJSON string) (action types.ApprovalAction, resume bool, err error)
 }
 
+// ApprovalContinuer is implemented by a step whose parked gate can be answered
+// with approve or skip while the step's own source of truth is still moving:
+// the answer dismisses the findings on the gate, and the step goes back to
+// monitoring instead of completing. The CI step uses it for an early
+// review-bot round, so approving the bot's comments never ends the monitoring
+// of checks that are still running. It must be read-only, fail closed (false
+// completes the step as an ordinary approve or skip does), and may record the
+// dismissal on the step before it returns true.
+type ApprovalContinuer interface {
+	ContinueAfterApproval(sctx *StepContext, findingsJSON string) bool
+}
+
 // ApprovalOverrideVerifier preserves unresolved conditions when ActionApprove
 // completes a step. CI reads live checks; Test reads persisted command evidence.
 // The executor calls it when an approve response arrives at a parked gate (live
