@@ -738,10 +738,13 @@ func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebase-superset recovery escalated instead of returning custody: %v\n%s", err, recoverOut)
 	}
-	for _, want := range []string{"recovered: true", "state: custody_returned", "changed: true", "no-mistakes axi run --intent"} {
+	for _, want := range []string{"recovered: true", "state: custody_returned", "changed: true", "code: check_private_mirror", "no-mistakes axi sync --check"} {
 		if !strings.Contains(recoverOut, want) {
 			t.Errorf("recover output missing %q:\n%s", want, recoverOut)
 		}
+	}
+	if strings.Contains(recoverOut, "code: run_pipeline") {
+		t.Errorf("recover offered run_pipeline before the gate lane was checked:\n%s", recoverOut)
 	}
 	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
 		t.Fatalf("operator HEAD after recovery = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
@@ -765,6 +768,16 @@ func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
 	localAnchor := "refs/no-mistakes/recover-local/" + run.ID
 	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", localAnchor); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
 		t.Fatalf("pre-recovery anchor %s = %s (err %v), want submitted %s", localAnchor, strings.TrimSpace(string(got)), gitErr, submitted)
+	}
+
+	checkOut, err := h.RunInDir(operator, "axi", "sync", "--check")
+	if err != nil {
+		t.Fatalf("sync --check on the adopted rebased head: %v\n%s", err, checkOut)
+	}
+	for _, want := range []string{"state: custody_returned", "safety: custody_returned", "code: run_pipeline", "no-mistakes axi run --intent"} {
+		if !strings.Contains(checkOut, want) {
+			t.Errorf("sync --check output missing %q:\n%s", want, checkOut)
+		}
 	}
 
 	// Custody is back: a fresh run starts cleanly on the adopted head.
