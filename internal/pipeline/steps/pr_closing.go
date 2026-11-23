@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
@@ -451,7 +452,24 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 // Issues section last, reserving its room up front so body-limit truncation
 // sheds generated evidence rather than a closing reference.
 func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+	return assembleDraftPRBodyWithPreview(sctx, whatChanged, riskLine, testingMD, prBodyVariants{full: pipelineMD}, evidenceMD, bodyLimit, provider)
+}
+
+func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipeline prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) string {
 	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
+	pipelineMD := pipeline.full
+	if pipeline.withoutDocumentPreview != "" {
+		// Try both complete, redacted sizes before the ordinary policy drops
+		// testing evidence or truncates content. Redaction can change length.
+		for _, variant := range []string{pipeline.full, pipeline.withoutDocumentPreview} {
+			body := appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, variant, sctx, provider, math.MaxInt), section)
+			redacted := redactPRContent(prContent{Body: body}, provider, sctx.WorkDir, nmWorktreesRoot()).Body
+			if validateOwnedPRBudget(redacted, bodyLimit) == nil {
+				return body
+			}
+		}
+		pipelineMD = pipeline.withoutDocumentPreview
+	}
 	reserve := 0
 	if section != "" {
 		reserve = len("\n\n" + section)

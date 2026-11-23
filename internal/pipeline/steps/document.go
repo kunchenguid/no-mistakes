@@ -120,7 +120,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// Skip entirely when nothing the agent would document has changed. No
 	// lint result is stashed, so the lint step falls back to its own pass -
 	// neither duty is ever silently skipped.
-	changedFiles, err := documentDiffPaths(sctx, baseSHA+".."+sctx.Run.HeadSHA, true)
+	changedFiles, err := documentDiffPaths(sctx, baseSHA+".."+sctx.Run.HeadSHA, false)
 	if err != nil {
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
@@ -133,7 +133,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return outcome, nil
 	}
 	submittedRange := documentSubmittedRange(sctx, baseSHA)
-	submittedPaths, err := documentDiffPaths(sctx, submittedRange, false)
+	submittedPaths, err := documentDiffPaths(sctx, submittedRange, true)
 	if err != nil {
 		return nil, fmt.Errorf("get submitted changed paths for Document: %w", err)
 	}
@@ -191,6 +191,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return nil, err
 	}
 	changesApplied := committed || sctx.Run.HeadSHA != headBefore
+	// The commit is independent of the analyzer verdict. Keep its path
+	// evidence in the step log even if the structured output fails validation.
+	paths := append(previous.DocumentOffChangePaths, documentOffChangePaths(sctx, submittedPaths, headBefore)...)
 
 	// Without trustworthy structured output we cannot confirm the agent
 	// resolved every gap. Fail the step rather than creating an approval gate:
@@ -217,7 +220,6 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		}
 	}
 
-	paths := append(previous.DocumentOffChangePaths, documentOffChangePaths(sctx, submittedPaths, headBefore)...)
 	slices.Sort(paths)
 	docFindings.DocumentOffChangePaths, docFindings.DocumentOffChangeOmitted = types.DocumentOffChangePreview(slices.Compact(paths))
 	docFindings.DocumentOffChangeOmitted = docFindings.DocumentOffChangeOmitted || previous.DocumentOffChangeOmitted
@@ -268,7 +270,7 @@ func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePa
 		submission.WriteString(line)
 	}
 	if omitted {
-		fmt.Fprintf(&submission, "More paths omitted. From the repository root, read the complete NUL-delimited list with `git %s`.\n", strings.Join(documentPathDiffArgs(submittedRange, false), " "))
+		fmt.Fprintf(&submission, "More paths omitted. From the repository root, read the complete NUL-delimited list with `git %s`.\n", strings.Join(documentPathDiffArgs(submittedRange, true), " "))
 	}
 	if len(submittedPaths) == 0 {
 		submission.WriteString("(none)\n")
@@ -362,20 +364,22 @@ func documentSubmittedRange(sctx *pipeline.StepContext, baseSHA string) string {
 	return baseSHA + separator + headSHA
 }
 
-func documentDiffPaths(sctx *pipeline.StepContext, revisionRange string, detectRenames bool) ([]string, error) {
-	raw, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, documentPathDiffArgs(revisionRange, detectRenames)...)
+func documentDiffPaths(sctx *pipeline.StepContext, revisionRange string, inventory bool) ([]string, error) {
+	raw, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, documentPathDiffArgs(revisionRange, inventory)...)
 	if err != nil {
 		return nil, err
 	}
 	return changedPathList(string(raw)), nil
 }
 
-func documentPathDiffArgs(revisionRange string, detectRenames bool) []string {
-	args := []string{"diff", "--name-only", "-z"}
-	if !detectRenames {
-		args = append(args, "--no-renames")
+func documentPathDiffArgs(revisionRange string, inventory bool) []string {
+	args := []string{"diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv"}
+	// The launch check keeps Git's normal rename and submodule handling.
+	// A complete inventory includes both rename sides and all gitlinks.
+	if inventory {
+		args = append(args, "--no-renames", "--ignore-submodules=none")
 	}
-	return append(args, "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", revisionRange, "--")
+	return append(args, revisionRange, "--")
 }
 
 func previousDocumentEdits(sctx *pipeline.StepContext) types.Findings {
@@ -393,7 +397,7 @@ func documentOffChangePaths(sctx *pipeline.StepContext, submittedPaths []string,
 	if headBefore == sctx.Run.HeadSHA {
 		return nil
 	}
-	edited, err := documentDiffPaths(sctx, headBefore+".."+sctx.Run.HeadSHA, false)
+	edited, err := documentDiffPaths(sctx, headBefore+".."+sctx.Run.HeadSHA, true)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("could not list Document edit paths: %v", err))
 		return nil

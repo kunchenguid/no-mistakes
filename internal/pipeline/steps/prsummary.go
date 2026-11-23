@@ -130,6 +130,10 @@ type pipelineAttestationPolicy struct {
 }
 
 func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy) (string, string) {
+	return buildPipelineSummaryWithPreview(steps, rounds, headSHA, provider, policy, true)
+}
+
+func buildPipelineSummaryWithPreview(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy, documentPreview bool) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
@@ -142,7 +146,7 @@ func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.Ste
 			continue
 		}
 		stepRounds := rounds[sr.ID]
-		line, detail := buildStepEntry(sr, stepRounds, flavor)
+		line, detail := buildStepEntryWithPreview(sr, stepRounds, flavor, documentPreview)
 		if line != "" && detail != "" {
 			// Step details quote agent text (findings, fix summaries, tested
 			// commands). A foreign attestation comment in one lands after the
@@ -1192,9 +1196,13 @@ func formatTestingDuration(ms int64) string {
 }
 
 func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) (statusLine, detailBlock string) {
+	return buildStepEntryWithPreview(sr, rounds, flavor, true)
+}
+
+func buildStepEntryWithPreview(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, documentPreview bool) (statusLine, detailBlock string) {
 	name := stepDisplayName(sr.StepName)
 	buildDetail := func(line string) (string, string) {
-		return line, buildStepDetails(line, sr, rounds, flavor)
+		return line, buildStepDetails(line, sr, rounds, flavor, documentPreview)
 	}
 
 	switch sr.Status {
@@ -1447,9 +1455,9 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // round is shown as the review state observed at its end; a fix round is
 // prefixed with its recorded outcome so a reader can follow the result without
 // mentally replaying rounds.
-func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
+func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, documentPreview bool) string {
 	var inner strings.Builder
-	if sr.StepName == types.StepDocument {
+	if documentPreview && sr.StepName == types.StepDocument {
 		writeDocumentOffChangePaths(&inner, sr, rounds, flavor)
 	}
 	// A skipped step whose rounds recorded no findings never checked

@@ -197,40 +197,49 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	rendered, err := s.buildPRAppendixVariants(sctx, provider)
+	return rendered.full, err
+}
+
+func (s *PRStep) buildPRAppendixVariants(sctx *pipeline.StepContext, provider scm.Provider) (prBodyVariants, error) {
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
-		return "", fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
+		return prBodyVariants{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}
 	evidence, err := s.recordedPREvidence(sctx, provider)
 	if err != nil {
-		return "", err
+		return prBodyVariants{}, err
 	}
-	parts := []string{}
-	if intent := publicPRIntent(sctx); intent != "" {
-		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
-	}
-	if evidence != "" {
-		parts = append(parts, evidence)
-	}
-	return strings.Join(parts, "\n\n"), nil
+	intent := publicPRIntent(sctx)
+	return evidence.render(func(markdown string) string {
+		var parts []string
+		if intent != "" {
+			parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
+		}
+		if markdown != "" {
+			parts = append(parts, markdown)
+		}
+		return strings.Join(parts, "\n\n")
+	}), nil
 }
 
-func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (prBodyVariants, error) {
 	pipelineMD, risk, testing, evidence := s.buildPipelineSectionFor(sctx, provider, true)
-	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
-		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
+	if strings.Count(pipelineMD.full, pipelineAttestationCommentPrefix) != 1 {
+		return prBodyVariants{}, fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
 	}
-	return joinBlocks(appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), neutralizeAttestationMarkers(provider, evidence)), nil
+	return pipelineMD.render(func(markdown string) string {
+		return joinBlocks(appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, markdown, provider), neutralizeAttestationMarkers(provider, evidence))
+	}), nil
 }
 
 // publishKeptDraft stores the ordinary narrative above the full owned appendix
 // (Intent included), whichever drafting path produced the narrative.
 // A later update refreshes that appendix through the template preservation path.
 func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, provider scm.Provider, title, narrative string, bodyLimit int) (prContent, error) {
-	evidence, err := s.buildPRAppendix(sctx, provider)
+	evidence, err := s.buildPRAppendixVariants(sctx, provider)
 	if err != nil {
 		return prContent{}, err
 	}
 	narrative = neutralizeAttestationMarkers(resolvedProviderForBody(sctx), stripGeneratedSections(narrative))
-	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
-	return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
+	return composeOwnedPRContentWithPreview(prOwnedBody{before: narrative}, provider, title, evidence, issuesSection(sctx, narrative), bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }

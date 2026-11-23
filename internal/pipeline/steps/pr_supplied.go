@@ -152,13 +152,12 @@ func (s *PRStep) buildSuppliedPRContent(sctx *pipeline.StepContext, branch, base
 			}
 		}
 	}
-	appendix, err := s.buildPRAppendix(sctx, provider)
+	appendix, err := s.buildPRAppendixVariants(sctx, provider)
 	if err != nil {
 		return prContent{}, err
 	}
 	narrative := neutralizeAttestationMarkers(provider, body)
-	appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
-	return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, title, appendix, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
+	return composeOwnedPRContentWithPreview(prOwnedBody{before: narrative}, provider, title, appendix, issuesSection(sctx, narrative), bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }
 
 // applySuppliedPRTitle replaces a drafted title with the supplied one. The

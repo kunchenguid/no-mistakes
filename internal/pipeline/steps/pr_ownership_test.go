@@ -2,12 +2,14 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -48,6 +50,74 @@ func TestComposeOwnedPRContent_RefusesOversizedQuotedDocumentReport(t *testing.T
 	parts.before += strings.Repeat("a", limit+1-scm.PRBodyLen(full.Body))
 	if _, err := composeOwnedPRContent(parts, provider, "", appendix, limit, "", ""); err == nil || !strings.Contains(err.Error(), "exceeds provider budget") {
 		t.Fatalf("expected the owned budget refusal for quoted Intent, got %v", err)
+	}
+}
+
+func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		provider scm.Provider
+		limit    int
+		budget   int
+		owned    bool
+	}{
+		{"draft/provider", scm.ProviderAzureDevOps, 4000, 4000, false},
+		{"draft/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, false},
+		{"owned/provider", scm.ProviderAzureDevOps, 4000, 4000, true},
+		{"owned/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx, ag, _ := templateTestContext(t)
+			sctx.Config.PR.Template = ""
+			doc := insertCompletedStep(t, sctx, types.StepDocument, "", "")
+			const title = "feat: document scope"
+			const body = "## What Changed\n\nAuthor note about `owner.md`."
+			step := &PRStep{}
+			draft := func(narrative string, limit int) (prContent, error) {
+				if tc.owned {
+					return step.publishKeptDraft(sctx, tc.provider, title, narrative, limit)
+				}
+				ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					data, err := json.Marshal(prContent{Title: title, Body: narrative})
+					return &agent.Result{Output: data}, err
+				}
+				return step.buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, tc.provider, limit)
+			}
+			small, err := draft(body, tc.limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			measure := len
+			if tc.limit != 0 {
+				measure = scm.PRBodyLen
+			}
+			padding := tc.budget - measure(small.Body)
+			if padding <= 0 {
+				t.Fatalf("fixture needs padding to reach the budget: got size %d for budget %d", measure(small.Body), tc.budget)
+			}
+			narrative := body + strings.Repeat("a", padding)
+			want, err := draft(narrative, tc.limit)
+			if err != nil || measure(want.Body) != tc.budget {
+				t.Fatalf("fixture without report has size %d, want %d, err %v", measure(want.Body), tc.budget, err)
+			}
+
+			if err := sctx.DB.SetStepFindings(doc.ID, `{"findings":[],"document_off_change_paths":["owner.md"]}`); err != nil {
+				t.Fatal(err)
+			}
+			fitting, err := draft(body, tc.limit)
+			if err != nil || !strings.Contains(fitting.Body, "Paths Document committed outside the submitted change") {
+				t.Fatalf("fitting body omitted the preview: %v", err)
+			}
+			got, err := draft(narrative, tc.limit)
+			if err != nil {
+				t.Fatalf("Document preview blocked an otherwise-fitting body: %v", err)
+			}
+			if got.Body != want.Body {
+				t.Fatal("the limited body differs from the body rendered without the Document preview")
+			}
+		})
 	}
 }
 

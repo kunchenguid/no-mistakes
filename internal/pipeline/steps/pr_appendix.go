@@ -17,6 +17,24 @@ const (
 	validationDetailsClose = "\n</details>"
 )
 
+// prBodyVariants carries two renderings of the same recorded data. The
+// alternate exists only when the generated Document preview can be omitted.
+type prBodyVariants struct {
+	full                   string
+	withoutDocumentPreview string
+}
+
+func (v prBodyVariants) render(renderText func(string) string) prBodyVariants {
+	full := renderText(v.full)
+	if v.withoutDocumentPreview != "" {
+		without := renderText(v.withoutDocumentPreview)
+		if without != full {
+			return prBodyVariants{full: full, withoutDocumentPreview: without}
+		}
+	}
+	return prBodyVariants{full: full}
+}
+
 func appendixMode(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.Config == nil {
 		return config.PRAppendixFull
