@@ -611,6 +611,10 @@ func (s *CIStep) ContinueAfterApproval(sctx *pipeline.StepContext, findingsJSON 
 	return true
 }
 
+func (s *CIStep) monitoringAfterEarlyApproval() bool {
+	return len(s.earlyDismissed) > 0
+}
+
 func (s *CIStep) otherChecksSettledGreen(sctx *pipeline.StepContext) bool {
 	if sctx.Run == nil || sctx.Run.PRURL == nil {
 		return false

@@ -327,3 +327,22 @@ func TestCIStep_ReviewBotEarlyApprovalCompletesOnlyWhenEveryOtherCheckIsGreen(t 
 		t.Fatal("ContinueAfterApproval = true for a gate that is not review-bot findings only")
 	}
 }
+
+// When the provider cannot be reached on the monitoring re-entry after an
+// early approval, the step parks instead of skipping: other checks may still
+// be running and have not had their round.
+func TestCIStep_ReviewBotEarlyApprovalParksWhenProviderUnavailableOnReentry(t *testing.T) {
+	t.Parallel()
+	step, sctx, parked, _ := earlyParkedStep(t, checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed))
+	if !step.ContinueAfterApproval(sctx, parked.Findings) {
+		t.Fatal("ContinueAfterApproval = false, want the step to keep monitoring")
+	}
+	sctx.Env = append(sctx.Env, "FAKE_CLI_AUTH_ERR=gh is not logged in")
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if outcome == nil || outcome.Skipped || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want a park rather than a skip or completion", outcome)
+	}
+}

@@ -389,7 +389,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
-		if requiresExternalReview(sctx) {
+		if requiresExternalReview(sctx) || s.monitoringAfterEarlyApproval() {
 			return ciCheckReadFailureOutcome(fmt.Errorf("required external review unavailable: %s", skipReason)), nil
 		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
@@ -399,7 +399,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if pluginContractBroken(err) {
 			return nil, err
 		}
-		if requiresExternalReview(sctx) {
+		if requiresExternalReview(sctx) || s.monitoringAfterEarlyApproval() {
 			return ciCheckReadFailureOutcome(err), nil
 		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
