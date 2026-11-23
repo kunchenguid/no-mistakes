@@ -40,6 +40,20 @@ func HasUnvalidatedWorkRefusal(findingsJSON string) bool {
 	return hasFindingID(findingsJSON, types.FindingIDTestAgentUnvalidatedWork)
 }
 
+// WithoutProtectedPathRefusal returns the parked findings minus the refusal
+// finding, for a retry that has resolved the refusal but must keep the rest.
+func WithoutProtectedPathRefusal(findingsJSON string) types.Findings {
+	findings, _ := types.ParseFindingsJSON(findingsJSON)
+	kept := make([]types.Finding, 0, len(findings.Items))
+	for _, item := range findings.Items {
+		if item.ID != protectedPathFindingID {
+			kept = append(kept, item)
+		}
+	}
+	findings.Items = kept
+	return findings
+}
+
 func hasFindingID(findingsJSON, id string) bool {
 	findings, _ := types.ParseFindingsJSON(findingsJSON)
 	for _, finding := range findings.Items {

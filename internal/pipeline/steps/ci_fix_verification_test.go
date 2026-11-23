@@ -404,13 +404,50 @@ func TestCIStep_ProtectedPathRefusalKeepsFailedVerificationThroughTheRetry(t *te
 		t.Fatal(err)
 	}
 
-	step := &CIStep{}
-	repair, err := step.retryProtectedPathRepair(f.sctx, &ciRepairVerification{reported: true})
+	sr, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sctx.DB.SetStepFindings(sr.ID, parked.Findings); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.StepResultID = sr.ID
+	retried, err := (&CIStep{}).Execute(f.sctx)
 	if err != nil {
 		t.Fatalf("retry: %v\nlog:\n%s", err, f.log())
 	}
-	if !repair.VerificationFailed {
-		t.Fatalf("retry result = %+v, want the failed verification kept", repair)
+	if retried == nil || !retried.NeedsApproval {
+		t.Fatalf("retry outcome = %+v, want a parked gate", retried)
+	}
+	if pipeline.HasProtectedPathRefusal(retried.Findings) {
+		t.Fatalf("retry findings still carry the resolved refusal: %s", retried.Findings)
+	}
+	retriedFindings, err := types.ParseFindingsJSON(retried.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := types.ParseFindingsJSON(parked.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantItems := 0
+	for _, item := range original.Items {
+		if item.ID == "protected-path-refusal" {
+			continue
+		}
+		wantItems++
+		found := false
+		for _, got := range retriedFindings.Items {
+			if got.ID == item.ID && got.Description == item.Description {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("retry findings %+v lost %+v", retriedFindings.Items, item)
+		}
+	}
+	if len(retriedFindings.Items) != wantItems || wantItems < 2 {
+		t.Fatalf("retry findings = %+v, want the %d original non-refusal findings", retriedFindings.Items, wantItems)
 	}
 	if f.remoteHead(t) != f.headSHA {
 		t.Fatalf("remote head = %s, want the unpublished pre-repair head %s", f.remoteHead(t), f.headSHA)

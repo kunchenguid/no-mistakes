@@ -448,6 +448,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		retryRefusal = false
 		if repair.VerificationFailed {
+			if failedVerification != nil {
+				return ciRepairParkOutcome(pipeline.WithoutProtectedPathRefusal(refusalFindings), "", repair.Summary), nil
+			}
 			return ciVerificationFailedOutcome(Findings{}, "", repair), nil
 		}
 		if repair.HeadAdvanced {
