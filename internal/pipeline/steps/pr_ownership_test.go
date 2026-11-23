@@ -89,7 +89,7 @@ func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			measure := len
+			measure := func(body string) int { return len(body) }
 			if tc.limit != 0 {
 				measure = scm.PRBodyLen
 			}
