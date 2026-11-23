@@ -127,13 +127,9 @@ func wrapPRAppendix(appendix string) string {
 	return fmt.Sprintf("%s%x -->\n%s\n%s", prAppendixStart, sha256.Sum256([]byte(appendix)), appendix, prAppendixEnd)
 }
 
-// composeOwnedPRContent uses the same publication redaction owner as ordinary
+// composeOwnedPRContentWithPreview uses the same publication redaction owner as ordinary
 // drafting, before stamping the byte-integrity guard. Provider normalization
 // must leave the stamped bytes unchanged on readback.
-func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title, appendix string, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
-	return composeOwnedPRContentWithPreview(parts, provider, title, prBodyVariants{full: appendix}, "", bodyLimit, runWorktree, worktreesRoot)
-}
-
 func composeOwnedPRContentWithPreview(parts prOwnedBody, provider scm.Provider, title string, appendix prBodyVariants, issues string, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
 	before := redactPRContent(prContent{Body: parts.before}, provider, runWorktree, worktreesRoot).Body
 	after := redactPRContent(prContent{Body: parts.after}, provider, runWorktree, worktreesRoot).Body
@@ -172,24 +168,17 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 	return nil
 }
 
-// updateOwnedPR re-reads before the full-body write and verifies afterwards.
+// updateOwnedPRWithPreview re-reads before the full-body write and verifies afterwards.
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
 // pre-write edits are merged from their latest version (bounded); supplied
 // narrative replacement refuses a newer edit instead. Readback may
 // briefly retain that exact pre-write body; any other divergence or a write error
 // fails without replaying a potentially applied write.
-func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
-	return updateOwnedPRWithNarrative(sctx, host, pr, initial, title, emptyNarrative, appendix, bodyLimit, nil)
-}
-
+//
 // A freshly supplied description replaces the author narrative, including
 // text after a previous owned appendix. The generated appendix is rebuilt for
 // this head. A legacy unowned attestation can be replaced because the caller
 // explicitly supplied the entire replacement narrative.
-func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int, suppliedNarrative *string) error {
-	return updateOwnedPRWithPreview(sctx, host, pr, initial, title, emptyNarrative, prBodyVariants{full: appendix}, bodyLimit, suppliedNarrative)
-}
-
 func updateOwnedPRWithPreview(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative string, appendix prBodyVariants, bodyLimit int, suppliedNarrative *string) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {

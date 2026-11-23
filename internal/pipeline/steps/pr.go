@@ -623,7 +623,7 @@ func describePR(pr *scm.PR) string {
 
 // buildPRContent drafts the pull request title and body and then applies the
 // publication redaction boundary. New template bodies and author-preserving
-// updates use composeOwnedPRContent, which calls the same redactPRContent owner
+// updates use composeOwnedPRContentWithPreview, which calls the same redactPRContent owner
 // before stamping its integrity guard. This covers every source: agent-authored
 // prose, extracted user intent, findings, fix summaries, step errors, artifact
 // paths, artifact captions, and captured output embedded from evidence files.
@@ -994,15 +994,10 @@ func renderPRTitle(sctx *pipeline.StepContext, title string) (string, error) {
 	return sctx.Config.PR.RenderTitle(branch, title)
 }
 
-// buildPipelineSection queries step results and rounds from the DB and
+// buildPipelineSectionFor queries step results and rounds from the DB and
 // produces the deterministic pipeline, risk, and testing sections. These are
 // scoped to this run's own steps and rounds, so they already describe only
 // the final terminal state each step reached in this run.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD, evidenceMD string) {
-	rendered, riskLine, testingMD, evidenceMD := s.buildPipelineSectionFor(sctx, provider, false)
-	return rendered.full, riskLine, testingMD, evidenceMD
-}
-
 func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD prBodyVariants, riskLine, testingMD, evidenceMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
@@ -1953,10 +1948,6 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 		return section
 	}
 	return section + "\n\n" + body
-}
-
-func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
-	return s.fallbackPRContentWithPreview(sctx, finalDiff, riskLine, testingMD, prBodyVariants{full: pipelineMD}, evidenceMD, bodyLimit, provider)
 }
 
 func (s *PRStep) fallbackPRContentWithPreview(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD string, pipelineMD prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {

@@ -196,11 +196,6 @@ func templateStructureLines(text string) []string {
 	return lines
 }
 
-func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	rendered, err := s.buildPRAppendixVariants(sctx, provider)
-	return rendered.full, err
-}
-
 func (s *PRStep) buildPRAppendixVariants(sctx *pipeline.StepContext, provider scm.Provider) (prBodyVariants, error) {
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prBodyVariants{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")

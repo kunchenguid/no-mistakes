@@ -16,6 +16,32 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title, appendix string, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
+	return composeOwnedPRContentWithPreview(parts, provider, title, prBodyVariants{full: appendix}, "", bodyLimit, runWorktree, worktreesRoot)
+}
+
+func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
+	return updateOwnedPRWithNarrative(sctx, host, pr, initial, title, emptyNarrative, appendix, bodyLimit, nil)
+}
+
+func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int, suppliedNarrative *string) error {
+	return updateOwnedPRWithPreview(sctx, host, pr, initial, title, emptyNarrative, prBodyVariants{full: appendix}, bodyLimit, suppliedNarrative)
+}
+
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD, evidenceMD string) {
+	rendered, riskLine, testingMD, evidenceMD := s.buildPipelineSectionFor(sctx, provider, false)
+	return rendered.full, riskLine, testingMD, evidenceMD
+}
+
+func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
+	return s.fallbackPRContentWithPreview(sctx, finalDiff, riskLine, testingMD, prBodyVariants{full: pipelineMD}, evidenceMD, bodyLimit, provider)
+}
+
+func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	rendered, err := s.buildPRAppendixVariants(sctx, provider)
+	return rendered.full, err
+}
+
 func ownedFixture(t *testing.T) (prContent, string) {
 	t.Helper()
 	appendix := "## Risk Assessment\n\nLow recorded risk.\n\n## Testing\n\nRecorded evidence link.\n\n" + compliantPipelineBody(t, testPipelineHeadSHA)
