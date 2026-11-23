@@ -816,6 +816,43 @@ func TestDocumentStep_RenameIntoIgnoredDirectorySkipsAgent(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_LaunchUsesGitPathQuoting(t *testing.T) {
+	t.Parallel()
+	dir, base, _ := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "-b", "quoted-path", base)
+	const path = "generated/café.md"
+	if err := os.Mkdir(filepath.Join(dir, "generated"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, path), []byte("Generated documentation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", path)
+	gitCmd(t, dir, "commit", "-m", "Add generated documentation")
+	head := gitCmd(t, dir, "rev-parse", "HEAD")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":""}`)}, nil
+	}}
+	sctx := newHousekeepingContext(t, ag, dir, base, head, config.Commands{Lint: "lint"})
+	sctx.Config.IgnorePatterns = []string{"generated/**"}
+
+	gitCmd(t, dir, "config", "core.quotePath", "true")
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("Document agent calls = %d, want 1 when Git quotes the path", len(ag.calls))
+	}
+
+	gitCmd(t, dir, "config", "core.quotePath", "false")
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("Document agent calls = %d, want no additional call when the unquoted path matches the ignore pattern", len(ag.calls))
+	}
+}
+
 func TestDocumentStep_NoChanges_SkipsAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupGitRepo(t)
@@ -1033,6 +1070,42 @@ func TestDocumentStep_MalformedOutput_CommitsAndFailsClosed(t *testing.T) {
 	}
 	if !slices.Contains(log, `Document committed outside the submitted change: "README.md"`) {
 		t.Fatalf("expected the failed Document step to log the committed README.md, got %q", log)
+	}
+}
+
+func TestDocumentStep_AdapterRejectionLogsOnlyCommittedPaths(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", head)
+	var agentHead string
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Committed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "add", "README.md")
+		gitCmd(t, dir, "commit", "-m", "Update README")
+		agentHead = gitCmd(t, dir, "rev-parse", "HEAD")
+		if err := os.WriteFile(filepath.Join(dir, "draft.md"), []byte("Uncommitted\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("invalid JSON"))
+	}}
+	sctx := newHousekeepingContext(t, ag, dir, base, head, config.Commands{})
+	var log []string
+	sctx.LogFile = func(line string) { log = append(log, line) }
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if outcome != nil || !agent.IsStructuredOutputRejected(err) {
+		t.Fatalf("outcome = %+v, error = %v, want structured output rejection with no outcome", outcome, err)
+	}
+	if !slices.Equal(log, []string{`Document committed outside the submitted change: "README.md"`}) {
+		t.Fatalf("expected only the committed README.md in the path log, got %q", log)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != agentHead || sctx.Run.HeadSHA != head {
+		t.Fatalf("live head = %s, recorded head = %s, want %s and %s", got, sctx.Run.HeadSHA, agentHead, head)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "?? draft.md" {
+		t.Fatalf("status = %q, want the uncommitted draft untouched", got)
 	}
 }
 

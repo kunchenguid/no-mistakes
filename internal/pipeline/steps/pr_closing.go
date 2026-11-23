@@ -457,7 +457,6 @@ func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, test
 
 func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipeline prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) string {
 	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
-	pipelineMD := pipeline.full
 	if pipeline.withoutDocumentPreview != "" {
 		// Try both complete, redacted sizes before the ordinary policy drops
 		// testing evidence or truncates content. Redaction can change length.
@@ -468,7 +467,6 @@ func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, ris
 				return body
 			}
 		}
-		pipelineMD = pipeline.withoutDocumentPreview
 	}
 	reserve := 0
 	if section != "" {
@@ -480,14 +478,14 @@ func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, ris
 		}
 		if bodyLimit-reserve <= 0 {
 			if evidenceMD != "" {
-				return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider), section)
+				return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipeline.full, bodyLimit, provider), section)
 			}
 			// The section alone does not fit. Omit it rather than pass a
 			// non-positive (unlimited) budget; the pre-publication check then
 			// refuses a body that would drop a closing reference.
-			return assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+			return assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipeline.full, bodyLimit, provider)
 		}
-		return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit-reserve, provider), section)
+		return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipeline.full, bodyLimit-reserve, provider), section)
 	}
-	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, maxPullRequestBodyBytes-reserve), section)
+	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipeline.full, sctx, provider, maxPullRequestBodyBytes-reserve), section)
 }

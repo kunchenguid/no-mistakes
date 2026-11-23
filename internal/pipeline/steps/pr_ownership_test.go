@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -116,6 +117,37 @@ func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
 			}
 			if got.Body != want.Body {
 				t.Fatal("the limited body differs from the body rendered without the Document preview")
+			}
+		})
+	}
+}
+
+func TestAssembleDraftPRBody_KeepsDocumentPreviewWhenTestingExceedsBudget(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := templateTestContext(t)
+	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["README.md"]}`, "")
+	sctx.ClosingIssueRefs = []string{"42"}
+	const (
+		provider = scm.ProviderAzureDevOps
+		limit    = 4000
+	)
+	testingMD := strings.Repeat("Evidence from Test.\n", limit)
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
+		t.Run(mode, func(t *testing.T) {
+			sctx.Config.PR.Appendix = mode
+			variants, _, _, _ := (&PRStep{}).buildPipelineSectionFor(sctx, provider, false)
+			body := assembleDraftPRBodyWithPreview(sctx, "## What Changed\n\nUpdated settings.", "Low risk.", testingMD, variants, "", limit, provider)
+
+			if scm.PRBodyLen(body) > limit || strings.Contains(body, "Evidence from Test.") {
+				t.Fatal("oversized Testing evidence should be dropped so the body fits")
+			}
+			for _, want := range []string{"Updated settings.", "README.md", "Closes #42"} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("body lost %q while dropping Testing:\n%s", want, body)
+				}
+			}
+			if carriedAttestation(body) == "" {
+				t.Fatal("body lost its pipeline attestation")
 			}
 		})
 	}
