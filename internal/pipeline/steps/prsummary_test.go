@@ -43,6 +43,34 @@ func TestBuildPipelineSummary_DocumentPRPreviewShowsFiveSortedPaths(t *testing.T
 	}
 }
 
+func TestBuildPipelineSummary_DocumentPreviewVariantsPreserveBlock(t *testing.T) {
+	t.Parallel()
+	const previewHeading = "Paths Document committed outside the submitted change\n\n"
+	findings := `{"findings":[],"document_off_change_paths":["README.md"]}`
+	steps := []*db.StepResult{{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"document": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+	for _, tc := range []struct {
+		provider scm.Provider
+		heading  string
+		path     string
+	}{
+		{scm.ProviderGitHub, "<summary>✅ **Document** - passed</summary>", "<code>README.md</code>"},
+		{scm.ProviderBitbucket, "### ✅ **Document** - passed", "`README.md`"},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			full, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
+			without, _ := buildPipelineSummaryWithPreview(steps, rounds, testPipelineHeadSHA, tc.provider, pipelineAttestationPolicy{}, false)
+			preview := previewHeading + "- " + tc.path + "\n\n"
+			if !strings.Contains(full, tc.heading+"\n\n"+preview+"✅ No issues found.") {
+				t.Fatalf("expected the preview inside the Document block:\n%s", full)
+			}
+			if without != strings.Replace(full, preview, "", 1) {
+				t.Fatalf("omitting the preview changed the Document block:\n%s", without)
+			}
+		})
+	}
+}
+
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	t.Parallel()
 	steps := []*db.StepResult{

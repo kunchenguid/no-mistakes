@@ -129,6 +129,24 @@ type pipelineAttestationPolicy struct {
 	AllowTestCommandOverride string
 }
 
+// prBodyVariants carries two renderings of the same recorded data. The
+// alternate exists only when the generated Document preview can be omitted.
+type prBodyVariants struct {
+	full                   string
+	withoutDocumentPreview string
+}
+
+func (v prBodyVariants) render(renderText func(string) string) prBodyVariants {
+	full := renderText(v.full)
+	if v.withoutDocumentPreview != "" {
+		without := renderText(v.withoutDocumentPreview)
+		if without != full {
+			return prBodyVariants{full: full, withoutDocumentPreview: without}
+		}
+	}
+	return prBodyVariants{full: full}
+}
+
 func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy) (string, string) {
 	return buildPipelineSummaryWithPreview(steps, rounds, headSHA, provider, policy, true)
 }
@@ -807,7 +825,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		inner.WriteString("\n\n")
 	}
 	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(escapePipelineFoldMarkers(fenceBody))))
-	folded := foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
+	folded := foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor, false)
 	if attachment == "" {
 		return folded
 	}
@@ -1457,15 +1475,20 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // mentally replaying rounds.
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, documentPreview bool) string {
 	var inner strings.Builder
-	if documentPreview && sr.StepName == types.StepDocument {
-		writeDocumentOffChangePaths(&inner, sr, rounds, flavor)
+	var hasDocumentReport bool
+	if sr.StepName == types.StepDocument {
+		report := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)
+		hasDocumentReport = report.HasDocumentOffChangePaths()
+		if hasDocumentReport && documentPreview {
+			writeDocumentOffChangePaths(&inner, report, flavor)
+		}
 	}
 	// A skipped step whose rounds recorded no findings never checked
 	// anything, so "No issues found" under a "skipped" summary would
 	// claim a pass.
 	if len(rounds) == 0 || (sr.Status == types.StepStatusSkipped && !roundsHaveFindings(rounds)) {
 		writeStepStatusDetail(&inner, sr, flavor)
-		return foldPRBlock(summaryLine, inner.String(), flavor)
+		return foldPRBlock(summaryLine, inner.String(), flavor, hasDocumentReport)
 	}
 
 	// True only when the step recorded final findings but no round captured
@@ -1517,16 +1540,12 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		inner.WriteString("\n")
 	}
 
-	return foldPRBlock(summaryLine, inner.String(), flavor)
+	return foldPRBlock(summaryLine, inner.String(), flavor, hasDocumentReport)
 }
 
 const maxDocumentPRPaths = 5
 
-func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
-	preview := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)
-	if !preview.HasDocumentOffChangePaths() {
-		return
-	}
+func writeDocumentOffChangePaths(b *strings.Builder, preview types.Findings, flavor prBodyFlavor) {
 	paths := slices.Clone(preview.DocumentOffChangePaths)
 	slices.Sort(paths)
 	shown := min(len(paths), maxDocumentPRPaths)
@@ -1567,10 +1586,10 @@ func renderDocumentPath(path string, flavor prBodyFlavor) string {
 	return fence + path + fence
 }
 
-func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
+func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor, keepDetails bool) string {
 	inner = strings.TrimSpace(inner)
 	if flavor == prBodyMarkdown {
-		if inner == "" || isTautologicalStepInner(inner) {
+		if !keepDetails && (inner == "" || isTautologicalStepInner(inner)) {
 			return summaryLine + "\n"
 		}
 		return "### " + summaryLine + "\n\n" + inner + "\n"

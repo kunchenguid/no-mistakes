@@ -452,26 +452,7 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 // Issues section last, reserving its room up front so body-limit truncation
 // sheds generated evidence rather than a closing reference.
 func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) string {
-	return assembleDraftPRBodyWithPreview(sctx, whatChanged, riskLine, testingMD, prBodyVariants{full: pipelineMD}, evidenceMD, bodyLimit, provider)
-}
-
-func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipeline prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) string {
 	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
-	if pipeline.withoutDocumentPreview != "" {
-		testingVariants := []string{testingMD}
-		if testingMD != "" {
-			testingVariants = append(testingVariants, "")
-		}
-		for _, testing := range testingVariants {
-			for _, variant := range []string{pipeline.full, pipeline.withoutDocumentPreview} {
-				body := appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testing, variant, sctx, provider, math.MaxInt), section)
-				redacted := redactPRContent(prContent{Body: body}, provider, sctx.WorkDir, nmWorktreesRoot()).Body
-				if validateOwnedPRBudget(redacted, bodyLimit) == nil {
-					return body
-				}
-			}
-		}
-	}
 	reserve := 0
 	if section != "" {
 		reserve = len("\n\n" + section)
@@ -482,14 +463,28 @@ func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, ris
 		}
 		if bodyLimit-reserve <= 0 {
 			if evidenceMD != "" {
-				return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipeline.full, bodyLimit, provider), section)
+				return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider), section)
 			}
 			// The section alone does not fit. Omit it rather than pass a
 			// non-positive (unlimited) budget; the pre-publication check then
 			// refuses a body that would drop a closing reference.
-			return assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipeline.full, bodyLimit, provider)
+			return assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 		}
-		return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipeline.full, bodyLimit-reserve, provider), section)
+		return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit-reserve, provider), section)
 	}
-	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipeline.full, sctx, provider, maxPullRequestBodyBytes-reserve), section)
+	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, maxPullRequestBodyBytes-reserve), section)
+}
+
+func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipeline prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+	pipelineMD := pipeline.full
+	if pipeline.withoutDocumentPreview != "" {
+		section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
+		body := appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, math.MaxInt), section)
+		redacted := redactPRContent(prContent{Body: body}, provider, sctx.WorkDir, nmWorktreesRoot()).Body
+		if validateOwnedPRBudget(redacted, bodyLimit) == nil {
+			return body
+		}
+		pipelineMD = pipeline.withoutDocumentPreview
+	}
+	return assembleDraftPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 }

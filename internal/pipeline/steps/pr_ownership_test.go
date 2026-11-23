@@ -122,38 +122,7 @@ func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
 	}
 }
 
-func TestAssembleDraftPRBody_KeepsDocumentPreviewWhenTestingExceedsBudget(t *testing.T) {
-	t.Parallel()
-	sctx, _, _ := templateTestContext(t)
-	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["README.md"]}`, "")
-	sctx.ClosingIssueRefs = []string{"42"}
-	const (
-		provider = scm.ProviderAzureDevOps
-		limit    = 4000
-	)
-	testingMD := strings.Repeat("Evidence from Test.\n", limit)
-	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
-		t.Run(mode, func(t *testing.T) {
-			sctx.Config.PR.Appendix = mode
-			variants, _, _, _ := (&PRStep{}).buildPipelineSectionFor(sctx, provider, false)
-			body := assembleDraftPRBodyWithPreview(sctx, "## What Changed\n\nUpdated settings.", "Low risk.", testingMD, variants, "", limit, provider)
-
-			if scm.PRBodyLen(body) > limit || strings.Contains(body, "Evidence from Test.") {
-				t.Fatal("oversized Testing evidence should be dropped so the body fits")
-			}
-			for _, want := range []string{"Updated settings.", "README.md", "Closes #42"} {
-				if !strings.Contains(body, want) {
-					t.Fatalf("body lost %q while dropping Testing:\n%s", want, body)
-				}
-			}
-			if carriedAttestation(body) == "" {
-				t.Fatal("body lost its pipeline attestation")
-			}
-		})
-	}
-}
-
-func TestAssembleDraftPRBody_OmitsPreviewBeforeTruncatingCore(t *testing.T) {
+func TestAssembleDraftPRBody_OmitsDocumentPreviewBeforeBudgetFitting(t *testing.T) {
 	t.Parallel()
 	sctx, _, _ := templateTestContext(t)
 	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["README.md"]}`, "")
@@ -163,41 +132,36 @@ func TestAssembleDraftPRBody_OmitsPreviewBeforeTruncatingCore(t *testing.T) {
 		whatChanged = "## What Changed\n\nUpdated settings."
 		risk        = "Low risk."
 		evidence    = "[Recorded evidence](https://example.com/evidence)"
+		testingEnd  = "End of recorded Testing evidence."
 	)
-	testingMD := "## Testing\n\n" + strings.Repeat("Evidence from Test.\n", maxPullRequestBodyBytes/10)
-	byteLen := func(body string) int { return len(body) }
+	testingMD := "## Testing\n\n" + strings.Repeat("- Recorded test result.\n", 1400) + testingEnd
+	history := "\n<details>\n<summary>Earlier pipeline result</summary>\n\n" +
+		strings.Repeat("- Earlier pipeline finding.\n", 1300) + "</details>\n"
 	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
 		sctx.Config.PR.Appendix = mode
 		for _, tc := range []struct {
 			name     string
 			provider scm.Provider
 			limit    int
-			budget   int
-			measure  func(string) int
+			history  string
 		}{
-			{"provider", scm.ProviderAzureDevOps, 4000, 4000, scm.PRBodyLen},
-			{"bytes", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, byteLen},
-			{"bytes-with-provider-limit", scm.ProviderGitHub, 65536, maxPullRequestBodyBytes, byteLen},
+			{"provider", scm.ProviderAzureDevOps, 4000, ""},
+			{"bytes", scm.ProviderGitHub, 0, history},
+			{"bytes-with-provider-limit", scm.ProviderGitHub, 65536, history},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				variants, _, _, _ := (&PRStep{}).buildPipelineSectionFor(sctx, tc.provider, false)
+				variants = variants.render(func(markdown string) string { return markdown + tc.history })
 				if !strings.Contains(variants.full, "README.md") || variants.withoutDocumentPreview == "" {
 					t.Fatal("fixture needs both generated Pipeline variants")
 				}
-				core := assembleDraftPRBody(sctx, whatChanged, risk, "", variants.withoutDocumentPreview, evidence, 0, tc.provider)
-				padding := tc.budget - tc.measure(core)
-				if padding <= 0 || !strings.Contains(core, whatChanged) {
-					t.Fatal("fixture needs room to pad What Changed to the limit")
+				want := assembleDraftPRBody(sctx, whatChanged, risk, testingMD, variants.withoutDocumentPreview, evidence, tc.limit, tc.provider)
+				if tc.limit == 0 && mode == config.PRAppendixFull && !strings.Contains(want, testingEnd) {
+					t.Fatal("fixture needs the byte fitter to retain Testing while shortening Pipeline history")
 				}
-				withPreview := assembleDraftPRBody(sctx, whatChanged, risk, "", variants.full, evidence, 0, tc.provider)
-				if tc.measure(withPreview)+padding <= tc.budget {
-					t.Fatal("fixture needs the preview to exceed the budget after Testing is dropped")
-				}
-				narrative := whatChanged + strings.Repeat("a", padding)
-				want := strings.Replace(core, whatChanged, narrative, 1)
-				got := assembleDraftPRBodyWithPreview(sctx, narrative, risk, testingMD, variants, evidence, tc.limit, tc.provider)
+				got := assembleDraftPRBodyWithPreview(sctx, whatChanged, risk, testingMD, variants, evidence, tc.limit, tc.provider)
 				if got != want {
-					t.Fatalf("body changed beyond dropping Testing and the preview: got length %d, want %d", tc.measure(got), tc.budget)
+					t.Fatalf("body differs from standard fitting without the preview: got %d bytes, want %d", len(got), len(want))
 				}
 			})
 		}

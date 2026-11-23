@@ -19,4 +19,4 @@ AXI puts `document_off_change_paths` in the gate object while Document is parked
 
 When a retry carries a Document result with reported paths, the log command reads the original Document log and identifies its run in `source_run`. This also applies when `--run <id>` selects the retry explicitly. The full list is available while the original log is retained.
 
-The PR's Pipeline section can show up to five paths in sorted order. If the preview would push the description over a size limit, the pipeline tries the description without it. [`pr.appendix: minimal`](/no-mistakes/reference/repo-config/#prappendix) also omits the preview.
+The PR's Pipeline section can show up to five paths in sorted order. If the full description exceeds either size limit, the pipeline removes the generated preview before applying the existing PR size rules. [`pr.appendix: minimal`](/no-mistakes/reference/repo-config/#prappendix) also omits the preview.
