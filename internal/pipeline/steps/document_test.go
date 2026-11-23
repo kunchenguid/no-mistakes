@@ -567,6 +567,9 @@ func TestDocumentStep_SubmittedScope(t *testing.T) {
 func TestDocumentStep_BoundsOffChangeReportAndLogsEveryPath(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	if runtime.GOOS == "windows" {
+		gitCmd(t, dir, "config", "core.longpaths", "true")
+	}
 	wideDir := filepath.Join(dir, "A", strings.Repeat(" ", 150)+"docs")
 	widePath := filepath.Join(wideDir, strings.Repeat(" ", 150)+"README.md")
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
