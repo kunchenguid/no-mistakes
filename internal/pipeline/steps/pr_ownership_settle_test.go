@@ -105,7 +105,7 @@ func TestPRSuppliedDescriptionRefusesConcurrentAuthorEdit(t *testing.T) {
 		return nil
 	}
 	narrative := "Replacement author narrative"
-	err := updateOwnedPRWithNarrative(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent{Body: content.Body}, "", "", appendix, 0, &narrative)
+	err := updateOwnedPRWithNarrative(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent{Body: content.Body}, "", "", prMarkdown{full: appendix}, 0, &narrative)
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite newer author text") || host.writes != 0 || host.body != latest {
 		t.Fatalf("concurrent edit was not preserved: err=%v, writes=%d, body=%q", err, host.writes, host.body)
 	}

@@ -43,6 +43,28 @@ func TestBuildPipelineSummary_DocumentPRPreviewShowsFiveSortedPaths(t *testing.T
 	}
 }
 
+func TestBuildPipelineSummary_BitbucketDocumentStatusWithoutPreview(t *testing.T) {
+	t.Parallel()
+	step := &db.StepResult{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted}
+	clean := `{"findings":[]}`
+	rounds := map[string][]*db.StepRound{step.ID: {{Round: 1, FindingsJSON: &clean}}}
+	steps := []*db.StepResult{step}
+	raw, err := types.MarshalFindingsJSON(types.Findings{DocumentOffChangePaths: []string{"owner.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step.FindingsJSON = &raw
+	full, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket)
+	if !strings.Contains(full, "owner.md") {
+		t.Fatal("fixture must contain the Document preview")
+	}
+	pathless, _ := renderPipelineSummary(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket, pipelineAttestationPolicy{}, false)
+	want := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n✅ **Document** - passed\n"
+	if pathless != want {
+		t.Fatalf("pathless preview changed Bitbucket's clean Document status:\n%s", pathless)
+	}
+}
+
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	t.Parallel()
 	steps := []*db.StepResult{

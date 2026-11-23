@@ -261,12 +261,12 @@ func TestGitlabEvidenceIndependentOfTestingInEveryAppendixMode(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			sctx.Config.PR.Appendix = mode
 			pipelineMD, risk, testing, evidence := step.buildPipelineSection(sctx, scm.ProviderGitLab)
-			ordinary := assembleDraftPRBody(sctx, "## What Changed\n\nUpdated", risk, testing, pipelineMD, evidence, 0, scm.ProviderGitLab)
-			limited := assembleDraftPRBody(sctx, "## What Changed\n\nUpdated", risk, "## Testing\n\n"+strings.Repeat("verbose test log\n", 200), pipelineMD, evidence, 1200, scm.ProviderGitLab)
+			ordinary := assembleDraftPRBody(sctx, "## What Changed\n\nUpdated", risk, testing, prMarkdown{full: pipelineMD}, evidence, 0, scm.ProviderGitLab)
+			limited := assembleDraftPRBody(sctx, "## What Changed\n\nUpdated", risk, "## Testing\n\n"+strings.Repeat("verbose test log\n", 200), prMarkdown{full: pipelineMD}, evidence, 1200, scm.ProviderGitLab)
 			if scm.PRBodyLen(limited) > 1200 {
 				t.Fatal("evidence reservation exceeded body budget")
 			}
-			fallback, err := step.fallbackPRContent(sctx, "A\tfile.go", risk, testing, pipelineMD, evidence, 0, scm.ProviderGitLab)
+			fallback, err := step.fallbackPRContent(sctx, "A\tfile.go", risk, testing, prMarkdown{full: pipelineMD}, evidence, 0, scm.ProviderGitLab)
 			if err != nil {
 				t.Fatal(err)
 			}

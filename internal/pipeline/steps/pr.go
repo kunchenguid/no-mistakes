@@ -48,6 +48,27 @@ type prContent struct {
 	IntentBrief *prIntentBrief `json:"intent_brief,omitempty"`
 }
 
+type prMarkdown struct {
+	full                 string
+	withoutDocumentPaths string
+}
+
+func (m prMarkdown) mapText(render func(string) string) prMarkdown {
+	m.full = render(m.full)
+	if m.withoutDocumentPaths != "" {
+		m.withoutDocumentPaths = render(m.withoutDocumentPaths)
+	}
+	return m
+}
+
+func (m *prMarkdown) dropDocumentPaths() bool {
+	if m.withoutDocumentPaths == "" || m.withoutDocumentPaths == m.full {
+		return false
+	}
+	*m = prMarkdown{full: m.withoutDocumentPaths}
+	return true
+}
+
 var prContentSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -649,7 +670,7 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 			return prContent{}, err
 		}
 		narrative := neutralizeAttestationMarkers(provider, content.Body)
-		appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
+		appendix = appendixWithIssues(appendix, issuesSection(sctx, narrative))
 		return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, content.Title, appendix, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 	}
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
@@ -692,10 +713,11 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
 	inventory := prPromptInventory(sctx, finalDiff, baseSHA)
-	var pipelineMD, riskLine, testingMD, evidenceMD string
+	var pipelineMD prMarkdown
+	var riskLine, testingMD, evidenceMD string
 	if !keepsPRUpdateText(sctx) {
-		pipelineMD, riskLine, testingMD, evidenceMD = s.buildPipelineSection(sctx, provider)
-		if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
+		pipelineMD, riskLine, testingMD, evidenceMD = s.buildPipelineSectionFor(sctx, provider, false)
+		if marker := extractPipelineAttestationMarker(pipelineMD.full); marker != "" &&
 			((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
 			return prContent{}, fmt.Errorf("pipeline attestation exceeds PR body limit")
 		}
@@ -998,14 +1020,15 @@ func renderPRTitle(sctx *pipeline.StepContext, title string) (string, error) {
 // scoped to this run's own steps and rounds, so they already describe only
 // the final terminal state each step reached in this run.
 func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD, evidenceMD string) {
-	return s.buildPipelineSectionFor(sctx, provider, false)
+	pipeline, risk, testing, evidence := s.buildPipelineSectionFor(sctx, provider, false)
+	return pipeline.full, risk, testing, evidence
 }
 
-func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD, evidenceMD string) {
+func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD prMarkdown, riskLine, testingMD, evidenceMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", "", "", ""
+		return prMarkdown{}, "", "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -1027,27 +1050,39 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 	if sctx.Config != nil {
 		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
 	}
-	pipelineMD, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
-	if s.headProofUnavailable != "" {
-		intro := noMistakesPRSignature + " " + s.headProofUnavailable
-		if pipelineMD == "" {
-			pipelineMD = "## Pipeline\n\n" + intro + "\n\n"
-		} else {
-			pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature, intro, 1)
+	pipelineMD.full, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
+	if appendixMode(sctx) != config.PRAppendixMinimal {
+		for _, step := range steps {
+			if step.StepName == types.StepDocument && db.RecordedDocumentEdits(step.FindingsJSON, rounds[step.ID]).HasDocumentOffChangePaths() {
+				pipelineMD.withoutDocumentPaths, _ = renderPipelineSummary(steps, rounds, sctx.Run.HeadSHA, provider, policy, false)
+				break
+			}
 		}
 	}
+	conversation := buildReviewConversationSection(sctx)
 	// The review conversation rides inside the Pipeline section as an ordinary
 	// `### ` group, so the existing body-budget logic can drop it whole rather
 	// than competing with the attestation it must never displace.
-	if conversationMD := buildReviewConversationSection(sctx); conversationMD != "" && pipelineMD != "" {
-		pipelineMD += "\n\n" + conversationMD
-	}
 	// Ordinary Bitbucket descriptions keep their existing Markdown-only skin.
 	// Owned templates additionally carry the exact existing declaration as
 	// visible text; the raw consumer/restamper uses the same marker and schema.
-	if owned && provider == scm.ProviderBitbucket && pipelineMD != "" {
-		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
-	}
+	pipelineMD = pipelineMD.mapText(func(markdown string) string {
+		if s.headProofUnavailable != "" {
+			intro := noMistakesPRSignature + " " + s.headProofUnavailable
+			if markdown == "" {
+				markdown = "## Pipeline\n\n" + intro + "\n\n"
+			} else {
+				markdown = strings.Replace(markdown, noMistakesPRSignature, intro, 1)
+			}
+		}
+		if conversation != "" && markdown != "" {
+			markdown += "\n\n" + conversation
+		}
+		if owned && provider == scm.ProviderBitbucket && markdown != "" {
+			markdown += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
+		}
+		return markdown
+	})
 	compact := true
 	if sctx.Config != nil {
 		compact = sctx.Config.Test.Evidence.Compact
@@ -1090,27 +1125,29 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 
 // assemblePRBody composes the final PR body from its sections and keeps it
 // within bodyLimit (0 = unlimited).
-func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
-	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD, provider)
-	full := prependIntentSection(sections, sctx)
+func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipelineMD prMarkdown, bodyLimit int, provider scm.Provider) string {
+	clean := stripGeneratedSections(whatChanged)
+	render := func(testing string) string {
+		sections := appendGeneratedSectionsToCleanBodyWithinLimit(clean, riskLine, testing, pipelineMD, maxPullRequestBodyBytes, provider)
+		return prependIntentSection(sections, sctx)
+	}
+	full := render(testingMD)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
-	if reduced := withoutDocumentPRPaths(pipelineMD); reduced != pipelineMD {
-		pipelineMD = reduced
-		full = prependIntentSection(appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD, provider), sctx)
+	if pipelineMD.dropDocumentPaths() {
+		full = render(testingMD)
 		if scm.PRBodyLen(full) <= bodyLimit {
 			return full
 		}
 	}
 	if testingMD != "" {
-		sections = appendGeneratedSections(whatChanged, riskLine, "", pipelineMD, provider)
-		core := prependIntentSection(sections, sctx)
+		core := render("")
 		if scm.PRBodyLen(core) <= bodyLimit {
 			return core
 		}
 	}
-	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, bodyLimit, provider)
+	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD.full, bodyLimit, provider)
 }
 
 func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int, provider scm.Provider) string {
@@ -1164,7 +1201,7 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string, provi
 	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD, provider)
 }
 
-func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
+func buildPRBodyFull(body, riskLine, testingMD string, pipelineMD prMarkdown, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxBytes, provider)
 	// Neutralized for the same reason as in prependIntentSection: intent is
@@ -1179,15 +1216,14 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 	if len(intent)+len(separator)+len(sections) <= maxBytes {
 		return intent + separator + sections
 	}
-	if reduced := withoutDocumentPRPaths(pipelineMD); reduced != pipelineMD {
-		pipelineMD = reduced
+	if pipelineMD.dropDocumentPaths() {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxBytes, provider)
 		if len(intent)+len(separator)+len(sections) <= maxBytes {
 			return intent + separator + sections
 		}
 	}
 	sectionsBudget := maxBytes - len(separator) - len(intent)
-	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
+	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD.full))
 	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget, provider)
 		return intent + separator + sections
@@ -1201,7 +1237,7 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string, provider scm.Provider) string {
-	return appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxPullRequestBodyBytes, provider)
+	return appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, prMarkdown{full: pipelineMD}, maxPullRequestBodyBytes, provider)
 }
 
 // appendGeneratedSectionsToCleanBodyWithinLimit is the single choke point that
@@ -1222,13 +1258,13 @@ func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD st
 // still shipped three live foreign markers ahead of the real one. Fencing is no
 // defense either - verify.py reads raw text, so a marker inside a ```text block
 // counts exactly the same.
-func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD string, maxBytes int, provider scm.Provider) string {
+func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD string, pipelineMD prMarkdown, maxBytes int, provider scm.Provider) string {
 	body = neutralizeAttestationMarkers(provider, body)
 	riskLine = neutralizeAttestationMarkers(provider, riskLine)
 	testingMD = neutralizeAttestationMarkers(provider, testingMD)
 	generatedSections := generatedEssentialSections(riskLine, testingMD)
 	prefix := body + generatedSections
-	if pipelineMD == "" {
+	if pipelineMD.full == "" {
 		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 	}
 
@@ -1236,16 +1272,15 @@ func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pi
 	if prefix != "" {
 		separator = "\n\n"
 	}
-	if len(prefix+separator+pipelineMD) <= maxBytes {
-		return prefix + separator + pipelineMD
+	if len(prefix)+len(separator)+len(pipelineMD.full) <= maxBytes {
+		return prefix + separator + pipelineMD.full
 	}
-	pipelineMD = withoutDocumentPRPaths(pipelineMD)
-	if len(prefix+separator+pipelineMD) <= maxBytes {
-		return prefix + separator + pipelineMD
+	if pipelineMD.dropDocumentPaths() && len(prefix)+len(separator)+len(pipelineMD.full) <= maxBytes {
+		return prefix + separator + pipelineMD.full
 	}
 
-	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD, maxBytes)
-	return appendPipelineSectionWithinLimit(prefix, pipelineMD, maxBytes)
+	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD.full, maxBytes)
+	return appendPipelineSectionWithinLimit(prefix, pipelineMD.full, maxBytes)
 }
 
 func generatedEssentialSections(riskLine, testingMD string) string {
@@ -1949,7 +1984,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
+func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD string, pipelineMD prMarkdown, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}

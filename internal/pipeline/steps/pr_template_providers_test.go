@@ -48,10 +48,10 @@ func TestPRTemplateProviderCompositionUpdateAndRestamp(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(appendix, "## Intent\n\n"+sctx.PublicIntentBrief) || strings.Contains(appendix, "private source context") || strings.Count(appendix, pipelineAttestationCommentPrefix) != 1 {
-				t.Fatalf("owned brief appendix lost Intent or duplicated attestation for %s:\n%s", provider, appendix)
+			if !strings.Contains(appendix.full, "## Intent\n\n"+sctx.PublicIntentBrief) || strings.Contains(appendix.full, "private source context") || strings.Count(appendix.full, pipelineAttestationCommentPrefix) != 1 {
+				t.Fatalf("owned brief appendix lost Intent or duplicated attestation for %s:\n%s", provider, appendix.full)
 			}
-			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", "", appendix+"\nNew recorded fact.", budget); err != nil {
+			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", "", appendix.full+"\nNew recorded fact.", budget); err != nil {
 				t.Fatal(err)
 			}
 			parts, err := parsePROwnedBody(host.body)
@@ -83,7 +83,7 @@ func TestPRTemplateAzureRestampRefusesOverflowBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts.before += padding + "\n"
-	content, err = composeOwnedPRContent(parts, scm.ProviderAzureDevOps, "", appendix, 4000, "", "")
+	content, err = composeOwnedPRContent(parts, scm.ProviderAzureDevOps, "", prMarkdown{full: appendix}, 4000, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -134,24 +134,26 @@ func wrapPRAppendix(appendix string) string {
 // inserted, like foreign attestations.
 // provider is the forge the body is written to: the stamped bytes must be the
 // bytes it reads back.
-func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title, appendix string, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
+func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title string, appendix prMarkdown, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
 	before := redactPRContent(prContent{Body: parts.before}, provider, runWorktree, worktreesRoot).Body
 	after := redactPRContent(prContent{Body: parts.after}, provider, runWorktree, worktreesRoot).Body
-	// Before the marker escape: removing a control byte must not be able to
-	// splice a marker together after the escape has looked for one.
-	appendix = normalizePRNewlines(provider, neutralizePRControls(appendix))
-	appendix = escapePRAppendixMarkers(appendix)
-	appendix = redactPRContent(prContent{Body: appendix}, provider, runWorktree, worktreesRoot).Body
 	if !parts.managed && before != "" {
 		before += "\n\n"
 	}
-	content := prContent{Title: redactPRContent(prContent{Title: title}, provider, runWorktree, worktreesRoot).Title, Body: before + wrapPRAppendix(appendix) + after}
+	render := func(markdown string) string {
+		// Before the marker escape: removing a control byte must not be able to
+		// splice a marker together after the escape has looked for one.
+		markdown = normalizePRNewlines(provider, neutralizePRControls(markdown))
+		markdown = escapePRAppendixMarkers(markdown)
+		markdown = redactPRContent(prContent{Body: markdown}, provider, runWorktree, worktreesRoot).Body
+		return before + wrapPRAppendix(markdown) + after
+	}
+	content := prContent{Title: redactPRContent(prContent{Title: title}, provider, runWorktree, worktreesRoot).Title, Body: render(appendix.full)}
 	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
-		reduced := withoutDocumentPRPaths(appendix)
-		if reduced == appendix {
+		if !appendix.dropDocumentPaths() {
 			return prContent{}, err
 		}
-		content.Body = before + wrapPRAppendix(reduced) + after
+		content.Body = render(appendix.full)
 		if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
 			return prContent{}, err
 		}
@@ -176,14 +178,14 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 // briefly retain that exact pre-write body; any other divergence or a write error
 // fails without replaying a potentially applied write.
 func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
-	return updateOwnedPRWithNarrative(sctx, host, pr, initial, title, emptyNarrative, appendix, bodyLimit, nil)
+	return updateOwnedPRWithNarrative(sctx, host, pr, initial, title, emptyNarrative, prMarkdown{full: appendix}, bodyLimit, nil)
 }
 
 // A freshly supplied description replaces the author narrative, including
 // text after a previous owned appendix. The generated appendix is rebuilt for
 // this head. A legacy unowned attestation can be replaced because the caller
 // explicitly supplied the entire replacement narrative.
-func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int, suppliedNarrative *string) error {
+func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative string, appendix prMarkdown, bodyLimit int, suppliedNarrative *string) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
 		return fmt.Errorf("provider cannot read PR content; author-safe template updates are unsupported")
@@ -205,7 +207,7 @@ func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *s
 		// The author text around the appendix is kept verbatim, so only
 		// references it does not already close are added.
 		authorText := parts.before + "\n" + parts.after
-		content, err := composeOwnedPRContent(parts, resolvedProviderForBody(sctx), title, appendIssuesSection(appendix, issuesSection(sctx, authorText)), bodyLimit, sctx.WorkDir, nmWorktreesRoot())
+		content, err := composeOwnedPRContent(parts, resolvedProviderForBody(sctx), title, appendixWithIssues(appendix, issuesSection(sctx, authorText)), bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 		if err != nil {
 			return err
 		}

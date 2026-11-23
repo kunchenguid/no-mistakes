@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -17,7 +16,7 @@ import (
 func ownedFixture(t *testing.T) (prContent, string) {
 	t.Helper()
 	appendix := "## Risk Assessment\n\nLow recorded risk.\n\n## Testing\n\nRecorded evidence link.\n\n" + compliantPipelineBody(t, testPipelineHeadSHA)
-	content, err := composeOwnedPRContent(prOwnedBody{before: "## Testing\n\n- [x] Human checked this\n\nCloses test/repo#7"}, scm.ProviderGitHub, "feat: story", appendix, 0, "", "")
+	content, err := composeOwnedPRContent(prOwnedBody{before: "## Testing\n\n- [x] Human checked this\n\nCloses test/repo#7"}, scm.ProviderGitHub, "feat: story", prMarkdown{full: appendix}, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,11 +27,13 @@ func TestComposeOwnedPRContent_DropsDocumentPathsBeforeAzureOverflow(t *testing.
 	t.Parallel()
 	const provider = scm.ProviderAzureDevOps
 	const limit = 4000
-	step := &db.StepResult{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted}
-	steps := []*db.StepResult{step}
-	clean := `{"findings":[]}`
-	rounds := map[string][]*db.StepRound{step.ID: {{Round: 1, FindingsJSON: &clean}}}
-	baseAppendix, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, provider)
+	sctx, _, _ := templateTestContext(t)
+	step := insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[]}`, "")
+	pr := &PRStep{}
+	baseAppendix, err := pr.buildPRAppendix(sctx, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
 	parts := prOwnedBody{before: "## Author notes\n\n", after: "\n\nAuthor follow-up."}
 	previous, err := composeOwnedPRContent(parts, provider, "Owner docs", baseAppendix, limit, "", "")
 	if err != nil {
@@ -56,8 +57,13 @@ func TestComposeOwnedPRContent_DropsDocumentPathsBeforeAzureOverflow(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	step.FindingsJSON = &raw
-	appendix, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, provider)
+	if err := sctx.DB.SetStepFindings(step.ID, raw); err != nil {
+		t.Fatal(err)
+	}
+	appendix, err := pr.buildPRAppendix(sctx, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
 	full, err := composeOwnedPRContent(parts, provider, "Owner docs", appendix, 0, "", "")
 	if err != nil || scm.PRBodyLen(full.Body) <= limit {
 		t.Fatalf("fixture must exceed the Azure limit with formatted paths, got %d units, %v", scm.PRBodyLen(full.Body), err)
@@ -76,6 +82,34 @@ func TestComposeOwnedPRContent_DropsDocumentPathsBeforeAzureOverflow(t *testing.
 	}
 }
 
+func TestComposeOwnedPRContent_RefusesOversizedQuotedDocumentReport(t *testing.T) {
+	t.Parallel()
+	const provider = scm.ProviderAzureDevOps
+	const limit = 4000
+	sctx, _, _ := templateTestContext(t)
+	insertCompletedStep(t, sctx, types.StepDocument, "", "")
+	sctx.UserIntent = "Preserve this example from an earlier PR.\n\n" +
+		"<details>\n<summary>✅ **Document** - passed</summary>\n\n" +
+		"Paths Document committed outside the submitted change\n\n- <code>owner.md</code>\n\n" +
+		"✅ No issues found.\n</details>"
+	appendix, err := (&PRStep{}).buildPRAppendix(sctx, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := prOwnedBody{before: "Author notes."}
+	full, err := composeOwnedPRContent(parts, provider, "", appendix, 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(full.Body, "## Intent\n\n"+sctx.UserIntent) {
+		t.Fatalf("fixture did not publish the quoted report within Intent:\n%s", full.Body)
+	}
+	parts.before += strings.Repeat("a", limit+1-scm.PRBodyLen(full.Body))
+	if _, err := composeOwnedPRContent(parts, provider, "", appendix, limit, "", ""); err == nil || !strings.Contains(err.Error(), "exceeds provider budget") {
+		t.Fatalf("expected the owned budget refusal for quoted Intent, got %v", err)
+	}
+}
+
 func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {
 	t.Parallel()
 	body := "Mention no-mistakes-pr-appendix by name without claiming ownership.\n\n## Intent\n\nAuthor intent\n\n## Risk Assessment\n\nAuthor risk\n\n## Tests\n\n- [x] Human checkbox\n\n## Pipeline\n\nRelease plan\nCloses test/repo#1"
@@ -84,7 +118,7 @@ func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {
 		t.Fatalf("heading resemblance claimed author content: %+v, %v", parts, err)
 	}
 	_, appendix := ownedFixture(t)
-	got, err := composeOwnedPRContent(parts, scm.ProviderGitHub, "", appendix, 0, "", "")
+	got, err := composeOwnedPRContent(parts, scm.ProviderGitHub, "", prMarkdown{full: appendix}, 0, "", "")
 	if err != nil || !strings.HasPrefix(got.Body, body) {
 		t.Fatalf("author headings removed: %s, %v", got.Body, err)
 	}
@@ -126,14 +160,14 @@ func TestPROwnershipFailsSizePressureWithoutTruncation(t *testing.T) {
 		{before: strings.Repeat("author\n", maxPullRequestBodyBytes)},
 		{before: "author", after: strings.Repeat("closing refs\n", maxPullRequestBodyBytes), managed: true},
 	} {
-		if _, err := composeOwnedPRContent(parts, scm.ProviderGitHub, "", appendix, 0, "", ""); err == nil {
+		if _, err := composeOwnedPRContent(parts, scm.ProviderGitHub, "", prMarkdown{full: appendix}, 0, "", ""); err == nil {
 			t.Fatal("oversized author content was truncated")
 		}
 	}
-	if _, err := composeOwnedPRContent(prOwnedBody{before: "author"}, scm.ProviderGitHub, "", appendix+strings.Repeat("evidence\n", maxPullRequestBodyBytes), 0, "", ""); err == nil {
+	if _, err := composeOwnedPRContent(prOwnedBody{before: "author"}, scm.ProviderGitHub, "", prMarkdown{full: appendix + strings.Repeat("evidence\n", maxPullRequestBodyBytes)}, 0, "", ""); err == nil {
 		t.Fatal("oversized evidence was dropped")
 	}
-	if _, err := composeOwnedPRContent(prOwnedBody{before: strings.Repeat("😀", 100)}, scm.ProviderGitHub, "", appendix, 400, "", ""); err == nil {
+	if _, err := composeOwnedPRContent(prOwnedBody{before: strings.Repeat("😀", 100)}, scm.ProviderGitHub, "", prMarkdown{full: appendix}, 400, "", ""); err == nil {
 		t.Fatal("provider character cap ignored")
 	}
 }
@@ -142,7 +176,7 @@ func TestPROwnershipPublicationRedactionPrecedesDigest(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	appendix += "\n\nEvidence /Users/private/evidence.png\n```text\n" + prAppendixEnd + "\n```"
-	got, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\n/home/person/work\n\n", after: "\nC:\\Users\\person\\notes", managed: true}, scm.ProviderGitHub, "feat: /Users/person/path", appendix, 0, "", "")
+	got, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\n/home/person/work\n\n", after: "\nC:\\Users\\person\\notes", managed: true}, scm.ProviderGitHub, "feat: /Users/person/path", prMarkdown{full: appendix}, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +322,7 @@ func TestPROwnershipRedactsRunWorktreePaths(t *testing.T) {
 	worktrees := filepath.Join(t.TempDir(), "nm-home", "worktrees")
 	runWorktree := filepath.Join(worktrees, "ab12cd34ef56", "run-1")
 	appendix += "\n\nran " + filepath.Join(runWorktree, "bin", "tool")
-	got, err := composeOwnedPRContent(prOwnedBody{before: "saw " + filepath.Join(worktrees, "0f0f0f0f0f0f", "run-0", "out.log")}, scm.ProviderGitHub, "feat: "+runWorktree, appendix, 0, runWorktree, worktrees)
+	got, err := composeOwnedPRContent(prOwnedBody{before: "saw " + filepath.Join(worktrees, "0f0f0f0f0f0f", "run-0", "out.log")}, scm.ProviderGitHub, "feat: "+runWorktree, prMarkdown{full: appendix}, 0, runWorktree, worktrees)
 	if err != nil {
 		t.Fatal(err)
 	}

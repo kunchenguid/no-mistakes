@@ -9,7 +9,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -131,6 +130,10 @@ type pipelineAttestationPolicy struct {
 }
 
 func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy) (string, string) {
+	return renderPipelineSummary(steps, rounds, headSHA, provider, policy, true)
+}
+
+func renderPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy, showDocumentPaths bool) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
@@ -143,7 +146,7 @@ func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.Ste
 			continue
 		}
 		stepRounds := rounds[sr.ID]
-		line, detail := buildStepEntry(sr, stepRounds, flavor)
+		line, detail := buildStepEntry(sr, stepRounds, flavor, showDocumentPaths)
 		if line != "" && detail != "" {
 			// Step details quote agent text (findings, fix summaries, tested
 			// commands). A foreign attestation comment in one lands after the
@@ -380,7 +383,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		}
 
 		stepRounds := rounds[sr.ID]
-		line, _ := buildStepEntry(sr, stepRounds, opts.flavor)
+		line, _ := buildStepEntry(sr, stepRounds, opts.flavor, false)
 		if line == "" {
 			return ""
 		}
@@ -1192,10 +1195,10 @@ func formatTestingDuration(ms int64) string {
 	return d.Round(time.Second).String()
 }
 
-func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) (statusLine, detailBlock string) {
+func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, showDocumentPaths bool) (statusLine, detailBlock string) {
 	name := stepDisplayName(sr.StepName)
 	buildDetail := func(line string) (string, string) {
-		return line, buildStepDetails(line, sr, rounds, flavor)
+		return line, buildStepDetails(line, sr, rounds, flavor, showDocumentPaths)
 	}
 
 	switch sr.Status {
@@ -1448,9 +1451,9 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // round is shown as the review state observed at its end; a fix round is
 // prefixed with its recorded outcome so a reader can follow the result without
 // mentally replaying rounds.
-func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
+func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, showDocumentPaths bool) string {
 	var inner strings.Builder
-	if sr.StepName == types.StepDocument {
+	if showDocumentPaths && sr.StepName == types.StepDocument {
 		writeDocumentOffChangePaths(&inner, sr, rounds, flavor)
 	}
 	// A skipped step whose rounds recorded no findings never checked
@@ -1518,20 +1521,6 @@ const (
 	documentPRPathMore    = " more (see the Document step log)"
 	maxDocumentPRPaths    = 5
 )
-
-var documentPRPathBlock = regexp.MustCompile(
-	`(?m)^((?:<details>\n<summary>|### )[^\n]* \*\*Document\*\* - [^\n]+\n\n)` +
-		regexp.QuoteMeta(documentPRPathHeading) + `\n\n(?:- [^\n]+\n)*` +
-		`(?:\n(?:and [0-9]+` + regexp.QuoteMeta(documentPRPathMore) + `|` +
-		regexp.QuoteMeta(types.DocumentOffChangeOmission) + `)\n)?\n?`,
-)
-
-func withoutDocumentPRPaths(pipeline string) string {
-	if !strings.Contains(pipeline, documentPRPathHeading) {
-		return pipeline
-	}
-	return documentPRPathBlock.ReplaceAllString(pipeline, "${1}")
-}
 
 func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
 	preview := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)

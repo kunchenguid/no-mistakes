@@ -222,7 +222,7 @@ func TestCallerRestrictionsCannotComplyIsReportableAtTheNormalGate(t *testing.T)
 	// Persist the agent's finding as a real step round before PR rendering.
 	insertCompletedStep(t, sctx, types.StepDocument, outcome.Findings, "")
 	pipelineMD, risk, testingMD, evidence := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content, err := (&PRStep{}).fallbackPRContent(sctx, "", risk, testingMD, pipelineMD, evidence, 0, scm.ProviderGitHub)
+	content, err := (&PRStep{}).fallbackPRContent(sctx, "", risk, testingMD, prMarkdown{full: pipelineMD}, evidence, 0, scm.ProviderGitHub)
 	if err != nil {
 		t.Fatal(err)
 	}

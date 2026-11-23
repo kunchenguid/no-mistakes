@@ -447,10 +447,16 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 	return nil
 }
 
+func appendixWithIssues(appendix prMarkdown, section string) prMarkdown {
+	return appendix.mapText(func(markdown string) string {
+		return appendIssuesSection(markdown, section)
+	})
+}
+
 // assembleDraftPRBody assembles an ordinary drafted body and appends the
 // Issues section last, reserving its room up front so body-limit truncation
 // sheds generated evidence rather than a closing reference.
-func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipelineMD prMarkdown, evidenceMD string, bodyLimit int, provider scm.Provider) string {
 	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
 	reserve := 0
 	if section != "" {

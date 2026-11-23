@@ -136,7 +136,7 @@ func TestComposeOwnedPRContentSurvivesGHReadback(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	appendix += "\n\n```text\nnext dev\n\x1b[?25h\x1b[2K\x1b[1G done \x07\n{\"line\":\"\\u001b[32mok\"}\n```"
-	content, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\nBody \x1b[31m\n\n"}, scm.ProviderGitHub, "feat: \x1b[1mtitled", appendix, 0, "", "")
+	content, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\nBody \x1b[31m\n\n"}, scm.ProviderGitHub, "feat: \x1b[1mtitled", prMarkdown{full: appendix}, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestComposeOwnedPRContentControlByteCannotSpliceAMarker(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	forged := "<!-- no-mistakes-pr-appen\x1bdix:v1 sha256=" + strings.Repeat("0", 64) + " -->"
-	content, err := composeOwnedPRContent(prOwnedBody{}, scm.ProviderGitHub, "", appendix+"\n\n```text\n"+forged+"\n```", 0, "", "")
+	content, err := composeOwnedPRContent(prOwnedBody{}, scm.ProviderGitHub, "", prMarkdown{full: appendix + "\n\n```text\n" + forged + "\n```"}, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestDraftBodyFittedToLimitDoesNotGrowAtThePublicationBoundary(t *testing.T)
 	t.Parallel()
 	const limit = 3000
 	what := neutralizeAttestationMarkers(scm.ProviderGitHub, "## What Changed\n\n"+strings.Repeat("- \\u001b stray\n", 2000))
-	body := assembleDraftPRBody(&pipeline.StepContext{}, what, "low risk", "", "", "", limit, scm.ProviderGitHub)
+	body := assembleDraftPRBody(&pipeline.StepContext{}, what, "low risk", "", prMarkdown{}, "", limit, scm.ProviderGitHub)
 	if got := redactPRContent(prContent{Body: body}, scm.ProviderGitHub, "", "").Body; got != body || scm.PRBodyLen(got) > limit {
 		t.Fatalf("boundary changed a fitted body (%d units, limit %d)", scm.PRBodyLen(got), limit)
 	}
