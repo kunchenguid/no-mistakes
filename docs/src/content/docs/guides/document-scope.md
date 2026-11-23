@@ -11,12 +11,14 @@ no-mistakes axi run --intent "Change the default in config/settings.yaml. Edit o
 
 Document receives the run's intent and submitted paths on its first pass and on fix rounds, including when it also handles Lint. With a recorded submitted head and a base commit, Document diffs the submitted head against its merge base with the base commit resolved for the pass.
 
+Document uses Git's usual submodule ignore rules to decide whether to launch. It skips the pass if the diff from base to the working head contains only ignored submodule pointer updates. When Document runs, both the submitted path list and the comparison that identifies edits outside the submission account for submodule pointer changes.
+
 The submitted paths give the agent context for applying explicit file restrictions. If a restriction rules out a repair, the prompt tells the agent to leave the file untouched and return an `ask-user` finding naming the file and the proposed repair. A recorded human decision can amend the original intent.
 
 On an unrestricted run, Document can update an owner document outside the submitted change. The report lists paths outside the submission that changed between the commits before and after the pass, including changes left by earlier steps if Document commits them. The TUI shows a preview at the gate and after completion when space permits. Quoted paths use Go string escapes.
 
-AXI puts `document_off_change_paths` in the gate object while Document is parked and in the run object shown by `no-mistakes axi status` after completion. If the preview omits paths, `document_off_change_note` points to the step log. Run `no-mistakes axi logs --step document --full` for the recorded list.
+AXI puts `document_off_change_paths` in the gate object while Document is parked and in the run object shown by `no-mistakes axi status` after completion. If the preview omits paths, `document_off_change_note` points to the step log. Run `no-mistakes axi logs --step document --full` for the recorded list. The step log records committed paths outside the submission even if invalid structured output causes Document to fail.
 
 When a retry carries a Document result with reported paths, the log command reads the original Document log and identifies its run in `source_run`. This also applies when `--run <id>` selects the retry explicitly. The full list is available while the original log is retained.
 
-The PR's Pipeline section can show up to five paths in sorted order. If the full description exceeds either size limit, the pipeline removes the generated preview before applying the existing PR size rules. [`pr.appendix: minimal`](/no-mistakes/reference/repo-config/#prappendix) also omits the preview.
+The PR's Pipeline section can show up to five paths in sorted order. If the description with the preview exceeds the provider's limit or the pipeline's byte limit, the pipeline tries a rendering with only the generated preview omitted. The existing PR size rules still apply. [`pr.appendix: minimal`](/no-mistakes/reference/repo-config/#prappendix) also omits the preview.
