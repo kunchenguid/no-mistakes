@@ -31,25 +31,39 @@ func TestComposeOwnedPRContent_RefusesOversizedQuotedDocumentReport(t *testing.T
 	const provider = scm.ProviderAzureDevOps
 	const limit = 4000
 	sctx, _, _ := templateTestContext(t)
-	insertCompletedStep(t, sctx, types.StepDocument, "", "")
+	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["generated.md"]}`, "")
 	sctx.UserIntent = "Preserve this example from an earlier PR.\n\n" +
 		"<details>\n<summary>✅ **Document** - passed</summary>\n\n" +
 		"Paths Document committed outside the submitted change\n\n- <code>owner.md</code>\n\n" +
 		"✅ No issues found.\n</details>"
-	appendix, err := (&PRStep{}).buildPRAppendix(sctx, provider)
+	appendix, err := (&PRStep{}).buildPRAppendixVariants(sctx, provider)
 	if err != nil {
 		t.Fatal(err)
+	}
+	const generatedPath = "- <code>generated.md</code>"
+	if !strings.Contains(appendix.full, generatedPath) || appendix.withoutDocumentPreview == "" {
+		t.Fatal("fixture needs a generated preview and a preview-free appendix")
 	}
 	parts := prOwnedBody{before: "Author notes."}
-	full, err := composeOwnedPRContent(parts, provider, "", appendix, 0, "", "")
+	withoutPreview, err := composeOwnedPRContent(parts, provider, "", appendix.withoutDocumentPreview, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(full.Body, "## Intent\n\n"+sctx.UserIntent) {
-		t.Fatalf("fixture did not publish the quoted report within Intent:\n%s", full.Body)
+	padding := limit - scm.PRBodyLen(withoutPreview.Body)
+	if padding < 0 {
+		t.Fatal("fixture needs the preview-free body to fit before padding")
 	}
-	parts.before += strings.Repeat("a", limit+1-scm.PRBodyLen(full.Body))
-	if _, err := composeOwnedPRContent(parts, provider, "", appendix, limit, "", ""); err == nil || !strings.Contains(err.Error(), "exceeds provider budget") {
+	parts.before += strings.Repeat("a", padding)
+	fitting, err := composeOwnedPRContentWithPreview(parts, provider, "", appendix, "", limit, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scm.PRBodyLen(fitting.Body) != limit || strings.Contains(fitting.Body, generatedPath) ||
+		!strings.Contains(fitting.Body, "## Intent\n\n"+sctx.UserIntent) {
+		t.Fatal("the fitting body should omit the generated preview and preserve the quoted Intent")
+	}
+	parts.before += "a"
+	if _, err := composeOwnedPRContentWithPreview(parts, provider, "", appendix, "", limit, "", ""); err == nil || !strings.Contains(err.Error(), "exceeds provider budget") {
 		t.Fatalf("expected the owned budget refusal for quoted Intent, got %v", err)
 	}
 }
