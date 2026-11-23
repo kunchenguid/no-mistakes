@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -113,8 +114,15 @@ func TestAxiDocumentOffChangePathsOnDeliveryRetry(t *testing.T) {
 	if err := runAxiLogs(cmd, "document", runID, true); err != nil {
 		t.Fatalf("logs: %v\n%s", err, &out)
 	}
-	if !strings.Contains(out.String(), "source_run: "+source.ID) || !strings.Contains(out.String(), "Full path: owner.md") {
-		t.Fatalf("retry logs omitted the original Document log:\n%s", &out)
+	var doc struct {
+		SourceRun string   `toon:"source_run"`
+		Log       []logRow `toon:"log"`
+	}
+	if err := toon.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode retry logs: %v\n%s", err, &out)
+	}
+	if doc.SourceRun != source.ID || len(doc.Log) != 1 || doc.Log[0].Line != "Full path: owner.md" {
+		t.Fatalf("retry logs returned source %q and rows %v, want source %q and the original Document log", doc.SourceRun, doc.Log, source.ID)
 	}
 }
 
