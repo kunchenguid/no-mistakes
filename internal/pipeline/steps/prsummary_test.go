@@ -43,7 +43,7 @@ func TestBuildPipelineSummary_DocumentPRPreviewShowsFiveSortedPaths(t *testing.T
 	}
 }
 
-func TestBuildPipelineSummary_DocumentPreviewVariantsPreserveBlock(t *testing.T) {
+func TestBuildPipelineSummary_DocumentPreviewPreservesStatusFormatting(t *testing.T) {
 	t.Parallel()
 	const previewHeading = "Paths Document committed outside the submitted change\n\n"
 	findings := `{"findings":[],"document_off_change_paths":["README.md"]}`
@@ -55,12 +55,19 @@ func TestBuildPipelineSummary_DocumentPreviewVariantsPreserveBlock(t *testing.T)
 		path     string
 	}{
 		{scm.ProviderGitHub, "<summary>✅ **Document** - passed</summary>", "<code>README.md</code>"},
-		{scm.ProviderBitbucket, "### ✅ **Document** - passed", "`README.md`"},
+		{scm.ProviderBitbucket, "✅ **Document** - passed", "`README.md`"},
 	} {
 		t.Run(string(tc.provider), func(t *testing.T) {
 			full, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
 			without, _ := buildPipelineSummaryWithPreview(steps, rounds, testPipelineHeadSHA, tc.provider, pipelineAttestationPolicy{}, false)
 			preview := previewHeading + "- " + tc.path + "\n\n"
+			if tc.provider == scm.ProviderBitbucket {
+				want := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + tc.heading + "\n"
+				if without != want || full != want+"\n"+strings.TrimSuffix(preview, "\n") {
+					t.Fatalf("expected a plain Document status row with an optional preview, got:\n%s\n%s", without, full)
+				}
+				return
+			}
 			if !strings.Contains(full, tc.heading+"\n\n"+preview+"✅ No issues found.") {
 				t.Fatalf("expected the preview inside the Document block:\n%s", full)
 			}

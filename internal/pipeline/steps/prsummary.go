@@ -825,7 +825,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		inner.WriteString("\n\n")
 	}
 	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(escapePipelineFoldMarkers(fenceBody))))
-	folded := foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor, false)
+	folded := foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
 	if attachment == "" {
 		return folded
 	}
@@ -1474,21 +1474,25 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // prefixed with its recorded outcome so a reader can follow the result without
 // mentally replaying rounds.
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, documentPreview bool) string {
-	var inner strings.Builder
-	var hasDocumentReport bool
-	if sr.StepName == types.StepDocument {
+	var inner, preview strings.Builder
+	if documentPreview && sr.StepName == types.StepDocument {
 		report := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)
-		hasDocumentReport = report.HasDocumentOffChangePaths()
-		if hasDocumentReport && documentPreview {
-			writeDocumentOffChangePaths(&inner, report, flavor)
+		if report.HasDocumentOffChangePaths() {
+			writeDocumentOffChangePaths(&preview, report, flavor)
 		}
+	}
+	fold := func() string {
+		if flavor == prBodyMarkdown && preview.Len() > 0 {
+			return foldPRBlock(summaryLine, inner.String(), flavor) + "\n" + strings.TrimSpace(preview.String()) + "\n"
+		}
+		return foldPRBlock(summaryLine, preview.String()+inner.String(), flavor)
 	}
 	// A skipped step whose rounds recorded no findings never checked
 	// anything, so "No issues found" under a "skipped" summary would
 	// claim a pass.
 	if len(rounds) == 0 || (sr.Status == types.StepStatusSkipped && !roundsHaveFindings(rounds)) {
 		writeStepStatusDetail(&inner, sr, flavor)
-		return foldPRBlock(summaryLine, inner.String(), flavor, hasDocumentReport)
+		return fold()
 	}
 
 	// True only when the step recorded final findings but no round captured
@@ -1540,7 +1544,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		inner.WriteString("\n")
 	}
 
-	return foldPRBlock(summaryLine, inner.String(), flavor, hasDocumentReport)
+	return fold()
 }
 
 const maxDocumentPRPaths = 5
@@ -1586,10 +1590,10 @@ func renderDocumentPath(path string, flavor prBodyFlavor) string {
 	return fence + path + fence
 }
 
-func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor, keepDetails bool) string {
+func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
 	inner = strings.TrimSpace(inner)
 	if flavor == prBodyMarkdown {
-		if !keepDetails && (inner == "" || isTautologicalStepInner(inner)) {
+		if inner == "" || isTautologicalStepInner(inner) {
 			return summaryLine + "\n"
 		}
 		return "### " + summaryLine + "\n\n" + inner + "\n"

@@ -75,24 +75,43 @@ func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
 		provider scm.Provider
 		limit    int
 		budget   int
-		owned    bool
+		mode     string
 	}{
-		{"draft/provider", scm.ProviderAzureDevOps, 4000, 4000, false},
-		{"draft/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, false},
-		{"owned/provider", scm.ProviderAzureDevOps, 4000, 4000, true},
-		{"owned/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, true},
+		{"draft/provider", scm.ProviderAzureDevOps, 4000, 4000, "draft"},
+		{"draft/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, "draft"},
+		{"owned/provider", scm.ProviderAzureDevOps, 4000, 4000, "kept"},
+		{"owned/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, "kept"},
+		{"draft/bitbucket", scm.ProviderBitbucket, 0, maxPullRequestBodyBytes, "draft"},
+		{"fallback/bitbucket", scm.ProviderBitbucket, 0, maxPullRequestBodyBytes, "fallback"},
+		{"owned-update/bitbucket", scm.ProviderBitbucket, 0, maxPullRequestBodyBytes, "update"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sctx, ag, _ := templateTestContext(t)
 			sctx.Config.PR.Template = ""
+			if tc.provider == scm.ProviderBitbucket {
+				sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo"
+			}
 			doc := insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[]}`, "")
 			const title = "feat: document scope"
 			const body = "## What Changed\n\nAuthor note about `owner.md`."
 			step := &PRStep{}
 			draft := func(narrative string, limit int) (prContent, error) {
-				if tc.owned {
+				switch tc.mode {
+				case "kept":
 					return step.publishKeptDraft(sctx, tc.provider, title, narrative, limit)
+				case "fallback":
+					pipelineMD, risk, testing, evidence := step.buildPipelineSectionFor(sctx, tc.provider, false)
+					return step.fallbackPRContentWithPreview(sctx, narrative, risk, testing, pipelineMD, evidence, limit, tc.provider)
+				case "update":
+					appendix, err := step.buildPRAppendixVariants(sctx, tc.provider)
+					if err != nil {
+						return prContent{}, err
+					}
+					initial := scm.PRContent{Title: "Author title", Body: narrative + "\n\n" + wrapPRAppendix(carriedAttestation(appendix.full))}
+					host := &ownershipRaceHost{body: initial.Body}
+					err = updateOwnedPRWithPreview(sctx, host, &scm.PR{Number: "42"}, initial, "", "", appendix, limit, nil)
+					return prContent{Body: host.body}, err
 				}
 				ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
 					data, err := json.Marshal(prContent{Title: title, Body: narrative})
@@ -116,6 +135,9 @@ func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
 			want, err := draft(narrative, tc.limit)
 			if err != nil || measure(want.Body) != tc.budget {
 				t.Fatalf("fixture without report has size %d, want %d, err %v", measure(want.Body), tc.budget, err)
+			}
+			if tc.provider == scm.ProviderBitbucket && !strings.Contains(want.Body+"\n", "\n✅ **Document** - passed\n") {
+				t.Fatal("fixture without a report must use main's plain Bitbucket Document status row")
 			}
 
 			if err := sctx.DB.SetStepFindings(doc.ID, `{"findings":[],"document_off_change_paths":["owner.md"]}`); err != nil {
