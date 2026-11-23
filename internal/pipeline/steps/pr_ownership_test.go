@@ -71,7 +71,7 @@ func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
 			t.Parallel()
 			sctx, ag, _ := templateTestContext(t)
 			sctx.Config.PR.Template = ""
-			doc := insertCompletedStep(t, sctx, types.StepDocument, "", "")
+			doc := insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[]}`, "")
 			const title = "feat: document scope"
 			const body = "## What Changed\n\nAuthor note about `owner.md`."
 			step := &PRStep{}
