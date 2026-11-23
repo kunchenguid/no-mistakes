@@ -626,7 +626,16 @@ func (s *CIStep) otherChecksSettledGreen(sctx *pipeline.StepContext) bool {
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL, HeadSHA: sctx.Run.HeadSHA}
 	checks, _, moved, err := getCIChecks(sctx.Ctx, host, pr)
-	if err != nil || moved || hasPendingChecks(checks) || hasUnresolvedChecks(checks) {
+	if err != nil || moved {
+		return false
+	}
+	var unheld []scm.Check
+	for _, check := range checks {
+		if !(check.Pending() && check.HeldForHuman()) {
+			unheld = append(unheld, check)
+		}
+	}
+	if hasPendingChecks(unheld) || hasUnresolvedChecks(unheld) {
 		return false
 	}
 	bots := scm.ReviewBotsFor(requiredReviews(sctx))

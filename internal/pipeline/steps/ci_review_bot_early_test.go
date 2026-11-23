@@ -301,6 +301,10 @@ func TestCIStep_ReviewBotEarlyApprovalCompletesOnlyWhenEveryOtherCheckIsGreen(t 
 		{"slow check still running", func(t *testing.T) []string {
 			return append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed)), greenGreptileCommentJSON)
 		}, true},
+		{"check held for a person", func(t *testing.T) []string {
+			env := append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, greptilePassed)), greenGreptileCommentJSON)
+			return append(env, `FAKE_CLI_WORKFLOW_RUNS=[{"id":101,"name":"deploy","status":"completed","conclusion":"action_required","updated_at":"2026-09-24T12:34:56Z"}]`)
+		}, false},
 		{"live read fails", func(t *testing.T) []string {
 			return append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, greptilePassed)), "FAKE_CLI_CHECKS_ERR=read failed")
 		}, true},
