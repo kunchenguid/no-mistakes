@@ -102,4 +102,39 @@ func TestAutoFixCeilingJourney(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("pushed config cannot declare the ceiling", func(t *testing.T) {
+		h := NewHarness(t, SetupOpts{Agent: "claude"})
+		globalConfig := filepath.Join(h.NMHome, "config.yaml")
+		data, err := os.ReadFile(globalConfig)
+		if err != nil {
+			t.Fatalf("read global config: %v", err)
+		}
+		if err := os.WriteFile(globalConfig, append(data, "auto_fix_ceiling:\n  test: 0\n"...), 0o644); err != nil {
+			t.Fatalf("write global config: %v", err)
+		}
+		setupMachineLocalCommands(t, h, "")
+
+		const branch = "feature/ceiling-declared-by-repo"
+		h.CommitChange(branch, ".no-mistakes.yaml", "auto_fix_ceiling:\n  test: 9\nauto_fix:\n  test: 3\n", "repo tries to set the ceiling")
+		h.PushToGate(branch)
+		refused := h.WaitForRun(branch, 120*time.Second)
+		if refused.Status != types.RunFailed || refused.Error == nil || !strings.Contains(*refused.Error, "auto_fix_ceiling is global-only") {
+			t.Fatalf("run status = %s (error=%v), want failed with auto_fix_ceiling is global-only", refused.Status, refused.Error)
+		}
+
+		h.CommitChange(branch, ".no-mistakes.yaml", "auto_fix:\n  test: 3\n", "drop the repo ceiling")
+		h.PushToGate(branch)
+		run := h.WaitForRun(branch, 120*time.Second)
+		if run.ID == refused.ID || run.Status != types.RunCompleted {
+			t.Fatalf("follow-up run %s status = %s (error=%v), want a new completed run", run.ID, run.Status, run.Error)
+		}
+		got, ok := findStep(run.Steps, types.StepTest)
+		if !ok || got.AutoFixLimit != 0 {
+			t.Fatalf("test step recorded auto_fix_limit = %d (found=%v), want operator ceiling 0 over pushed 3", got.AutoFixLimit, ok)
+		}
+		if log := readStepLog(t, h, run.ID, string(types.StepTest)); !strings.Contains(log, ceilingLine+"test auto-fix limit from 3 to 0") {
+			t.Fatalf("test log does not record the operator ceiling:\n%s", log)
+		}
+	})
 }
