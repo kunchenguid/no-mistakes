@@ -282,15 +282,39 @@ func TestCIStep_ReviewBotEarlyApprovalKeepsMonitoringForALaterRedCheck(t *testin
 	}
 }
 
-// Once every check has completed there is nothing left to monitor, so the
-// answer completes the step as it always did.
-func TestCIStep_ReviewBotEarlyApprovalCompletesWhenNoCheckIsRunning(t *testing.T) {
+// A check that went red while the early gate was parked, or a live read that
+// fails, never lets the answer complete the step: that check has not had its
+// round. Only a read of every non-bot check completed green does.
+func TestCIStep_ReviewBotEarlyApprovalCompletesOnlyWhenEveryOtherCheckIsGreen(t *testing.T) {
 	t.Parallel()
-	step, sctx, parked, _ := earlyParkedStep(t, checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed))
-	sctx.Env = append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, greptilePassed)), greenGreptileCommentJSON)
-	if step.ContinueAfterApproval(sctx, parked.Findings) {
-		t.Fatal("ContinueAfterApproval = true with every check completed, want an ordinary approval")
+	for _, tc := range []struct {
+		name string
+		env  func(t *testing.T) []string
+		want bool
+	}{
+		{"every check green", func(t *testing.T) []string {
+			return append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, greptilePassed)), greenGreptileCommentJSON)
+		}, false},
+		{"slow check turned red while parked", func(t *testing.T) []string {
+			return append(fakeCIGH(t, "OPEN", checksJSON(slowCheckFailed, earlyBuildPassed, greptilePassed)), greenGreptileCommentJSON)
+		}, true},
+		{"slow check still running", func(t *testing.T) []string {
+			return append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed)), greenGreptileCommentJSON)
+		}, true},
+		{"live read fails", func(t *testing.T) []string {
+			return append(fakeCIGH(t, "OPEN", checksJSON(earlyBuildPassed, greptilePassed)), "FAKE_CLI_CHECKS_ERR=read failed")
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			step, sctx, parked, _ := earlyParkedStep(t, checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed))
+			sctx.Env = tc.env(t)
+			if got := step.ContinueAfterApproval(sctx, parked.Findings); got != tc.want {
+				t.Fatalf("ContinueAfterApproval = %v, want %v", got, tc.want)
+			}
+		})
 	}
+	step, sctx, _, _ := earlyParkedStep(t, checksJSON(earlyBuildPassed, slowCheckPending, greptilePassed))
 	if step.ContinueAfterApproval(sctx, `{"findings":[{"id":"x","severity":"error","category":"ci-check","description":"red"}]}`) {
 		t.Fatal("ContinueAfterApproval = true for a gate that is not review-bot findings only")
 	}

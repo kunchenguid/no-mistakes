@@ -580,13 +580,14 @@ func earlyFindingKey(item Finding) string {
 }
 
 // ContinueAfterApproval keeps the CI step monitoring when an operator approves
-// or skips an early review-bot round while checks are still running: the
-// answer dismisses those comments for the early observation only, and a check
-// that turns red later still gets its own round. Any gate that is not made of
-// review-bot findings alone, or whose live checks cannot be read or have all
-// completed, completes as an ordinary approve or skip does.
+// or skips an early review-bot round: the answer dismisses those comments for
+// the early observation only, and any other check that is still running, has
+// failed, or cannot be read gets its own round from the settled observation.
+// The step completes as an ordinary approve or skip only for a gate that is
+// not made of review-bot findings alone, or when the live checks were read for
+// this head and every check other than a review bot's has completed green.
 func (s *CIStep) ContinueAfterApproval(sctx *pipeline.StepContext, findingsJSON string) bool {
-	if !reviewBotCommentsEarly(sctx) || sctx.Run == nil || sctx.Run.PRURL == nil {
+	if !reviewBotCommentsEarly(sctx) {
 		return false
 	}
 	parsed, err := types.ParseFindingsJSON(findingsJSON)
@@ -597,6 +598,22 @@ func (s *CIStep) ContinueAfterApproval(sctx *pipeline.StepContext, findingsJSON 
 		if item.Category != types.FindingCategoryCIReviewBot {
 			return false
 		}
+	}
+	if s.otherChecksSettledGreen(sctx) {
+		return false
+	}
+	if s.earlyDismissed == nil {
+		s.earlyDismissed = map[string]bool{}
+	}
+	for _, item := range parsed.Items {
+		s.earlyDismissed[earlyFindingKey(item)] = true
+	}
+	return true
+}
+
+func (s *CIStep) otherChecksSettledGreen(sctx *pipeline.StepContext) bool {
+	if sctx.Run == nil || sctx.Run.PRURL == nil {
+		return false
 	}
 	host, _ := buildHost(sctx, resolvedProvider(sctx))
 	if host == nil || host.Available(sctx.Ctx) != nil {
@@ -609,14 +626,14 @@ func (s *CIStep) ContinueAfterApproval(sctx *pipeline.StepContext, findingsJSON 
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL, HeadSHA: sctx.Run.HeadSHA}
 	checks, _, moved, err := getCIChecks(sctx.Ctx, host, pr)
-	if err != nil || moved || !hasExecutingPendingChecks(checks) {
+	if err != nil || moved || hasPendingChecks(checks) || hasUnresolvedChecks(checks) {
 		return false
 	}
-	if s.earlyDismissed == nil {
-		s.earlyDismissed = map[string]bool{}
-	}
-	for _, item := range parsed.Items {
-		s.earlyDismissed[earlyFindingKey(item)] = true
+	bots := scm.ReviewBotsFor(requiredReviews(sctx))
+	for _, check := range checks {
+		if _, isBot := scm.ReviewBotForCheck(bots, check); !isBot && check.Failing() {
+			return false
+		}
 	}
 	return true
 }
