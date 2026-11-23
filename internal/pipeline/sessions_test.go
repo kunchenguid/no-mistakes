@@ -93,6 +93,43 @@ func sessionTestDB(t *testing.T) (*db.DB, *db.Run) {
 // resumes the same identity. Which roles production actually resumes is
 // review.go policy, pinned in steps/review_session_test.go (fixer only;
 // review turns bypass RunSessions entirely).
+type formatFailureSessionAgent struct {
+	calls []agent.RunOpts
+}
+
+func (a *formatFailureSessionAgent) Name() string                { return "format-fail" }
+func (a *formatFailureSessionAgent) SupportsSessionResume() bool { return true }
+func (a *formatFailureSessionAgent) Close() error                { return nil }
+func (a *formatFailureSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	a.calls = append(a.calls, opts)
+	if opts.Session == nil || opts.Session.ID == "" {
+		return &agent.Result{SessionID: "fixer-session", Text: "started"}, nil
+	}
+	retryable := false
+	return &agent.Result{SessionID: opts.Session.ID, ResumeRetryable: &retryable}, agent.RejectStructuredOutput(errors.New("completed turn returned malformed structured output"))
+}
+
+func TestRunSessions_FormatFailureDoesNotRerunTheFixer(t *testing.T) {
+	fake := &formatFailureSessionAgent{}
+	rs := NewRunSessions(nil, "run-format", fake, true)
+	if _, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "fix the finding"}, nil); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	_, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "fix the finding"}, nil)
+	if err == nil {
+		t.Fatal("format failure returned success")
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("fixer ran %d times, want the start and one resume", len(fake.calls))
+	}
+	if fake.calls[1].SessionFallback {
+		t.Fatal("format failure started a fresh fixer session")
+	}
+	if fake.calls[1].Session == nil || fake.calls[1].Session.ID != "fixer-session" {
+		t.Fatalf("resume session = %+v", fake.calls[1].Session)
+	}
+}
+
 func TestRunSessions_RoleReusesOneSession(t *testing.T) {
 	d, run := sessionTestDB(t)
 	fake := newFakeSessionAgent()

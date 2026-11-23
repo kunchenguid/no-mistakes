@@ -136,6 +136,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	previousHeadSHA := sctx.Run.HeadSHA
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
+	if agent.IsStructuredOutputRejected(err) {
+		return nil, err
+	}
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}

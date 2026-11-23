@@ -35,16 +35,40 @@ import (
 func TestFailedInvocationUsageJourney(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "failed-invocation-usage.yaml")
 	content := `actions:
-  # The fixer turn is claimed first: its prompt also carries the branch line
-  # the rereview rule below matches on.
+  # Complete one fix so the second fix resumes its session. The malformed
+  # second result must not start that completed turn again in a fresh session.
+  - match: "Previous review findings to address:\n{\"findings\":[{\"id\":\"first-finding\""
+    text: "first fix completed"
+    structured:
+      summary: "first fix applied"
+    edits:
+      - path: "first-fix.txt"
+        new: "first fix completed\n"
   - match: "Previous review findings to address:"
-    text: "fix round ran and spent tokens, but cannot produce structured output"
+    text: "second fix ran and spent tokens, but cannot produce structured output"
     structured_raw: 'null'
+    edits:
+      - path: "second-fix.txt"
+        new: "second fix completed before its malformed result\n"
+  - match: "Fix-round provenance:"
+    text: "one more auto-fixable finding"
+    structured:
+      findings:
+        - id: "second-finding"
+          severity: warning
+          file: "fix.txt"
+          line: 1
+          description: "seeded so the pipeline resumes the fixer session"
+          action: auto-fix
+          review_scope: source
+      risk_level: low
+      risk_rationale: "seeded finding"
+      risk_scope: source-or-external
   - match: "branch: usage-on-failed-review-fix"
     text: "one auto-fixable finding"
     structured:
       findings:
-        - id: "seeded-finding"
+        - id: "first-finding"
           severity: warning
           file: "fix.txt"
           line: 1
@@ -100,8 +124,9 @@ func TestFailedInvocationUsageJourney(t *testing.T) {
 			`review_agent_timeout: "5s"`,
 		}, "\n"),
 	})
-	// A review fix round only happens when the repository budgets one.
-	h.CommitChange("main", ".no-mistakes.yaml", "auto_fix:\n  review: 1\n", "budget one review fix round")
+	// The failed-fix round needs a first successful fix to establish the
+	// session that its malformed resumed turn must not replay.
+	h.CommitChange("main", ".no-mistakes.yaml", "auto_fix:\n  review: 2\n", "budget two review fix rounds")
 	if out, err := h.runGit(context.Background(), h.WorkDir, "push", "origin", "main"); err != nil {
 		t.Fatalf("push trusted repo config: %v\n%s", err, out)
 	}
@@ -181,16 +206,30 @@ func TestFailedInvocationUsageJourney(t *testing.T) {
 		t.Fatalf("review aggregate summed a partially-known set as if it were complete (IN TOK = %s):\n%s", in, agentsAfterKilled)
 	}
 
-	// Round 3: a fix-mode turn, which is never retried, so its single failed
-	// round is the only record of what the fix cost. Failed turns now return a
-	// result, so the session label must still follow what the adapter reported
-	// about the session rather than being inferred from the failure.
+	// Round 3: one fix completes and establishes a session, then the resumed
+	// fixer finishes its edit but returns malformed structured output. That
+	// failure must be clear and terminal, not a fresh-session replay. Failed
+	// turns still return their usage for the operator-facing stats report.
 	h.CommitChange("usage-on-failed-review-fix", "fix.txt", "change\n", "exercise a failed review fix round")
 	h.PushToGate("usage-on-failed-review-fix")
 	fixRun := h.WaitForRun("usage-on-failed-review-fix", 120*time.Second)
 	if fixRun.Status != types.RunFailed {
 		t.Fatalf("review-fix run status = %s, want failed (error=%v)", fixRun.Status, deref(fixRun.Error))
 	}
+	fixStep, ok := findStep(fixRun.Steps, types.StepReview)
+	secondFixInvocations := 0
+	for _, inv := range h.AgentInvocations() {
+		if strings.Contains(inv.Prompt, "Previous review findings to address:") && strings.Contains(inv.Prompt, "second-finding") {
+			secondFixInvocations++
+		}
+	}
+	if secondFixInvocations != 1 {
+		t.Fatalf("malformed resumed fixer ran %d times, want no replay; invocations:\n%s", secondFixInvocations, summarisePrompts(h.AgentInvocations()))
+	}
+	if !ok || fixStep.Error == nil || !strings.Contains(*fixStep.Error, "result format failed and completed work was kept") {
+		t.Fatalf("review step error = %q, want the kept-work format failure", deref(fixStep.Error))
+	}
+	t.Logf("malformed resumed fixer invocations=%d; review error=%s", secondFixInvocations, deref(fixStep.Error))
 
 	fixStats, err := h.Run("stats", "--run", fixRun.ID)
 	if err != nil {
