@@ -1253,7 +1253,7 @@ func TestAssemblePRBody_NoLimitKeepsEverything(t *testing.T) {
 	sctx := &pipeline.StepContext{UserIntent: "wanted a Bar() helper"}
 	testing := "## Testing\n\n```text\n" + strings.Repeat("log ", 2000) + "\n```"
 
-	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", testing, prMarkdown{full: "## Pipeline\n\n- ok"}, 0, scm.ProviderGitHub)
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", testing, "## Pipeline\n\n- ok", 0, scm.ProviderGitHub)
 
 	for _, want := range []string{"## Intent", "## What Changed", "## Risk Assessment", "## Testing", "## Pipeline"} {
 		if !strings.Contains(got, want) {
@@ -1274,7 +1274,7 @@ func TestAssemblePRBody_DropsTestingEmbedsToFitAzureCap(t *testing.T) {
 		"## What Changed\n\n- add Bar() helper",
 		"behavior preserved; low risk",
 		testing,
-		prMarkdown{full: "## Pipeline\n\n- review: pass\n- tests: pass"},
+		"## Pipeline\n\n- review: pass\n- tests: pass",
 		limit,
 		scm.ProviderAzureDevOps,
 	)
@@ -1297,46 +1297,6 @@ func TestAssemblePRBody_DropsTestingEmbedsToFitAzureCap(t *testing.T) {
 	}
 }
 
-func TestAssemblePRBody_DropsDocumentPathsBeforeOtherEvidence(t *testing.T) {
-	t.Parallel()
-	const provider = scm.ProviderAzureDevOps
-	const narrative = "## What Changed\n\nUpdate the owner docs."
-	const testingMD = "## Testing\n\nKeep the recorded checks."
-	sctx := newPRTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", testPipelineHeadSHA, config.Commands{})
-	sctx.UserIntent = "Update the owner docs."
-	step := insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[]}`, "")
-	pr := &PRStep{}
-	baseline, _, _, _ := pr.buildPipelineSectionFor(sctx, provider, false)
-	raw, err := types.MarshalFindingsJSON(types.Findings{
-		DocumentOffChangePaths: []string{"docs/" + strings.Repeat("&", 120) + ".md"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.SetStepFindings(step.ID, raw); err != nil {
-		t.Fatal(err)
-	}
-	withPaths, _, _, _ := pr.buildPipelineSectionFor(sctx, provider, false)
-	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
-		t.Run(mode, func(t *testing.T) {
-			sctx.Config.PR.Appendix = mode
-			want := assemblePRBody(sctx, narrative, "", testingMD, baseline, 0, provider)
-			if full := assemblePRBody(sctx, narrative, "", testingMD, withPaths, 0, provider); !strings.Contains(full, documentPRPathHeading) {
-				t.Fatalf("the full description omitted the available Document preview:\n%s", full)
-			}
-			got := assemblePRBody(sctx, narrative, "", testingMD, withPaths, scm.PRBodyLen(want), provider)
-			if got != want {
-				t.Fatalf("expected the full body without the Document path detail:\n%s", got)
-			}
-			want = buildPRBodyWithin(narrative, "", testingMD, baseline, sctx, provider, maxPullRequestBodyBytes)
-			got = buildPRBodyWithin(narrative, "", testingMD, withPaths, sctx, provider, len(want))
-			if got != want {
-				t.Fatalf("byte budget changed content outside the Document path detail:\n%s", got)
-			}
-		})
-	}
-}
-
 func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	t.Parallel()
 	// An Intent so long that even Intent + What Changed overruns the cap, with no
@@ -1344,7 +1304,7 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("x", 6000)}
 	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
 
-	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", prMarkdown{full: "## Pipeline\n\n- ok"}, limit, scm.ProviderAzureDevOps)
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("clamped body = %d units, want <= %d", scm.PRBodyLen(got), limit)
@@ -1358,7 +1318,7 @@ func TestAssembleDraftPRBody_ReservesRoomForIssuesUnderALimit(t *testing.T) {
 	limit := 400
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
 
-	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", prMarkdown{full: "## Pipeline\n\n- ok"}, "", limit, scm.ProviderAzureDevOps)
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
@@ -1375,7 +1335,7 @@ func TestAssembleDraftPRBody_OmitsIssuesThatCannotFit(t *testing.T) {
 	limit := 10
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
 
-	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", prMarkdown{full: "## Pipeline\n\n- ok"}, "", limit, scm.ProviderAzureDevOps)
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
 
 	if strings.Contains(got, "## Issues") {
 		t.Fatalf("a section that cannot fit must be omitted, got:\n%s", got)
@@ -1397,7 +1357,7 @@ func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) 
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review detail 😀 ", 1000))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
-	got := assemblePRBody(sctx, "## What Changed\n\n"+strings.Repeat("change 😀 ", 1000), strings.Repeat("risk 😀 ", 1000), "", prMarkdown{full: pipelineMD}, limit, scm.ProviderAzureDevOps)
+	got := assemblePRBody(sctx, "## What Changed\n\n"+strings.Repeat("change 😀 ", 1000), strings.Repeat("risk 😀 ", 1000), "", pipelineMD, limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("assembled body = %d units, want <= %d", scm.PRBodyLen(got), limit)
@@ -1798,7 +1758,7 @@ func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) 
 	sctx.ClosingIssueRefs = []string{"42"}
 	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("x", maxPullRequestBodyBytes)
 
-	got := assembleDraftPRBody(sctx, body, "low risk", "", prMarkdown{}, "", 0, scm.ProviderGitHub)
+	got := assembleDraftPRBody(sctx, body, "low risk", "", "", "", 0, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
@@ -2070,7 +2030,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"A\tinternal/pipeline/steps/pr.go",
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
-		prMarkdown{full: pipelineMarkdownForTest(rounds...)},
+		pipelineMarkdownForTest(rounds...),
 		"",
 		0,
 		scm.ProviderGitHub,
@@ -2937,7 +2897,7 @@ func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		pipelineAttestationCommentClosingToken
 
 	pipelineMD, riskLine, testingMD, evidenceMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content, err := (&PRStep{}).fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, prMarkdown{full: pipelineMD}, evidenceMD, 0, scm.ProviderGitHub)
+	content, err := (&PRStep{}).fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, evidenceMD, 0, scm.ProviderGitHub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3049,7 +3009,7 @@ func TestPRAppendixModes_RenderBodies(t *testing.T) {
 			no := false
 			sctx.Config.PR.PublishIntent = &no
 		}
-		return assemblePRBody(sctx, narrative, riskLine, testingMD, prMarkdown{full: pipelineMD}, 0, provider)
+		return assemblePRBody(sctx, narrative, riskLine, testingMD, pipelineMD, 0, provider)
 	}
 
 	full := render(t, config.PRAppendixFull, true, scm.ProviderGitHub, risk, testingMD)
@@ -3135,7 +3095,7 @@ func TestPRAppendixModes_RenderBodies(t *testing.T) {
 	owned := strings.Replace(pipelineMD, attestation, "", 1)
 	owned = strings.TrimRight(owned, "\n") + "\n\n" + fenced
 	sctx := &pipeline.StepContext{UserIntent: intent, Config: &config.Config{PR: config.PR{Appendix: config.PRAppendixMinimal}}}
-	ownedMinimal := assemblePRBody(sctx, narrative, risk, testingMD, prMarkdown{full: owned}, 0, scm.ProviderBitbucket)
+	ownedMinimal := assemblePRBody(sctx, narrative, risk, testingMD, owned, 0, scm.ProviderBitbucket)
 	if strings.Count(ownedMinimal, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(ownedMinimal, fenced) || strings.Contains(ownedMinimal, "evidence log line") {
 		t.Fatalf("owned Bitbucket minimal body:\n%s", ownedMinimal)
 	}
@@ -3144,7 +3104,7 @@ func TestPRAppendixModes_RenderBodies(t *testing.T) {
 	hugeTesting := "## Testing\n\n```text\n" + strings.Repeat("verbose test log line\n", 600) + "```"
 	for _, mode := range []string{config.PRAppendixCollapsed, config.PRAppendixMinimal} {
 		sctx := &pipeline.StepContext{UserIntent: intent, Config: &config.Config{PR: config.PR{Appendix: mode}}}
-		got := assemblePRBody(sctx, narrative, risk, hugeTesting, prMarkdown{full: pipelineMD}, limit, scm.ProviderAzureDevOps)
+		got := assemblePRBody(sctx, narrative, risk, hugeTesting, pipelineMD, limit, scm.ProviderAzureDevOps)
 		if scm.PRBodyLen(got) > limit {
 			t.Fatalf("%s azure body = %d, limit %d", mode, scm.PRBodyLen(got), limit)
 		}

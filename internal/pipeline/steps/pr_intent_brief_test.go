@@ -219,11 +219,11 @@ func TestPRStep_OwnedAppendixDraftsBriefWithoutReplacingAuthorNarrative(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(appendix.full, "## Intent\n\nKeep the release check reliable\n\n### Why\n- Catch invalid changes early") {
-		t.Fatalf("owned appendix lacks brief:\n%s", appendix.full)
+	if !strings.Contains(appendix, "## Intent\n\nKeep the release check reliable\n\n### Why\n- Catch invalid changes early") {
+		t.Fatalf("owned appendix lacks brief:\n%s", appendix)
 	}
-	if strings.Contains(appendix.full, source) || strings.Count(appendix.full, "## Intent") != 1 || strings.Count(appendix.full, pipelineAttestationCommentPrefix) != 1 {
-		t.Fatalf("owned appendix leaked source or duplicated managed sections:\n%s", appendix.full)
+	if strings.Contains(appendix, source) || strings.Count(appendix, "## Intent") != 1 || strings.Count(appendix, pipelineAttestationCommentPrefix) != 1 {
+		t.Fatalf("owned appendix leaked source or duplicated managed sections:\n%s", appendix)
 	}
 }
 
@@ -345,7 +345,7 @@ func TestPRStep_BriefModeFailsClosedWithoutStructuredOutput(t *testing.T) {
 
 func TestFallbackPRContentRefusesRawIntentInBriefMode(t *testing.T) {
 	sctx := &pipeline.StepContext{Config: &config.Config{PR: config.PR{Intent: config.PRIntent{Format: "brief"}}}, UserIntent: "private raw intent"}
-	if _, err := (&PRStep{}).fallbackPRContent(sctx, "", "", "", prMarkdown{}, "", 0, scm.ProviderGitHub); err == nil || strings.Contains(err.Error(), "private raw intent") {
+	if _, err := (&PRStep{}).fallbackPRContent(sctx, "", "", "", "", "", 0, scm.ProviderGitHub); err == nil || strings.Contains(err.Error(), "private raw intent") {
 		t.Fatalf("fallback error = %v, want a non-disclosing fail-closed error", err)
 	}
 }

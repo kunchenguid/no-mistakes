@@ -157,7 +157,7 @@ func (s *PRStep) buildSuppliedPRContent(sctx *pipeline.StepContext, branch, base
 		return prContent{}, err
 	}
 	narrative := neutralizeAttestationMarkers(provider, body)
-	appendix = appendixWithIssues(appendix, issuesSection(sctx, narrative))
+	appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
 	return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, title, appendix, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }
 

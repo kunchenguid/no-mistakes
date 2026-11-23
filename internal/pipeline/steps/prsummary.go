@@ -130,10 +130,6 @@ type pipelineAttestationPolicy struct {
 }
 
 func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy) (string, string) {
-	return renderPipelineSummary(steps, rounds, headSHA, provider, policy, true)
-}
-
-func renderPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider, policy pipelineAttestationPolicy, showDocumentPaths bool) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
@@ -146,7 +142,7 @@ func renderPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepR
 			continue
 		}
 		stepRounds := rounds[sr.ID]
-		line, detail := buildStepEntry(sr, stepRounds, flavor, showDocumentPaths)
+		line, detail := buildStepEntry(sr, stepRounds, flavor)
 		if line != "" && detail != "" {
 			// Step details quote agent text (findings, fix summaries, tested
 			// commands). A foreign attestation comment in one lands after the
@@ -383,7 +379,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		}
 
 		stepRounds := rounds[sr.ID]
-		line, _ := buildStepEntry(sr, stepRounds, opts.flavor, false)
+		line, _ := buildStepEntry(sr, stepRounds, opts.flavor)
 		if line == "" {
 			return ""
 		}
@@ -1195,10 +1191,10 @@ func formatTestingDuration(ms int64) string {
 	return d.Round(time.Second).String()
 }
 
-func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, showDocumentPaths bool) (statusLine, detailBlock string) {
+func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) (statusLine, detailBlock string) {
 	name := stepDisplayName(sr.StepName)
 	buildDetail := func(line string) (string, string) {
-		return line, buildStepDetails(line, sr, rounds, flavor, showDocumentPaths)
+		return line, buildStepDetails(line, sr, rounds, flavor)
 	}
 
 	switch sr.Status {
@@ -1451,9 +1447,9 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // round is shown as the review state observed at its end; a fix round is
 // prefixed with its recorded outcome so a reader can follow the result without
 // mentally replaying rounds.
-func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor, showDocumentPaths bool) string {
+func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
 	var inner strings.Builder
-	if showDocumentPaths && sr.StepName == types.StepDocument {
+	if sr.StepName == types.StepDocument {
 		writeDocumentOffChangePaths(&inner, sr, rounds, flavor)
 	}
 	// A skipped step whose rounds recorded no findings never checked
@@ -1516,11 +1512,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	return foldPRBlock(summaryLine, inner.String(), flavor)
 }
 
-const (
-	documentPRPathHeading = "Paths Document committed outside the submitted change"
-	documentPRPathMore    = " more (see the Document step log)"
-	maxDocumentPRPaths    = 5
-)
+const maxDocumentPRPaths = 5
 
 func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) {
 	preview := db.RecordedDocumentEdits(sr.FindingsJSON, rounds)
@@ -1530,14 +1522,14 @@ func writeDocumentOffChangePaths(b *strings.Builder, sr *db.StepResult, rounds [
 	paths := slices.Clone(preview.DocumentOffChangePaths)
 	slices.Sort(paths)
 	shown := min(len(paths), maxDocumentPRPaths)
-	b.WriteString(documentPRPathHeading + "\n\n")
+	b.WriteString("Paths Document committed outside the submitted change\n\n")
 	for _, path := range paths[:shown] {
 		fmt.Fprintf(b, "- %s\n", renderDocumentPath(path, flavor))
 	}
 	if preview.DocumentOffChangeOmitted {
 		b.WriteString("\n" + types.DocumentOffChangeOmission + "\n")
 	} else if more := len(paths) - shown; more > 0 {
-		fmt.Fprintf(b, "\nand %d%s\n", more, documentPRPathMore)
+		fmt.Fprintf(b, "\nand %d more (see the Document step log)\n", more)
 	}
 	b.WriteString("\n")
 }

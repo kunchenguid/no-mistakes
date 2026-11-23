@@ -21,7 +21,7 @@ func TestPRTemplateBitbucketVisibleAttestationUsesExistingConsumer(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err = composeOwnedPRContent(parts, scm.ProviderBitbucket, "", prMarkdown{full: appendix}, 0, "", "")
+	content, err = composeOwnedPRContent(parts, scm.ProviderBitbucket, "", appendix, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,4 +13,4 @@ Document sees the file list from the submitted change on its first pass and on f
 
 On an unrestricted run, Document can update an owner document outside the submitted change. The Document gate, `no-mistakes axi status`, and the PR's Pipeline section show paths outside the submission that changed between the commits before and after Document ran. The list can include changes left by earlier steps if Document commits them. The Document step log lists the full paths. Quoted paths use Go string escapes for bytes that cannot be shown literally.
 
-The PR shows up to five paths in sorted order. If the description would exceed its size limit, the path detail is the first thing omitted. With `pr.appendix: minimal`, the PR omits this Pipeline detail.
+The PR shows up to five paths in sorted order. The description is subject to the provider's usual size limits. With `pr.appendix: minimal`, the PR omits this Pipeline detail.

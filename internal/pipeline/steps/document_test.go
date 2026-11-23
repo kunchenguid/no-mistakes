@@ -742,7 +742,7 @@ func TestBuildPipelineSummary_DocumentFilenames(t *testing.T) {
 		const prose = "See /home/private-person/notes.txt\n\n"
 		bodies := []prContent{redactPRContent(prContent{Body: prose + md}, tc.provider, "", "")}
 		if tc.provider == scm.ProviderGitHub {
-			owned, err := composeOwnedPRContent(prOwnedBody{}, tc.provider, "Owner docs", prMarkdown{full: prose + md}, 0, "", "")
+			owned, err := composeOwnedPRContent(prOwnedBody{}, tc.provider, "Owner docs", prose+md, 0, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -43,28 +43,6 @@ func TestBuildPipelineSummary_DocumentPRPreviewShowsFiveSortedPaths(t *testing.T
 	}
 }
 
-func TestBuildPipelineSummary_BitbucketDocumentStatusWithoutPreview(t *testing.T) {
-	t.Parallel()
-	step := &db.StepResult{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted}
-	clean := `{"findings":[]}`
-	rounds := map[string][]*db.StepRound{step.ID: {{Round: 1, FindingsJSON: &clean}}}
-	steps := []*db.StepResult{step}
-	raw, err := types.MarshalFindingsJSON(types.Findings{DocumentOffChangePaths: []string{"owner.md"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	step.FindingsJSON = &raw
-	full, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket)
-	if !strings.Contains(full, "owner.md") {
-		t.Fatal("fixture must contain the Document preview")
-	}
-	pathless, _ := renderPipelineSummary(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket, pipelineAttestationPolicy{}, false)
-	want := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n✅ **Document** - passed\n"
-	if pathless != want {
-		t.Fatalf("pathless preview changed Bitbucket's clean Document status:\n%s", pathless)
-	}
-}
-
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	t.Parallel()
 	steps := []*db.StepResult{
@@ -109,11 +87,13 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepTest, Status: types.StepStatusCompleted},
 		{ID: "s3", StepName: types.StepLint, Status: types.StepStatusCompleted},
+		{ID: "s4", StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", DurationMS: 500}},
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
+		"s4": {{Round: 1, Trigger: "initial", DurationMS: 200}},
 	}
 
 	md, risk := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket)
@@ -128,6 +108,7 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 		"✅ **Review** - passed",
 		"✅ **Test** - passed",
 		"✅ **Lint** - passed",
+		"\n✅ **Document** - passed\n",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %q in Bitbucket pipeline summary, got:\n%s", want, md)
