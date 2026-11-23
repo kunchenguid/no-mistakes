@@ -458,13 +458,17 @@ func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, test
 func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipeline prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) string {
 	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
 	if pipeline.withoutDocumentPreview != "" {
-		// Try both complete, redacted sizes before the ordinary policy drops
-		// testing evidence or truncates content. Redaction can change length.
-		for _, variant := range []string{pipeline.full, pipeline.withoutDocumentPreview} {
-			body := appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, variant, sctx, provider, math.MaxInt), section)
-			redacted := redactPRContent(prContent{Body: body}, provider, sctx.WorkDir, nmWorktreesRoot()).Body
-			if validateOwnedPRBudget(redacted, bodyLimit) == nil {
-				return body
+		testingVariants := []string{testingMD}
+		if testingMD != "" {
+			testingVariants = append(testingVariants, "")
+		}
+		for _, testing := range testingVariants {
+			for _, variant := range []string{pipeline.full, pipeline.withoutDocumentPreview} {
+				body := appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testing, variant, sctx, provider, math.MaxInt), section)
+				redacted := redactPRContent(prContent{Body: body}, provider, sctx.WorkDir, nmWorktreesRoot()).Body
+				if validateOwnedPRBudget(redacted, bodyLimit) == nil {
+					return body
+				}
 			}
 		}
 	}

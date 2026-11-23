@@ -153,6 +153,57 @@ func TestAssembleDraftPRBody_KeepsDocumentPreviewWhenTestingExceedsBudget(t *tes
 	}
 }
 
+func TestAssembleDraftPRBody_OmitsPreviewBeforeTruncatingCore(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := templateTestContext(t)
+	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["README.md"]}`, "")
+	sctx.UserIntent = "Change the default setting."
+	sctx.ClosingIssueRefs = []string{"42"}
+	const (
+		whatChanged = "## What Changed\n\nUpdated settings."
+		risk        = "Low risk."
+		evidence    = "[Recorded evidence](https://example.com/evidence)"
+	)
+	testingMD := "## Testing\n\n" + strings.Repeat("Evidence from Test.\n", maxPullRequestBodyBytes/10)
+	byteLen := func(body string) int { return len(body) }
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
+		sctx.Config.PR.Appendix = mode
+		for _, tc := range []struct {
+			name     string
+			provider scm.Provider
+			limit    int
+			budget   int
+			measure  func(string) int
+		}{
+			{"provider", scm.ProviderAzureDevOps, 4000, 4000, scm.PRBodyLen},
+			{"bytes", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, byteLen},
+			{"bytes-with-provider-limit", scm.ProviderGitHub, 65536, maxPullRequestBodyBytes, byteLen},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				variants, _, _, _ := (&PRStep{}).buildPipelineSectionFor(sctx, tc.provider, false)
+				if !strings.Contains(variants.full, "README.md") || variants.withoutDocumentPreview == "" {
+					t.Fatal("fixture needs both generated Pipeline variants")
+				}
+				core := assembleDraftPRBody(sctx, whatChanged, risk, "", variants.withoutDocumentPreview, evidence, 0, tc.provider)
+				padding := tc.budget - tc.measure(core)
+				if padding <= 0 || !strings.Contains(core, whatChanged) {
+					t.Fatal("fixture needs room to pad What Changed to the limit")
+				}
+				withPreview := assembleDraftPRBody(sctx, whatChanged, risk, "", variants.full, evidence, 0, tc.provider)
+				if tc.measure(withPreview)+padding <= tc.budget {
+					t.Fatal("fixture needs the preview to exceed the budget after Testing is dropped")
+				}
+				narrative := whatChanged + strings.Repeat("a", padding)
+				want := strings.Replace(core, whatChanged, narrative, 1)
+				got := assembleDraftPRBodyWithPreview(sctx, narrative, risk, testingMD, variants, evidence, tc.limit, tc.provider)
+				if got != want {
+					t.Fatalf("body changed beyond dropping Testing and the preview: got length %d, want %d", tc.measure(got), tc.budget)
+				}
+			})
+		}
+	}
+}
+
 func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {
 	t.Parallel()
 	body := "Mention no-mistakes-pr-appendix by name without claiming ownership.\n\n## Intent\n\nAuthor intent\n\n## Risk Assessment\n\nAuthor risk\n\n## Tests\n\n- [x] Human checkbox\n\n## Pipeline\n\nRelease plan\nCloses test/repo#1"
