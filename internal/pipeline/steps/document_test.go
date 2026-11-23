@@ -762,6 +762,42 @@ func TestBuildPipelineSummary_DocumentFilenames(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_RenameIntoIgnoredDirectorySkipsAgent(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	gitCmd(t, dir, "config", "diff.renames", "true")
+	gitCmd(t, dir, "checkout", "main")
+	for _, subdir := range []string{"docs", "generated"} {
+		if err := os.Mkdir(filepath.Join(dir, subdir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "legacy.md"), []byte("Legacy documentation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "docs/legacy.md")
+	gitCmd(t, dir, "commit", "-m", "Add legacy documentation")
+	base := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "ignored-rename")
+	gitCmd(t, dir, "mv", "docs/legacy.md", "generated/legacy.md")
+	gitCmd(t, dir, "commit", "-m", "Move legacy documentation")
+	head := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Fatal("a pure rename into an ignored directory launched Document")
+		return nil, nil
+	}}
+	sctx := newHousekeepingContext(t, ag, dir, base, head, config.Commands{})
+	sctx.Config.IgnorePatterns = []string{"generated/**"}
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval || outcome.Findings != "" {
+		t.Fatalf("expected Document to skip without findings, got %+v", outcome)
+	}
+}
+
 func TestDocumentStep_NoChanges_SkipsAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupGitRepo(t)

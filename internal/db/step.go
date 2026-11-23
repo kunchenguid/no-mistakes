@@ -180,7 +180,7 @@ func (d *DB) DocumentStepReport(step *StepResult) (string, *string, error) {
 		metadata = RecordedDocumentEdits(nil, rounds)
 	}
 	if !metadata.HasDocumentOffChangePaths() {
-		return source.RunID, nil, nil
+		return step.RunID, nil, nil
 	}
 	raw, err := types.MarshalFindingsJSON(metadata)
 	return source.RunID, &raw, err

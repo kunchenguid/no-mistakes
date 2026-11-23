@@ -126,6 +126,65 @@ func TestAxiDocumentOffChangePathsOnDeliveryRetry(t *testing.T) {
 	}
 }
 
+func TestAxiDocumentLogsUseRequestedRunWithoutOffChangeReport(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+	source, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := database.InsertStepResult(source.ID, types.StepDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"findings":[],"summary":"No documentation updates needed"}`
+	insertAxiRound(t, database, document.ID, 1, "initial", &raw)
+	if err := database.UpdateStepStatus(document.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	document, err = database.GetStepResult(document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertCarriedStepResult(retry.ID, document); err != nil {
+		t.Fatal(err)
+	}
+	for _, log := range []struct{ runID, line string }{
+		{source.ID, "Source Document log"},
+		{retry.ID, "Requested run Document log"},
+	} {
+		dir := p.RunLogDir(log.runID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "document.log"), []byte(log.line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiLogs(cmd, "document", retry.ID, true); err != nil {
+		t.Fatalf("logs: %v\n%s", err, &out)
+	}
+	var doc struct {
+		SourceRun string   `toon:"source_run"`
+		Log       []logRow `toon:"log"`
+	}
+	if err := toon.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode retry logs: %v\n%s", err, &out)
+	}
+	if doc.SourceRun != "" || len(doc.Log) != 1 || doc.Log[0].Line != "Requested run Document log" {
+		t.Fatalf("expected requested-run log without a source_run field:\n%s", &out)
+	}
+}
+
 // Accepting gate names must not turn --step into an arbitrary file read: the
 // label is operator input joined straight onto the run's log directory.
 func TestAxiLogsRefusesAGateStepNameThatWouldEscapeTheLogDirectory(t *testing.T) {
