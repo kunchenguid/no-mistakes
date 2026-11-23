@@ -629,13 +629,7 @@ func (s *CIStep) otherChecksSettledGreen(sctx *pipeline.StepContext) bool {
 	if err != nil || moved {
 		return false
 	}
-	var unheld []scm.Check
-	for _, check := range checks {
-		if !(check.Pending() && check.HeldForHuman()) {
-			unheld = append(unheld, check)
-		}
-	}
-	if hasPendingChecks(unheld) || hasUnresolvedChecks(unheld) {
+	if hasExecutingPendingChecks(checks) {
 		return false
 	}
 	bots := scm.ReviewBotsFor(requiredReviews(sctx))
