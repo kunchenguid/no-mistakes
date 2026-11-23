@@ -827,6 +827,9 @@ type CIRaw struct {
 	RevalidateRepairs *bool `yaml:"revalidate_repairs"`
 	// ReviewBotComments is "" when unset; see CI.ReviewBotComments.
 	ReviewBotComments string `yaml:"review_bot_comments"`
+	// ReviewBotCommentsEarly is a pointer for the same reason as
+	// RevalidateRepairs: a repository must be able to opt back out.
+	ReviewBotCommentsEarly *bool `yaml:"review_bot_comments_early"`
 	// RebaseBehind is a pointer for the same reason as RevalidateRepairs.
 	RebaseBehind *bool `yaml:"rebase_behind"`
 	// CarryReviewOnReplay is a pointer for the same reason as RevalidateRepairs.
@@ -898,6 +901,22 @@ type CI struct {
 	// while leaving an unresolved comment, most often on the pipeline's own
 	// CI repair commit, which no human has reviewed yet.
 	ReviewBotComments string
+	// ReviewBotCommentsEarly makes the CI step surface a review bot's
+	// unresolved comments as soon as the bot's own check has completed on the
+	// current head, instead of after every other check on the head has
+	// completed too.
+	//
+	// false (default): the comments are read only once every check has
+	// completed, as ReviewBotComments describes.
+	//
+	// true: while other checks are still running, the step reads the comments
+	// of every registered bot whose check completed on the current head and
+	// hands them to the same findings machinery at once. A bot that has not
+	// registered a check on the head yet is never read early, because its
+	// threads can belong to an earlier head. A later red check still gets its
+	// own round once it completes. Opt-in because it changes when a round
+	// starts and costs one more provider read per poll while checks run.
+	ReviewBotCommentsEarly bool
 	// RebaseBehind opts the CI monitor into rebasing a green GitHub PR that
 	// reports mergeStateStatus BEHIND (its base requires branches to be up to
 	// date) through the merge-conflict repair, which revalidates from Review.
@@ -1913,6 +1932,13 @@ ci:
   # instead of reporting checks-passed. A repository that sets
   # ci.review_bot_comments on its own default branch overrides this value.
   review_bot_comments: on_failure
+  # Whether the CI step surfaces a registered review bot's unresolved comments
+  # as soon as the bot's own check has completed on the current head, instead
+  # of waiting for every other check to complete. Defaults to false. A later
+  # red check still gets its own round. A repository that sets
+  # ci.review_bot_comments_early on its own default branch overrides this
+  # value.
+  review_bot_comments_early: false
   # Whether the CI monitor rebases a green GitHub PR that GitHub reports BEHIND
   # because its base requires branches to be up to date. Defaults to false: the
   # PR reports checks-passed and waits for a human to bring it up to date. Set
@@ -4199,6 +4225,9 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	}
 	if v := strings.TrimSpace(src.ReviewBotComments); v != "" {
 		dst.ReviewBotComments = v
+	}
+	if src.ReviewBotCommentsEarly != nil {
+		dst.ReviewBotCommentsEarly = *src.ReviewBotCommentsEarly
 	}
 	if src.RebaseBehind != nil {
 		dst.RebaseBehind = *src.RebaseBehind

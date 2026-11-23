@@ -109,6 +109,7 @@ ci:
   rerun_transient: 0
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
+  review_bot_comments_early: false
   rebase_behind: false
   carry_review_on_replay: false
   required_reviews: [] # opt in with: [coderabbit], [copilot], or both
@@ -1048,6 +1049,32 @@ Forges that cannot supply review comments are unaffected by either value. Becaus
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot silence a green bot's comments on itself, and cannot opt itself in either.
 A value set here wins over the operator's own [`ci.review_bot_comments`](/no-mistakes/reference/global-config/#cireview_bot_comments).
+
+### ci.review_bot_comments_early
+
+Whether the CI step surfaces a supported review bot's unresolved comments as soon as the bot's own check has completed on the current head, instead of after every other check has completed.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  review_bot_comments_early: true
+```
+
+Without it, a slow check holds back comments a bot posted long before. With it, while other checks are still running, the step reads the comments of every supported review bot whose check has completed on the current head. It reads them through the same path as [`ci.review_bot_comments`](#cireview_bot_comments), so that setting still decides which completed bot checks are read: a red one always, a green one only under `always`. The comments become the same `ask-user` findings and park the step at once. It adds no second comment reader and no `auto_fix.ci` attempt.
+
+- Only a bot whose own check completed on the current head is read early. A bot whose check is still running, or that has not registered a check on the head yet, waits for the settled observation, because its unresolved threads can belong to an earlier head.
+- The early observation carries only the bot's findings. A check that is red or fails later is not skipped: it gets its own round from the settled observation once every check has completed.
+- Selecting the findings for a fix round runs inside the CI step's own `auto_fix.ci` budget and pushes a new head, which restarts the checks that were still running. Approving over the comments instead records the CI step as passed with an override that names the checks still running, never as a clean pass.
+- An unreadable comment list does not park the early observation. The step keeps waiting and reads the list again in the settled observation.
+- Each poll while checks are running and a bot check has completed costs one more provider read for the comments.
+
+This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block.
+A value set here wins over the operator's own [`ci.review_bot_comments_early`](/no-mistakes/reference/global-config/#cireview_bot_comments_early), in both directions.
 
 ### ci.rebase_behind
 

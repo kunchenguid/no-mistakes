@@ -878,6 +878,27 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				}
 			}
 
+			if checksPending && reviewBotCommentsEarly(sctx) {
+				earlyFindings, earlyErr := s.earlyReviewBotFindings(sctx, host, pr, checks)
+				if earlyErr != nil && pluginPollFailsStep(earlyErr) {
+					if err := clearCIMonitorReady(sctx); err != nil {
+						return nil, err
+					}
+					return nil, earlyErr
+				}
+				if earlyErr != nil {
+					sctx.Log(fmt.Sprintf("warning: could not read review bot comments early: %v", earlyErr))
+				} else if len(earlyFindings.Items) > 0 {
+					if err := clearCIMonitorReady(sctx); err != nil {
+						return nil, err
+					}
+					sctx.DeferredFindings = ""
+					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+					sctx.Log(fmt.Sprintf("issues detected before all checks completed: %s", earlyFindings.Summary))
+					return ciObservationOutcome(earlyFindings), nil
+				}
+			}
+
 			if hasIssues || len(awaitingRerun) > 0 {
 				if err := clearCIMonitorReadyForIssues(sctx); err != nil {
 					return nil, err
