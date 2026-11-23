@@ -339,6 +339,7 @@ Spawns a `copilot` subprocess for each invocation with `-p <prompt> --output-for
 It also adds `--no-color` and `--no-ask-user` so the run is non-interactive, plus `--allow-all-tools` (required for non-interactive mode) unless you already set your own Copilot permission flag through `agent_args_override`.
 Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed flags, so user choices take effect. Prefer [`agent_config.copilot`](/no-mistakes/reference/global-config/#agent_config) for model and reasoning effort; it renders the same `--model` and `--effort` flags, and a raw flag here still wins over it.
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
+Project-instruction suppression is controlled by [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
 
 ## ACP aliases
