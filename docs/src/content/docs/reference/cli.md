@@ -490,7 +490,6 @@ Each row reports the whole step's elapsed time as `active_for`, the displayed ex
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
 Finding descriptions are always rendered in full, so an `ask-user` finding can be relayed verbatim. Gate summaries are bounded in this default status view because a command gate's summary carries its command output; a truncated summary discloses its original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
-For [Document edits outside the submitted change](/no-mistakes/guides/document-scope/), `document_off_change_paths` lists the paths that fit in the preview and `document_off_change_note` appears if any were omitted. These fields appear in the gate object when Document is parked and otherwise in the run object.
 Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
 Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
 
@@ -620,9 +619,8 @@ no-mistakes axi logs --step gate.test.mutation-budget
 | `--full` | `bool`   | `false`            | Show the complete summary and the entire log instead of the bounded summary and tail |
 
 When `--run` is omitted, the run is resolved the same way as [`axi status`](#no-mistakes-axi-status): this branch's run, never another branch's.
-With `--run <id>`, select that run regardless of branch.
+With `--run <id>`, logs are read from exactly that run regardless of branch.
 An unknown explicit run ID exits nonzero with `error: run "<id>" not found` instead of reporting that the current branch has no run.
-When a retry carries a Document result with edits outside the submission, `--step document` reads the original step log and names its run in `source_run`.
 When the step recorded findings, the output leads with its `summary` and a `findings` table whose descriptions are always complete, including after the step's gate was resolved.
 If the recorded findings cannot be parsed, a `findings_error` field reports the parse error in their place and the step log still renders.
 Without `--full`, the summary is bounded like the gate's and long logs show the last 40 lines; when either is cut, a help hint names the `--full` command, retaining the run ID when `--run <id>` selected the log.

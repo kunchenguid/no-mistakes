@@ -15,4 +15,6 @@ The submitted paths give the agent context for applying explicit file restrictio
 
 On an unrestricted run, Document can update an owner document outside the submitted change. The report lists paths outside the submission that changed between the commits before and after the pass, including changes left by earlier steps if Document commits them. The AXI gate and `no-mistakes axi status` show a bounded preview. The TUI shows it next to the Document step when space permits. Run `no-mistakes axi logs --step document --full` for the complete recorded list. Quoted paths use Go string escapes.
 
+AXI lists the preview in `document_off_change_paths` and adds `document_off_change_note` if paths were omitted. When a retry carries a Document result with reported paths, `axi logs --step document` reads the original step log and names that run in `source_run`.
+
 The PR's Pipeline section can show up to five paths in sorted order, subject to the usual description size limits. [`pr.appendix: minimal`](/no-mistakes/reference/repo-config/#prappendix) omits this detail.
