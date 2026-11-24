@@ -87,6 +87,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// follows can no longer see a test file the fixer already committed.
 	var newTestsFromFix []string
 	var fixSummary string
+	var currentFix currentTestFixTurn
 	var repairCut error
 	if sctx.Fixing && onlyTestBudgetCutFindings(sctx.PreviousFindings) {
 		sctx.Log("fix selection holds only the Test agent budget cut; re-running validation without a repair turn...")
@@ -128,6 +129,8 @@ Rules:
 Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(repair)
 		}
+		beforeFixEvidence := snapshotTestEvidenceFiles(testEvidenceDir(sctx))
+		var fixAgentSummary string
 		fixTimeout := testAgentTimeout(sctx)
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
@@ -142,8 +145,9 @@ Previous test findings to address:
 				}
 				return result, nil
 			},
-			AfterAgentRun: func(*agent.Result) error {
+			AfterAgentRun: func(result *agent.Result) error {
 				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
+				fixAgentSummary = extractFixAgentSummary(result)
 				return nil
 			},
 		})
@@ -152,6 +156,14 @@ Previous test findings to address:
 				return nil, err
 			}
 			repairCut = err
+		} else {
+			currentFix = currentTestFixTurn{
+				ran:           true,
+				outcome:       summary,
+				agentSummary:  fixAgentSummary,
+				evidenceDir:   testEvidenceDir(sctx),
+				evidenceFiles: diffTestEvidenceFiles(beforeFixEvidence, snapshotTestEvidenceFiles(testEvidenceDir(sctx))),
+			}
 		}
 		fixSummary = summary
 	}
@@ -226,7 +238,7 @@ Previous test findings to address:
 	} else if len(failedBaseline) == 0 {
 		sctx.Log("baseline tests passed, asking agent to gather live evidence...")
 	}
-	reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
+	reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + currentTestFixTurnPromptSection(currentFix) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
 	evidenceGuidance := fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree: %s", evidenceDir)
 	if sctx.Config.Test.Evidence.StoreInRepo {
 		evidenceGuidance = fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree; they are published to the repository's %s branch automatically and linked from the PR: %s", sctx.Config.Test.Evidence.Branch, evidenceDir)
