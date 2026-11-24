@@ -721,6 +721,202 @@ Now let me actually read the diff:`
 	}
 }
 
+func TestFinalizeTextResult_AcceptsAdjacentIdenticalBareJSONObjects(t *testing.T) {
+	summarySchema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","maxLength":4096}},"required":["summary"]}`)
+	pairSchema := json.RawMessage(`{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}`)
+
+	// Issue #1068 Shape B reproduction: prose followed by two adjacent
+	// value-identical schema-valid objects must collapse to that single object.
+	reproB := "The finding was legitimate. I applied the fix and all tests pass.\n\n{\"summary\":\"Fix the guard\"}{\"summary\":\"Fix the guard\"}"
+	t.Run("issue 1068 shape B repro", func(t *testing.T) {
+		got, err := parseStructuredTextOutput(reproB, summarySchema, false)
+		if err != nil {
+			t.Fatalf("parseStructuredTextOutput() error = %v", err)
+		}
+		if !jsonEqual(got, json.RawMessage(`{"summary":"Fix the guard"}`)) {
+			t.Fatalf("output = %s, want summary Fix the guard", got)
+		}
+		res, err := finalizeTextResult("opencode", reproB, summarySchema, TokenUsage{})
+		if err != nil {
+			t.Fatalf("finalizeTextResult() error = %v", err)
+		}
+		if !jsonEqual(res.Output, json.RawMessage(`{"summary":"Fix the guard"}`)) {
+			t.Fatalf("finalize output = %s, want summary Fix the guard", res.Output)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		text   string
+		schema json.RawMessage
+		want   string
+	}{
+		{
+			name:   "whitespace separated duplicates",
+			text:   "Done.\n\n{\"summary\":\"Fix the guard\"}\n{\"summary\":\"Fix the guard\"}",
+			schema: summarySchema,
+			want:   `{"summary":"Fix the guard"}`,
+		},
+		{
+			name:   "comma separated duplicates",
+			text:   "Done.\n\n{\"summary\":\"Fix the guard\"}, {\"summary\":\"Fix the guard\"}",
+			schema: summarySchema,
+			want:   `{"summary":"Fix the guard"}`,
+		},
+		{
+			name:   "three adjacent duplicates",
+			text:   `{"summary":"Fix the guard"}{"summary":"Fix the guard"}{"summary":"Fix the guard"}`,
+			schema: summarySchema,
+			want:   `{"summary":"Fix the guard"}`,
+		},
+		{
+			name:   "semantically identical formatting and numbers",
+			text:   "Result:\n{\"a\":1,\"b\":2}{\"b\":2.0, \"a\": 1}",
+			schema: pairSchema,
+			want:   `{"a":1,"b":2}`,
+		},
+		{
+			name:   "adjacent duplicates followed by protocol residue",
+			text:   `{"summary":"Fix the guard"}{"summary":"Fix the guard"}</invoke>`,
+			schema: summarySchema,
+			want:   `{"summary":"Fix the guard"}`,
+		},
+		{
+			name:   "earlier non-matching object before adjacent duplicates",
+			text:   "I checked {\"foo\":\"bar\"} first.\n\n{\"summary\":\"Fix the guard\"}{\"summary\":\"Fix the guard\"}",
+			schema: summarySchema,
+			want:   `{"summary":"Fix the guard"}`,
+		},
+		{
+			name:   "matching fenced and adjacent identical bare objects",
+			text:   "```json\n{\"summary\":\"Fix the guard\"}\n```\n{\"summary\":\"Fix the guard\"}{\"summary\":\"Fix the guard\"}",
+			schema: summarySchema,
+			want:   `{"summary":"Fix the guard"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := finalizeTextResult("opencode", tc.text, tc.schema, TokenUsage{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !jsonEqual(result.Output, json.RawMessage(tc.want)) {
+				t.Fatalf("output = %s, want %s", result.Output, tc.want)
+			}
+		})
+	}
+}
+
+func TestFinalizeTextResult_RejectsNonIdenticalOrNonConcludingDuplicateBareJSON(t *testing.T) {
+	summarySchema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","maxLength":4096}},"required":["summary"]}`)
+	intSchema := json.RawMessage(`{"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]}`)
+
+	cases := []struct {
+		name    string
+		text    string
+		schema  json.RawMessage
+		wantErr string
+	}{
+		{
+			name:    "adjacent differing objects",
+			text:    "Done.\n\n{\"summary\":\"first\"}{\"summary\":\"second\"}",
+			schema:  summarySchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "adjacent differing large integers",
+			text:    `{"value":9007199254740992}{"value":9007199254740993}`,
+			schema:  intSchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "non-adjacent identical objects separated by prose",
+			text:    `Example: {"summary":"x"}. Final: {"summary":"x"}`,
+			schema:  summarySchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "identical objects separated by non-matching object",
+			text:    `{"summary":"x"}{"other":1}{"summary":"x"}`,
+			schema:  summarySchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "adjacent identical objects followed by trailing prose",
+			text:    "{\"summary\":\"x\"}{\"summary\":\"x\"}\n\nHowever, I found a bug in the diff.",
+			schema:  summarySchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "adjacent identical objects followed by brace",
+			text:    `{"summary":"x"}{"summary":"x"} {incomplete`,
+			schema:  summarySchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "adjacent identical objects followed by code fence",
+			text:    "{\"summary\":\"x\"}{\"summary\":\"x\"}\n```go\nfunc f() {}\n```",
+			schema:  summarySchema,
+			wantErr: "multiple bare JSON objects found in output",
+		},
+		{
+			name:    "conflicting fenced and adjacent identical bare objects",
+			text:    "```json\n{\"summary\":\"a\"}\n```\n{\"summary\":\"b\"}{\"summary\":\"b\"}",
+			schema:  summarySchema,
+			wantErr: "conflicting JSON candidates found in output",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := finalizeTextResult("opencode", tc.text, tc.schema, TokenUsage{})
+			if err == nil {
+				t.Fatalf("expected error %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+			}
+			if _, retry := classifyTransient(err); retry {
+				t.Fatalf("competing or ambiguous bare objects must stay non-transient: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseStructuredTextOutput_RejectsTrailingProseAfterBareObject(t *testing.T) {
+	// Issue #1068 Shape A reproduction and trailing prose guards: prose after a
+	// bare JSON object remains rejected to preserve #1050's fail-closed boundary.
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","maxLength":4096}},"required":["summary"]}`)
+	reproA := "{\"summary\":\"Fix the count check\"}\n\nAll 52 tests in `tests/test_connector.py` pass. Fix applied: the guard now excludes the header row by label instead of a blind subtraction."
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "issue 1068 shape A repro",
+			text: reproA,
+		},
+		{
+			name: "trailing prose containing brace",
+			text: "{\"summary\":\"Fix the count check\"}\n\nChecked {config} and tests pass.",
+		},
+		{
+			name: "trailing prose containing code fence",
+			text: "{\"summary\":\"Fix the count check\"}\n\n```sh\npytest\n```",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseStructuredTextOutput(tc.text, schema, false); err == nil {
+				t.Fatalf("expected trailing prose after bare object to be rejected: %q", tc.text)
+			}
+		})
+	}
+}
+
 func TestFinalizeTextResult_ACPAgentTakesTerminalBareJSON(t *testing.T) {
 	text := `Draft: {"findings":["a"],"summary":"draft"}. Final: {"findings":["a"],"summary":"final"}`
 	schema := json.RawMessage(`{
