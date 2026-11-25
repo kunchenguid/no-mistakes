@@ -557,3 +557,25 @@ func TestHashFileSHA256_RefusesAFileLargerThanTheLimitWhileReading(t *testing.T)
 		t.Fatalf("hashFileSHA256 at limit = (n=%d, ok=%v), want a matching digest", n, ok)
 	}
 }
+
+// TestDiffTestEvidenceFiles_HashOnOneSideOnlyFallsBackToSizeAndMtime checks
+// that a file whose hash was skipped in only one snapshot (the total hash
+// budget shifted because an earlier file changed) is judged by size and mtime
+// alone, so an unchanged earlier-round artifact is not reported as written by
+// the fix turn, while a size or mtime change is still reported.
+func TestDiffTestEvidenceFiles_HashOnOneSideOnlyFallsBackToSizeAndMtime(t *testing.T) {
+	t.Parallel()
+	hashed := evidenceFileStamp{abs: "/e/old.mp4", size: 10, modTime: 100, hash: sha256.Sum256([]byte("x")), hashed: true}
+	unhashed := evidenceFileStamp{abs: "/e/old.mp4", size: 10, modTime: 100}
+	if got := diffTestEvidenceFiles(map[string]evidenceFileStamp{"old.mp4": hashed}, map[string]evidenceFileStamp{"old.mp4": unhashed}); len(got) != 0 {
+		t.Fatalf("unchanged file losing its hash was reported: %v", got)
+	}
+	if got := diffTestEvidenceFiles(map[string]evidenceFileStamp{"old.mp4": unhashed}, map[string]evidenceFileStamp{"old.mp4": hashed}); len(got) != 0 {
+		t.Fatalf("unchanged file gaining a hash was reported: %v", got)
+	}
+	grown := unhashed
+	grown.size = 11
+	if got := diffTestEvidenceFiles(map[string]evidenceFileStamp{"old.mp4": hashed}, map[string]evidenceFileStamp{"old.mp4": grown}); len(got) != 1 || got[0] != "/e/old.mp4" {
+		t.Fatalf("grown file = %v, want [/e/old.mp4]", got)
+	}
+}

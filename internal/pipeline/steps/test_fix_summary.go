@@ -148,7 +148,7 @@ func diffTestEvidenceFiles(before, after map[string]evidenceFileStamp) []string 
 	var changedRels []string
 	for rel, cur := range after {
 		prev, existed := before[rel]
-		if !existed || prev.size != cur.size || prev.modTime != cur.modTime || (prev.hashed && cur.hashed && prev.hash != cur.hash) || prev.hashed != cur.hashed {
+		if !existed || prev.size != cur.size || prev.modTime != cur.modTime || (prev.hashed && cur.hashed && prev.hash != cur.hash) {
 			changedRels = append(changedRels, rel)
 		}
 	}
