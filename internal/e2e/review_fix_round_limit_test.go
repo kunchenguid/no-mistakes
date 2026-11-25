@@ -23,7 +23,8 @@ import (
 // explicit fixes share one budget, the exhausted gate parks with the remaining
 // findings plus a review-fix-rounds-exhausted notice, further fixes are
 // refused with fix_rounds_exhausted, --yes stands aside, the value is
-// trusted-default-branch-only and pinned per run, 0/unset is unlimited, and
+// trusted-default-branch-only and pinned per run, an explicit 0 is unlimited
+// while an absent key defaults to 3, and
 // negative or non-integer values fail configuration loading.
 
 const fixRoundLimitFixerMarker = "Investigate previous review findings"
@@ -307,9 +308,10 @@ func TestReviewFixRoundLimit_AutomaticAndExplicitShareTheBudget(t *testing.T) {
 	t.Logf("EVIDENCE third fix refused: err=%v\n%s", err, refused)
 }
 
-// Without review.max_fix_rounds, explicit fixes stay unlimited.
-func TestReviewFixRoundLimit_UnsetIsUnlimited(t *testing.T) {
-	h := newFixRoundLimitHarness(t, true, "")
+// An explicit trusted review.max_fix_rounds: 0 opts out of the default cap:
+// explicit fixes stay unlimited. (An ABSENT key now defaults to 3.)
+func TestReviewFixRoundLimit_ExplicitZeroIsUnlimited(t *testing.T) {
+	h := newFixRoundLimitHarness(t, true, "review:\n  max_fix_rounds: 0\n")
 	branch := "feature/round-limit-unset"
 	h.startFeature(branch)
 	if out, err := h.Run("axi", "run", "--intent", "Fix the broken service"); err != nil || !strings.Contains(out, "broken-service") {
@@ -318,7 +320,7 @@ func TestReviewFixRoundLimit_UnsetIsUnlimited(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		out := explicitFixAll(t, h, branch)
 		if strings.Contains(out, "fix_rounds_exhausted") || strings.Contains(out, "review-fix-rounds-exhausted") {
-			t.Fatalf("explicit fix %d hit a budget with the setting unset:\n%s", i, out)
+			t.Fatalf("explicit fix %d hit a budget with an explicit 0:\n%s", i, out)
 		}
 	}
 	if got := h.fixerTurns(); got != 3 {
@@ -326,9 +328,37 @@ func TestReviewFixRoundLimit_UnsetIsUnlimited(t *testing.T) {
 	}
 	status := axiStatus(t, h)
 	if strings.Contains(status, "review-fix-rounds-exhausted") {
-		t.Fatalf("unset budget parked as exhausted:\n%s", status)
+		t.Fatalf("explicit-0 budget parked as exhausted:\n%s", status)
 	}
-	t.Logf("EVIDENCE three explicit fixes accepted with max_fix_rounds unset; status:\n%s", status)
+	t.Logf("EVIDENCE three explicit fixes accepted with max_fix_rounds: 0; status:\n%s", status)
+}
+
+// With the trusted key ABSENT the default cap (3) applies: three explicit
+// fixes are accepted and the fourth is refused with the gate parked on the
+// remaining finding plus the exhaustion notice.
+func TestReviewFixRoundLimit_UnsetDefaultsToThree(t *testing.T) {
+	h := newFixRoundLimitHarness(t, true, "")
+	branch := "feature/round-limit-default"
+	h.startFeature(branch)
+	if out, err := h.Run("axi", "run", "--intent", "Fix the broken service"); err != nil || !strings.Contains(out, "broken-service") {
+		t.Fatalf("initial review gate: %v\n%s", err, out)
+	}
+	for i := 1; i <= 3; i++ {
+		out := explicitFixAll(t, h, branch)
+		if strings.Contains(out, "fix_rounds_exhausted") || strings.Contains(out, "review-fix-rounds-exhausted") {
+			t.Fatalf("explicit fix %d hit the default budget early:\n%s", i, out)
+		}
+	}
+	ids := reviewFindingIDs(t, h, branch)
+	out, err := h.Run("axi", "respond", "--action", "fix", "--findings", strings.Join(ids, ","))
+	if err == nil || !strings.Contains(out, "fix_rounds_exhausted") {
+		t.Fatalf("fourth fix must be refused by the default cap: err=%v\n%s", err, out)
+	}
+	status := axiStatus(t, h)
+	if !strings.Contains(status, "review-fix-rounds-exhausted") {
+		t.Fatalf("default-cap park carries no exhaustion notice:\n%s", status)
+	}
+	t.Logf("EVIDENCE default cap 3 pinned with the key absent; fourth fix refused; status:\n%s", status)
 }
 
 // The pushed branch cannot set the limit, even with allow_repo_commands.

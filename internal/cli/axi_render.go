@@ -109,6 +109,10 @@ type stepView struct {
 	PendingFixSource string
 	QuietWarning     time.Duration
 	SkipReason       string
+	// PendingVerificationIDs marks the Review findings an earlier round already
+	// dispatched for a fix and no rereview has positively verified yet: carried
+	// state, not fresh defects (see findingsTally).
+	PendingVerificationIDs []string
 }
 
 // runView is a render-ready view of a pipeline run.
@@ -158,20 +162,21 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 	}
 	for _, s := range r.Steps {
 		sv := stepView{
-			ID:               s.ID,
-			Name:             string(s.StepName),
-			Status:           string(s.Status),
-			FixSummaries:     s.FixSummaries,
-			StartedAt:        s.StartedAt,
-			RoundStartedAt:   s.RoundStartedAt,
-			LastActivityAt:   s.LastActivityAt,
-			AgentPID:         s.AgentPID,
-			RoundCount:       s.RoundCount,
-			FixRoundCount:    s.FixRoundCount,
-			AutoFixLimit:     s.AutoFixLimit,
-			PendingFixSource: s.PendingFixSource,
-			WorkScope:        s.WorkScope,
-			SkipReason:       s.SkipReason,
+			ID:                     s.ID,
+			Name:                   string(s.StepName),
+			Status:                 string(s.Status),
+			FixSummaries:           s.FixSummaries,
+			StartedAt:              s.StartedAt,
+			RoundStartedAt:         s.RoundStartedAt,
+			LastActivityAt:         s.LastActivityAt,
+			AgentPID:               s.AgentPID,
+			RoundCount:             s.RoundCount,
+			FixRoundCount:          s.FixRoundCount,
+			AutoFixLimit:           s.AutoFixLimit,
+			PendingFixSource:       s.PendingFixSource,
+			WorkScope:              s.WorkScope,
+			SkipReason:             s.SkipReason,
+			PendingVerificationIDs: s.PendingVerificationIDs,
 		}
 		if s.LastActivity != nil {
 			sv.LastActivity = *s.LastActivity
@@ -229,6 +234,12 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		}
 		if s.FindingsJSON != nil {
 			sv.FindingsJSON = *s.FindingsJSON
+		}
+		if database != nil && s.StepName == types.StepReview && s.FindingsJSON != nil &&
+			(s.Status == types.StepStatusAwaitingApproval || s.Status == types.StepStatusFixReview) {
+			if rounds, err := database.GetRoundsByStep(s.ID); err == nil {
+				sv.PendingVerificationIDs = pipeline.CarriedPendingVerificationIDs(*s.FindingsJSON, rounds)
+			}
 		}
 		if reason := s.TestOverrideReason(); reason != "" {
 			rv.TestOverrideReason = reason
@@ -298,9 +309,12 @@ func (s stepView) findingCount() int {
 }
 
 // findingsTally summarizes a run's findings across all steps by action, so an
-// agent sees the shape of outstanding work without a follow-up call.
+// agent sees the shape of outstanding work without a follow-up call. Review
+// findings an earlier round already dispatched for a fix are carried state,
+// not fresh defects: they are counted separately so a converging gate's total
+// does not read as live work (the 2026-11-25 pingap stall's monotonic count).
 func (rv runView) findingsTally() string {
-	var awaiting, autofix, info int
+	var awaiting, autofix, info, carried int
 	for _, s := range rv.Steps {
 		if s.FindingsJSON == "" {
 			continue
@@ -309,7 +323,15 @@ func (rv runView) findingsTally() string {
 		if err != nil {
 			continue
 		}
+		pending := make(map[string]bool, len(s.PendingVerificationIDs))
+		for _, id := range s.PendingVerificationIDs {
+			pending[id] = true
+		}
 		for _, f := range parsed.Items {
+			if pending[f.ID] {
+				carried++
+				continue
+			}
 			switch f.Action {
 			case types.ActionAskUser:
 				awaiting++
@@ -320,7 +342,7 @@ func (rv runView) findingsTally() string {
 			}
 		}
 	}
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if awaiting > 0 {
 		parts = append(parts, fmt.Sprintf("%d awaiting", awaiting))
 	}
@@ -329,6 +351,9 @@ func (rv runView) findingsTally() string {
 	}
 	if info > 0 {
 		parts = append(parts, fmt.Sprintf("%d info", info))
+	}
+	if carried > 0 {
+		parts = append(parts, fmt.Sprintf("%d carried (fix dispatched, awaiting verification)", carried))
 	}
 	if len(parts) == 0 {
 		return "none"
@@ -574,8 +599,11 @@ func gateFieldsForRun(gate stepView, runID string) []toon.Field {
 	respond := "no-mistakes axi respond" + runFlag(runID)
 	coverageHelp := "Run `" + respond + " --action complete-coverage` to review only the remaining paths using stored coverage for this source"
 	help := []string{
-		"Run `" + respond + " --action approve` to accept this step and continue",
+		"Run `" + respond + " --action approve` to accept this step and continue; approve (or skip/abort) is the terminal move that accepts remaining findings as they are - another fix round is not",
 		"Run `" + respond + " --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",
+	}
+	if gate.Name == string(types.StepReview) {
+		help = append(help, "An explicit `--ignore` of an ask-user finding durably resolves it: it leaves the gate and stays recorded as declined, so a clean rereview completes the step instead of re-parking on it. An auto-fix decline stays advisory and outstanding until verified or explicitly approved, skipped, or aborted. Omission never declines a finding.")
 	}
 	if pipeline.HasReviewFixRoundLimit(gate.FindingsJSON) {
 		help = []string{

@@ -1675,8 +1675,10 @@ rounds:
 		durationOverrideMS += outcome.DurationOverrideMS
 
 		// roundFindings is this round's own output, used for the auto-fix
-		// selection and for the verification below. effectiveFindings is what
-		// the gate, the persisted findings, and the stats all decide on.
+		// selection and for the verification below (minus any human-declined
+		// ask-user re-report; see dropDeclinedAskUserFindings in the carry
+		// block). effectiveFindings is what the gate, the persisted findings,
+		// and the stats all decide on.
 		roundFindings := outcome.Findings
 		effectiveFindings := roundFindings
 		if carryFindings {
@@ -1703,6 +1705,23 @@ rounds:
 			// The budget notice is re-derived, never a code finding whose
 			// absent file anchor can prevent positive verification.
 			outstandingFindings = excludeFindingsJSON(outstandingFindings, []string{types.FindingIDReviewFixRoundsExhausted})
+			// A human-declined ask-user finding is resolved by its recorded
+			// decision, not by coverage (dropDeclinedAskUserFindings). Dropped
+			// here - before verification and before this round's output merges -
+			// so the ruling is durable across every round type and recovery, and
+			// the finding cannot veto or be re-carried as live work. The round's
+			// OWN output is filtered too: a content-identical re-report would
+			// otherwise merge straight back in and re-park the gate on the very
+			// finding the human declined. A materially different re-raise keeps
+			// its own content identity, merges as a new item, and parks for a
+			// fresh decision. The decline stays visible in the round history.
+			carryRounds, roundsErr := e.db.GetRoundsByStep(sr.ID)
+			if roundsErr != nil {
+				return false, "", fmt.Errorf("read review decisions for carry-forward: %w", roundsErr)
+			}
+			outstandingFindings = dropDeclinedAskUserFindings(outstandingFindings, carryRounds)
+			verificationFindings = dropDeclinedAskUserFindings(verificationFindings, carryRounds)
+			roundFindings = dropDeclinedAskUserFindings(roundFindings, carryRounds)
 			// An answer round retracts by naming ids, never by silence - and
 			// ONLY an answer round. A fix round is held to the coverage rule,
 			// so a retraction it claimed would clear a selected finding no

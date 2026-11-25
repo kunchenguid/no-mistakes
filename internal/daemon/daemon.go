@@ -1792,6 +1792,9 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	if s.StepName == types.StepReview && (s.Status == types.StepStatusAwaitingApproval || s.Status == types.StepStatusFixReview) {
 		if rounds, err := d.GetRoundsByStep(s.ID); err == nil && len(rounds) != 0 {
 			info.LatestRoundID = rounds[len(rounds)-1].ID
+			if s.FindingsJSON != nil {
+				info.PendingVerificationIDs = pipeline.CarriedPendingVerificationIDs(*s.FindingsJSON, rounds)
+			}
 		}
 	}
 	return info

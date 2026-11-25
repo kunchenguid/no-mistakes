@@ -671,6 +671,12 @@ type StepResultInfo struct {
 	FindingsJSON     *string `json:"findings_json,omitempty"`
 	ReportedFindings int     `json:"reported_findings,omitempty"`
 	FixedFindings    int     `json:"fixed_findings,omitempty"`
+	// PendingVerificationIDs names the Review gate's carried findings that an
+	// earlier round already dispatched to the fixer and a later rereview has
+	// not yet positively verified. They are carried state, not fresh defects:
+	// status surfaces use this to keep the findings count from reading as live
+	// work. Empty on every other step and whenever nothing is pending.
+	PendingVerificationIDs []string `json:"pending_verification_ids,omitempty"`
 	// FixSummaries holds one entry per fix round the pipeline ran for this
 	// step, in round order: the agent's one-line fix summary, or "" when the
 	// round recorded none. Agent surfaces use it to report applied fixes.

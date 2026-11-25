@@ -83,6 +83,22 @@ func TestFindingsTally(t *testing.T) {
 		t.Errorf("findingsTally = %q", got)
 	}
 
+	// A dispatched-but-unverified Review finding is carried state, not a live
+	// defect: it leaves the action buckets so the count does not read as work.
+	carriedView := runView{Steps: []stepView{
+		{
+			Name:                   string(types.StepReview),
+			PendingVerificationIDs: []string{"b"},
+			FindingsJSON: findingsJSON(t, []types.Finding{
+				{ID: "a", Action: types.ActionAskUser, Description: "x"},
+				{ID: "b", Action: types.ActionAutoFix, Description: "y"},
+			}, "s"),
+		},
+	}}
+	if got := carriedView.findingsTally(); got != "1 awaiting, 1 carried (fix dispatched, awaiting verification)" {
+		t.Errorf("carried findingsTally = %q", got)
+	}
+
 	empty := runView{Steps: []stepView{{}}}
 	if got := empty.findingsTally(); got != "none" {
 		t.Errorf("empty findingsTally = %q, want none", got)

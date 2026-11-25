@@ -51,6 +51,11 @@ const (
 	// review-fix invocation. Every later invocation derives a fresh budget, so
 	// a stalled agent is bounded without charging the next turn.
 	DefaultReviewAgentTimeout = 30 * time.Minute
+	// DefaultReviewMaxFixRounds bounds total Review fix rounds per run when
+	// trusted review.max_fix_rounds is unset: automatic and explicit fixes
+	// together, so a review/fix loop always terminates in an operator decision
+	// instead of open-ended rounds. An explicit 0 opts back out (unlimited).
+	DefaultReviewMaxFixRounds = 3
 	// DefaultTestAgentTimeout is the stall budget for one Test-step agent
 	// invocation, including the post-test evidence-gathering turn and a
 	// Test-repair turn, so a silent agent cannot leave a run active forever.
@@ -526,6 +531,12 @@ type RepoConfig struct {
 	// registered pending or failing check. No inference from workflow files,
 	// prior history, branch names, or grace-period expiry.
 	NoCI bool `yaml:"no_ci"`
+	// reviewMaxFixRoundsSet records that review.max_fix_rounds was PRESENT in
+	// the parsed document (including an explicit 0). Unexported and yaml:"-"
+	// so it is presence metadata, never configuration: EffectiveRepoConfig
+	// uses it to distinguish an absent key (takes DefaultReviewMaxFixRounds)
+	// from an explicit 0 (unlimited).
+	reviewMaxFixRoundsSet bool `yaml:"-"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -552,10 +563,39 @@ func (l *reviewFixRoundLimit) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML renders the internal absent-key sentinel as null so a serialized
+// effective config (eval provenance) never carries -1 as a configured value.
+// A null decodes as absent, which re-applies the default on replay - the same
+// budget the run used.
+func (l reviewFixRoundLimit) MarshalYAML() (interface{}, error) {
+	if l < 0 {
+		return nil, nil
+	}
+	return int(l), nil
+}
+
+// repoReviewMaxFixRoundsPresent reports whether the document carries a
+// review.max_fix_rounds key with a non-null value. Presence (not value) is what
+// separates an explicit 0 (unlimited) from an absent key (default cap); a null
+// is falsy/absent exactly like the plain-bool keys elsewhere in this file.
+func repoReviewMaxFixRoundsPresent(data []byte) bool {
+	var probe struct {
+		Review struct {
+			MaxFixRounds yaml.Node `yaml:"max_fix_rounds"`
+		} `yaml:"review"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	node := probe.Review.MaxFixRounds
+	return !node.IsZero() && node.Tag != "!!null"
+}
+
 // ReviewRaw is the YAML representation of review-step settings.
 type ReviewRaw struct {
 	// MaxFixRounds bounds all Review fix rounds, automatic and explicit.
-	// Zero preserves the unbounded default. Trusted repository config only.
+	// Unset resolves to DefaultReviewMaxFixRounds; an explicit 0 is unlimited.
+	// Trusted repository config only.
 	MaxFixRounds reviewFixRoundLimit `yaml:"max_fix_rounds"`
 	// Prepare runs commands.prepare before the first Review fix turn so the
 	// fixer can verify its edits against installed dependencies. Trusted
@@ -1178,7 +1218,8 @@ type Document struct {
 // decides whether the reviewer may ask questions while it works. The two
 // operator lists come from the global config and only ever add rules.
 type Review struct {
-	// MaxFixRounds is the opt-in total Review fix-round budget (0 = unlimited).
+	// MaxFixRounds is the total Review fix-round budget. Defaults to
+	// DefaultReviewMaxFixRounds; an explicit trusted 0 is unlimited.
 	MaxFixRounds int
 	// Prepare is true when commands.prepare runs before the first Review fix
 	// turn.
@@ -2838,6 +2879,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	cfg.UnknownTestKeys = unknownTest
+	cfg.reviewMaxFixRoundsSet = repoReviewMaxFixRoundsPresent(data)
 	if err := validateCommitRaw(cfg.Commit); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
@@ -2959,7 +3001,7 @@ func validatePRIntent(intent PRIntentRaw) error {
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
 	if review.MaxFixRounds < 0 {
-		return fmt.Errorf("review.max_fix_rounds must be non-negative (0 means unlimited)")
+		return fmt.Errorf("review.max_fix_rounds must be non-negative (0 means unlimited; unset defaults to %d)", DefaultReviewMaxFixRounds)
 	}
 	if review.AgentTimeout != "" {
 		if _, err := parsePositiveDuration("review.agent_timeout", review.AgentTimeout); err != nil {
@@ -3127,6 +3169,15 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// not be able to make its own review wait on an answer, or to decline
 		// the conversation a maintainer asked for.
 		effective.Review = trusted.Review
+		// An ABSENT trusted max_fix_rounds takes the built-in cap; an explicit
+		// 0 opts out (unlimited). The raw zero cannot express that difference,
+		// so the absent key is stamped with an internal sentinel here, at the
+		// trust boundary, and resolvedReviewMaxFixRounds maps only it to the
+		// default. Validation has already rejected every negative a config
+		// could legitimately carry.
+		if !trusted.reviewMaxFixRoundsSet {
+			effective.Review.MaxFixRounds = -1
+		}
 		// gates define what validating the pushed branch means - they execute
 		// shell on the daemon host - so they are
 		// trusted-only for exactly the reason review.path_instructions is, and
@@ -3219,6 +3270,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Document = DocumentRaw{}
 		effective.ProtectedPaths = nil
 		effective.Review = ReviewRaw{}
+		// No trusted copy: the pushed review block is discarded wholesale, so
+		// the cap is absent and takes the default (see the trusted branch).
+		effective.Review.MaxFixRounds = -1
 		effective.Gates = nil
 		effective.AutoFix.Gates = nil
 		effective.DisableProjectSettings = false
@@ -3973,7 +4027,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// separate sources rather than overlaid: they can only add rules, never
 		// replace or remove the repository's.
 		Review: Review{
-			MaxFixRounds:           int(repo.Review.MaxFixRounds),
+			MaxFixRounds:           resolvedReviewMaxFixRounds(repo.Review.MaxFixRounds),
 			Prepare:                repo.Review.Prepare,
 			Conversation:           repo.Review.Conversation,
 			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
@@ -4019,6 +4073,19 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	}
 
 	return cfg
+}
+
+// resolvedReviewMaxFixRounds applies the default fix-round cap only when the
+// trusted key is ABSENT. The zero value of ReviewRaw cannot distinguish
+// "unset" from an explicit 0, so presence is decided at the effective-config
+// boundary: EffectiveRepoConfig stamps an absent trusted key with -1 (a value
+// no valid config can carry, since validation rejects negatives), and only
+// that sentinel takes the default. An explicit trusted 0 stays unlimited.
+func resolvedReviewMaxFixRounds(value reviewFixRoundLimit) int {
+	if value < 0 {
+		return DefaultReviewMaxFixRounds
+	}
+	return int(value)
 }
 
 // EnableEvalProvenance pins the exact configuration this run reviews under so

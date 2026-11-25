@@ -351,15 +351,34 @@ func TestExecutor_AllIgnoredFixResponseRecordsTheDeclines(t *testing.T) {
 		t.Fatalf("declined round selection = %q, want the explicit empty selection %q", recorded, db.DeclinedSelectionJSON)
 	}
 
-	// The record is what a later gate reads as an earlier decision, so the same
-	// three findings may now be omitted: the response is accepted and keeps
-	// them. Without the record it would be refused as unaccounted.
+	// Wait for the fix round's re-park to carry the post-drop gate: the status
+	// can lag the gate registration by a moment, and a response validated
+	// against the PRE-drop gate would still show the declined ask-user finding.
 	deadline := time.Now().Add(5 * time.Second)
+	for {
+		steps, err := database.GetStepsByRun(run.ID)
+		if err == nil && len(steps) == 1 && steps[0].Status == types.StepStatusFixReview &&
+			steps[0].FindingsJSON != nil && !strings.Contains(*steps[0].FindingsJSON, `"R1"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("re-parked gate still shows the durably declined ask-user finding R1")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The record is what a later gate reads as an earlier decision. R1 was an
+	// ask-user finding: its explicit decline is a durable resolution, so it
+	// leaves the outstanding set and the re-parked gate no longer shows it.
+	// The auto-fix declines (R2, R3) stay advisory and outstanding, and may now
+	// be omitted to keep that decision. Without the record the omission would
+	// be refused as unaccounted.
+	deadline = time.Now().Add(5 * time.Second)
 	for {
 		kept, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, nil, nil, nil, "")
 		if err == nil {
-			if strings.Join(kept.Kept, ",") != "R1,R2,R3" {
-				t.Fatalf("kept = %v, want [R1 R2 R3]", kept.Kept)
+			if strings.Join(kept.Kept, ",") != "R2,R3" {
+				t.Fatalf("kept = %v, want [R2 R3] (declined ask-user R1 is durably resolved)", kept.Kept)
 			}
 			break
 		}

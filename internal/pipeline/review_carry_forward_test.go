@@ -209,11 +209,15 @@ func findingIDs(items []types.Finding) []string {
 
 // TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked mirrors the journey
 // that made the predecessor carry design (PR #704) a work-loss hole, inverted to
-// prove the hole is closed: the review reports two ask-user findings, the
-// operator selects one, the fixer writes a commit that does not fix it, and the
-// rereview reports nothing new without positively covering the finding's file.
-// The selected finding must still be outstanding, blocking the gate, with its
-// identity and action intact - the run must park again, never pass.
+// prove the hole is closed: the review reports a selected ask-user finding and
+// an unselected auto-fix neighbour, the fixer writes a commit that does not fix
+// the selection, and the rereview reports nothing new without positively
+// covering the finding's file. The selected finding must still be outstanding,
+// blocking the gate, with its identity and action intact - the run must park
+// again, never pass. The neighbour is auto-fix on purpose: an explicitly
+// declined ASK-USER finding is a durable human resolution and leaves the set
+// (dropDeclinedAskUserFindings), which would empty this gate and mask the
+// no-op-fix property under test.
 func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
@@ -226,8 +230,11 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 			round++
 			if round == 1 {
 				return &StepOutcome{
-					NeedsApproval:   true,
-					Findings:        reviewCarryTwoFindings,
+					NeedsApproval: true,
+					Findings: `{"findings":[` +
+						`{"id":"review-1","severity":"error","file":"service.go","line":10,"description":"nil deref on the error path","action":"ask-user"},` +
+						`{"id":"review-2","severity":"warning","file":"cache.go","line":42,"description":"unbounded cache growth","action":"auto-fix"}],` +
+						`"summary":"2 findings"}`,
 					ReviewedPaths:   []string{"service.go", "cache.go"},
 					ReviewablePaths: []string{"service.go", "cache.go"},
 				}, nil
@@ -389,7 +396,7 @@ func TestExecutor_ReviewCarryForward_RemintsUserAddedCollisionForPendingVerifica
 				return &StepOutcome{
 					NeedsApproval: true,
 					Findings: `{"findings":[` +
-						`{"id":"user-1","severity":"warning","file":"old.go","description":"old carried issue","action":"ask-user"},` +
+						`{"id":"user-1","severity":"warning","file":"old.go","description":"old carried issue","action":"auto-fix"},` +
 						`{"id":"review-1","severity":"error","file":"service.go","description":"selected issue","action":"ask-user"}],"summary":"2 findings"}`,
 				}, nil
 			}
@@ -440,6 +447,11 @@ func TestExecutor_ReviewCarryForward_RemintsUserAddedCollisionForPendingVerifica
 	waitExecutorDone(t, done)
 }
 
+// Finding B is auto-fix on purpose: the first response's complement declines
+// it, and an explicitly declined ASK-USER finding is now a durable resolution
+// that leaves the gate (dropDeclinedAskUserFindings), which would remove B
+// before the second selection this test exists to exercise. An auto-fix
+// decline stays advisory and outstanding.
 func TestExecutor_ReviewCarryForward_PendingSelectionsSurviveLaterRounds(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
@@ -455,19 +467,19 @@ func TestExecutor_ReviewCarryForward_PendingSelectionsSurviveLaterRounds(t *test
 					NeedsApproval: true,
 					Findings: `{"findings":[` +
 						`{"id":"review-1","severity":"error","file":"service.go","description":"nil deref","action":"ask-user"},` +
-						`{"id":"review-2","severity":"warning","file":"cache.go","description":"unbounded cache","action":"ask-user"}],"summary":"2 findings"}`,
+						`{"id":"review-2","severity":"warning","file":"cache.go","description":"unbounded cache","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 2:
 				return &StepOutcome{
 					NeedsApproval:   true,
-					Findings:        `{"findings":[{"id":"review-2","severity":"warning","file":"cache.go","description":"unbounded cache","action":"ask-user"}],"summary":"1 finding"}`,
+					Findings:        `{"findings":[{"id":"review-2","severity":"warning","file":"cache.go","description":"unbounded cache","action":"auto-fix"}],"summary":"1 finding"}`,
 					ReviewedPaths:   []string{"cache.go"},
 					ReviewablePaths: []string{"service.go", "cache.go"},
 				}, nil
 			default:
 				return &StepOutcome{
 					NeedsApproval:   true,
-					Findings:        `{"findings":[{"id":"review-2","severity":"warning","file":"cache.go","description":"unbounded cache","action":"ask-user"}],"summary":"1 finding"}`,
+					Findings:        `{"findings":[{"id":"review-2","severity":"warning","file":"cache.go","description":"unbounded cache","action":"auto-fix"}],"summary":"1 finding"}`,
 					ReviewedPaths:   []string{"service.go"},
 					ReviewablePaths: []string{"service.go", "cache.go"},
 				}, nil
@@ -851,7 +863,8 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundSilenceKeepsAnUnrelatedFinding
 // TestResolveVerifiedFindingsJSON pins the verify-before-clear rule: only a
 // positive coverage record that also stops reporting the defect clears a
 // selected finding. Silence, a round that looked elsewhere, a re-reported
-// defect, and a finding with no file all leave it outstanding.
+// defect, an ambiguous same-anchor report, and a finding with no file all
+// leave it outstanding; a demonstrably different-line sibling does not.
 func TestResolveVerifiedFindingsJSON(t *testing.T) {
 	// An EXACT restatement is what the round's own output must contain for the
 	// item to read as still reported. Identity here is still content-derived, so
@@ -860,12 +873,21 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 	// Stable identity is a separate design pass (Parts 2+3 of the scout report).
 	reported := `{"findings":[{"id":"review-1","severity":"error","file":"service.go","line":10,"description":"nil deref on the error path","action":"ask-user"}],"summary":"1 finding"}`
 
-	// lineShiftedReword is a fix that moved the defect to a different line in
-	// the same file and a rereview that restated it under a different
-	// description - matching neither the exact file+line key nor the content
-	// fingerprint. This must never read as a clean pass: any finding reported
-	// in the same file is ambiguous evidence, not positive verification.
-	lineShiftedReword := `{"findings":[{"id":"review-9","severity":"info","file":"service.go","line":11,"description":"no remaining issue in this area","action":"no-op"}],"summary":"1 finding"}`
+	// sameLineReword restates the defect at the SAME line under a different
+	// description - matching neither the exact key nor the content fingerprint.
+	// This must never read as a clean pass: a same-anchor report is ambiguous
+	// evidence, not positive verification.
+	sameLineReword := `{"findings":[{"id":"review-9","severity":"info","file":"service.go","line":10,"description":"no remaining issue in this area","action":"no-op"}],"summary":"1 finding"}`
+
+	// differentLineSibling is a demonstrably different defect at a different
+	// explicit line of the same file. Under the narrowed veto it does NOT block
+	// verification of a covered, non-re-reported finding: the hot-file blanket
+	// veto kept verified fixes outstanding for ever (2026-11-25 pingap stall).
+	differentLineSibling := `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":50,"description":"new sibling defect","action":"auto-fix"}],"summary":"1 finding"}`
+
+	// unanchoredInFile carries no line, so it could be the pending defect
+	// restated without an anchor: it stays ambiguous and keeps the veto.
+	unanchoredInFile := `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","description":"unanchored sibling in the same file","action":"auto-fix"}],"summary":"1 finding"}`
 
 	cases := []struct {
 		name        string
@@ -883,7 +905,9 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 		{name: "unanchored current finding prevents clearing", thisRound: `{"findings":[{"id":"review-9","severity":"info","description":"unanchored observation","action":"no-op"}],"summary":"1 finding"}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
 		{name: "finding covered and no longer reported clears", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
 		{name: "an unwatched finding keeps its neighbour pending", thisRound: "", reviewed: []string{"cache.go"}, pending: []string{"review-1"}},
-		{name: "line-shifted reword in the same file is ambiguous, not resolution", thisRound: lineShiftedReword, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "same-line reword in the same file is ambiguous, not resolution", thisRound: sameLineReword, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "line-less report in the same file is ambiguous, not resolution", thisRound: unanchoredInFile, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "different-line sibling in the same file does not block verification", thisRound: differentLineSibling, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
 	}
 
 	for _, tc := range cases {

@@ -12,11 +12,14 @@ import (
 // The daemon entry point the IPC respond handler calls must accept an
 // ignore-only fix response, and the decision must be durable: a response that
 // declines every finding and selects none records the declined marker with the
-// explicit empty selection the derivation reads. The executor-level regression
-// proves the recording logic; this proves the command's own path does not
-// refuse it earlier and that the record lands on a REAL parked gate.
+// explicit empty selection the derivation reads. The fixture's sole finding is
+// ask-user, so the decline is also a durable RESOLUTION: the fix round's gate
+// comes back empty and the step completes without another operator decision.
+// The executor-level regression proves the recording logic; this proves the
+// command's own path does not refuse it earlier and that the record lands on a
+// REAL parked gate.
 func TestHandleRespondWithOverrides_IgnoreOnlyFixResponseIsRecorded(t *testing.T) {
-	m, _, runID, exec := liveParkedGateFixture(t)
+	m, _, runID, _ := liveParkedGateFixture(t)
 
 	dispositions, err := m.HandleRespondWithOverrides(runID, types.StepReview, types.ActionFix, nil, []string{"review-1"}, nil, nil, "")
 	if err != nil {
@@ -54,13 +57,15 @@ func TestHandleRespondWithOverrides_IgnoreOnlyFixResponseIsRecorded(t *testing.T
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// End the run so the fixture's cleanup observes the executor finishing.
-	approvalDeadline := time.Now().Add(5 * time.Second)
+	// The declined ask-user finding is durably resolved: the fix round's gate
+	// carries nothing and the run completes on its own - no approve needed.
+	completionDeadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+		if run, err := m.db.GetRun(runID); err == nil && run.Status == types.RunCompleted {
 			break
-		} else if time.Now().After(approvalDeadline) {
-			t.Fatalf("gate never accepted approval: %v", err)
+		}
+		if time.Now().After(completionDeadline) {
+			t.Fatal("the durably declined gate never completed the run")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

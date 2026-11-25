@@ -559,24 +559,26 @@ func normalizeCoveredPath(value string) string {
 // record: for a file-anchored finding, the round listed the finding's file in
 // its ReviewedPaths coverage, that path is in the trusted reviewable set, and
 // the round's own output (thisRoundRaw) neither re-reports the defect nor
-// reports anything else at all in that same file. The file-less exception
+// reports an AMBIGUOUS finding at the same anchor. The file-less exception
 // below requires coverage of the entire trusted reviewable set.
-//
+
 // This is the only way a selected-and-fixed finding leaves the outstanding set
 // besides an explicit operator action (approve/skip/abort). A file the round
 // did not list, a missing coverage record, a round that re-reports the defect,
-// or a round that reports ANY OTHER finding in the same file all leave the
-// item in place. Any file-less finding in the current round also blocks
-// verification of every selected item in that round: silence, or
-// a round that did not look, is never resolution, and neither is an ambiguous
-// report that might be the same defect shifted to another line or reworded.
-// Without this last check, a fix that moves a defect within the same file and
-// a rereview that describes it differently would both fail the exact-match and
-// content-match checks, so the defect would silently clear as "not reported"
-// even though it is still present, just relocated or restated. That is the P1
-// this closes - the predecessor dropped a selected finding the moment its fix
-// was requested, so a no-op fix could let the run complete with the defect
-// unresolved.
+// or an ambiguous same-file report all leave the item in place. Any file-less
+// finding in the current round also blocks verification of every selected item
+// in that round: silence, or a round that did not look, is never resolution.
+//
+// The same-file veto is deliberately NARROW (issue: the 2026-11-25 pingap
+// review stall). A blanket "any other finding in this file" veto kept every
+// verified-fixed finding outstanding for as long as the file reported anything
+// new, so a hot file grew the gate monotonically and no fix ever cleared. The
+// veto now applies only to a report that could plausibly BE the pending defect
+// moved or restated: one at the SAME line (the description may have been
+// reworded) or one with no line anchor at all. A report at a different,
+// explicit line is a demonstrably different anchor and does not veto a
+// covered, non-re-reported finding - the exact-content and fingerprint checks
+// below still catch a re-report at the original anchor.
 //
 // One compat carve-out: a SELECTED finding with no file anchor can never match
 // a coverage record, so it clears on a positive verification round that no
@@ -625,12 +627,15 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	fullyCovered := len(covered) == len(reviewable)
 	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
 	reported := make(map[types.Finding]bool, len(thisRound.Items))
-	reportedFiles := make(map[string]bool, len(thisRound.Items))
+	reportedAnchors := make(map[string]map[int]bool, len(thisRound.Items))
 	hasUnanchoredFinding := false
 	for _, item := range thisRound.Items {
 		reported[findingKey(item)] = true
 		if normalized := normalizeCoveredPath(item.File); normalized != "" {
-			reportedFiles[normalized] = true
+			if reportedAnchors[normalized] == nil {
+				reportedAnchors[normalized] = make(map[int]bool)
+			}
+			reportedAnchors[normalized][item.Line] = true
 		} else {
 			hasUnanchoredFinding = true
 		}
@@ -640,7 +645,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
 		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !ambiguousSameFileReport(reportedAnchors[file], item.Line) {
 			continue
 		}
 		result.Items = append(result.Items, item)
@@ -656,6 +661,15 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 		return outstandingRaw
 	}
 	return encoded
+}
+
+// ambiguousSameFileReport reports whether this round's findings in one file
+// could be a restatement of a pending defect anchored at line: a report at the
+// same line (any description) or one with no line anchor at all. A report at a
+// different explicit line is a different anchor and is not ambiguous evidence
+// about this finding.
+func ambiguousSameFileReport(lines map[int]bool, line int) bool {
+	return lines[0] || lines[line]
 }
 
 // mergeOutstandingFindingsJSON merges one review round's output into the

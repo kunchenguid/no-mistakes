@@ -522,12 +522,12 @@ The trade-off is latency against precision. A question costs the run a park - te
 
 ### review.max_fix_rounds
 
-An opt-in limit on **total Review fix rounds per run**, counting automatic fixes and explicit `axi respond --action fix` requests together. The initial review does not spend a fix round; each allowed fix includes its full rereview. Schema retries, review-question answers, and coverage-only continuations do not spend another fix round.
+A limit on **total Review fix rounds per run**, counting automatic fixes and explicit `axi respond --action fix` requests together, so a review/fix loop always terminates in an operator decision instead of open-ended rounds. The initial review does not spend a fix round; each allowed fix includes its full rereview. Schema retries, review-question answers, and coverage-only continuations do not spend another fix round.
 
 | | |
 |---|---|
 | Type | non-negative integer |
-| Default | `0` (unlimited, preserving existing behavior) |
+| Default | `3` when the key is absent; an explicit `0` opts out (unlimited) |
 | Source | trusted default-branch repository config only |
 
 ```yaml
@@ -539,7 +539,7 @@ review:
 
 When the final allowed rereview leaves findings, Review **parks** with every remaining finding and a `review-fix-rounds-exhausted` notice showing the used/maximum fix rounds. Further fix requests return `fix_rounds_exhausted` without releasing the gate or recording a selection. `axi --yes` and TUI yolo leave this gate for an explicit decision. Inspect the findings, then explicitly approve, skip, or abort; when the same gate also holds a [protected-path refusal](#protected_paths), approve is rejected too, so only skip or abort remain. The limit never approves, lowers severity, drops findings, or starts another fix by itself. A clean, fully covered final rereview still passes normally, and a clean one that parks only for missing coverage carries no notice, so `complete-coverage` can still continue it.
 
-The limit is pinned before Review starts and survives daemon recovery and validation restarts in that run. Editing config does not extend or reduce an active run's budget. A new run gets a fresh budget; a run already in Review before this feature remains unbounded. The pushed branch cannot set, change, or remove the limit, even with `allow_repo_commands: true`. Negative and non-integer values fail configuration loading.
+The limit is pinned before Review starts and survives daemon recovery and validation restarts in that run. Editing config does not extend or reduce an active run's budget. A new run gets a fresh budget; a run already in Review before the limit was pinned remains unbounded. The pushed branch cannot set, change, or remove the limit, even with `allow_repo_commands: true`. Negative and non-integer values fail configuration loading.
 
 This is a round-count budget, not a cumulative time or token budget, a change to rereview scope, or a cancellation/custody mechanism. Other steps are unaffected.
 

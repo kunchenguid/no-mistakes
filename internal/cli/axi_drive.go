@@ -1777,6 +1777,14 @@ func newAxiRespondCmd() *cobra.Command {
 			"--ignore is refused too: reverting an applied fix is out of scope for a gate\n" +
 			"response. The recorded dispositions (fixed, ignored, kept) are echoed in the\n" +
 			"output.\n\n" +
+			"An explicit --ignore of an ask-user finding is a TERMINAL decision on it: the\n" +
+			"finding is durably resolved and leaves the gate, so a clean rereview completes\n" +
+			"the step instead of re-parking on it. The decline stays recorded as declined\n" +
+			"in the round history, and a reviewer may re-raise a materially different\n" +
+			"concern against changed code. An auto-fix decline stays advisory: the finding\n" +
+			"remains outstanding until verified or explicitly approved, skipped, or aborted.\n" +
+			"Omission never declines anything. To accept remaining findings as they are,\n" +
+			"the terminal move is --action approve (or skip/abort), not another fix round.\n\n" +
 			"With --action abort, the operator rejects the parked gate: the round is\n" +
 			"recorded as declined, the step fails as \"aborted by user: <reason>\", and the\n" +
 			"run ends failed. --reason is required and is kept in the step error and the\n" +
@@ -1825,7 +1833,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&runID, "run", "", "answer this run id directly, without resolving the current branch or worktree")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
-	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined")
+	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined. Declining an ask-user finding durably resolves it (it leaves the gate); an auto-fix decline stays advisory")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to selected findings; '-' reads stdin (exclusive with --instructions-file)")
 	cmd.Flags().StringVar(&instructionsFile, "instructions-file", "", "read fix guidance from a file (exclusive with --instructions)")
 	cmd.Flags().StringVar(&reason, "reason", "", "reason preserved with a Test approval exception (--step test --action approve), and required with --action abort")
