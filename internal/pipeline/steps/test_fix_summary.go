@@ -22,6 +22,7 @@ const (
 	maxCurrentFixEvidenceFiles = 25
 	maxCurrentFixEvidenceScan  = 1000
 	maxEvidenceHashBytes       = 16 << 20
+	maxEvidenceHashTotalBytes  = 256 << 20
 )
 
 // currentTestFixTurn records what the repair turn of this Test execution
@@ -73,6 +74,7 @@ func snapshotTestEvidenceFiles(root string) map[string]evidenceFileStamp {
 		return nil
 	}
 	files := make(map[string]evidenceFileStamp)
+	var hashedBytes int64
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -106,8 +108,10 @@ func snapshotTestEvidenceFiles(root string) map[string]evidenceFileStamp {
 			size:    info.Size(),
 			modTime: info.ModTime().UnixNano(),
 		}
-		if info.Size() <= maxEvidenceHashBytes {
-			if sum, ok := hashFileSHA256(p); ok {
+		if info.Size() <= maxEvidenceHashBytes && hashedBytes+info.Size() <= maxEvidenceHashTotalBytes {
+			sum, n, ok := hashFileSHA256(p, maxEvidenceHashBytes)
+			hashedBytes += n
+			if ok {
 				stamp.hash = sum
 				stamp.hashed = true
 			}
@@ -118,20 +122,21 @@ func snapshotTestEvidenceFiles(root string) map[string]evidenceFileStamp {
 	return files
 }
 
-func hashFileSHA256(path string) ([sha256.Size]byte, bool) {
+func hashFileSHA256(path string, limit int64) ([sha256.Size]byte, int64, bool) {
 	var zero [sha256.Size]byte
 	f, err := os.Open(path)
 	if err != nil {
-		return zero, false
+		return zero, 0, false
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return zero, false
+	n, err := io.Copy(h, io.LimitReader(f, limit+1))
+	if err != nil || n > limit {
+		return zero, n, false
 	}
 	var sum [sha256.Size]byte
 	copy(sum[:], h.Sum(nil))
-	return sum, true
+	return sum, n, true
 }
 
 // diffTestEvidenceFiles returns sorted absolute paths of regular evidence files

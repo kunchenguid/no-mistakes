@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -494,5 +495,65 @@ func TestTestStep_CurrentFixTurnUnparsableFixSummaryStillPassesOutcome(t *testin
 	}
 	if strings.Contains(prompt, "fix_summary:") || strings.Contains(prompt, "raw unstructured fixer output") {
 		t.Fatalf("unstructured fixer prose must not be emitted as fix_summary:\n%s", prompt)
+	}
+}
+
+// TestSnapshotTestEvidenceFiles_HashingStopsAtTheTotalBudget checks that one
+// snapshot hashes at most 256 MiB in total (the evidence publication limit),
+// records the remaining files by stat only, and that an unchanged directory
+// still diffs to nothing because the walk crosses the budget at the same file.
+func TestSnapshotTestEvidenceFiles_HashingStopsAtTheTotalBudget(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	const fileSize = 16 << 20
+	for i := range 17 {
+		f, err := os.Create(filepath.Join(root, fmt.Sprintf("rec-%02d.bin", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(fileSize); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	if err := os.WriteFile(filepath.Join(root, "zz-small.txt"), []byte("log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before := snapshotTestEvidenceFiles(root)
+	if len(before) != 18 {
+		t.Fatalf("snapshot has %d files, want 18", len(before))
+	}
+	for i := range 16 {
+		if !before[fmt.Sprintf("rec-%02d.bin", i)].hashed {
+			t.Fatalf("rec-%02d.bin should be hashed within the 256 MiB budget", i)
+		}
+	}
+	for _, rel := range []string{"rec-16.bin", "zz-small.txt"} {
+		if before[rel].hashed {
+			t.Fatalf("%s was hashed past the 256 MiB budget", rel)
+		}
+	}
+
+	after := snapshotTestEvidenceFiles(root)
+	if changed := diffTestEvidenceFiles(before, after); len(changed) != 0 {
+		t.Fatalf("unchanged directory reported changes: %v", changed)
+	}
+}
+
+// TestHashFileSHA256_RefusesAFileLargerThanTheLimitWhileReading checks the
+// per-file bound is enforced on the bytes read, not only on an earlier stat.
+func TestHashFileSHA256_RefusesAFileLargerThanTheLimitWhileReading(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "grown.log")
+	if err := os.WriteFile(p, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, n, ok := hashFileSHA256(p, 9); ok || n != 10 {
+		t.Fatalf("hashFileSHA256 over limit = (n=%d, ok=%v), want (10, false)", n, ok)
+	}
+	sum, n, ok := hashFileSHA256(p, 10)
+	if !ok || n != 10 || sum != sha256.Sum256([]byte("0123456789")) {
+		t.Fatalf("hashFileSHA256 at limit = (n=%d, ok=%v), want a matching digest", n, ok)
 	}
 }
