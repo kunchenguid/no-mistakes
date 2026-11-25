@@ -494,3 +494,98 @@ func TestExecutor_DeliveryRetryNeverStartsACIFixRound(t *testing.T) {
 		t.Fatalf("ci executed %d times, want 1: a delivery retry must not start an auto_fix.ci round", ciCalls)
 	}
 }
+
+func TestExecutor_RecoveredDeliveryRetryStillRefusesCIFix(t *testing.T) {
+	database, p, _, repo := setupTest(t)
+	source := publishedSourceRun(t, database, repo, types.StepCI)
+	continuation, err := database.InsertRun(repo.ID, "feature", source.HeadSHA, "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InsertRunRetry(db.RunRetry{
+		RunID:             continuation.ID,
+		SourceRunID:       source.ID,
+		StepName:          types.StepCI,
+		SourceRound:       1,
+		CheckpointHeadSHA: source.HeadSHA,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := `{"findings":[{"id":"ci-1","severity":"error","description":"red check","action":"auto-fix"}],"summary":"1 issue"}`
+	if err := database.UpdateRunStatus(continuation.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range deliverySteps {
+		stepResult, err := database.InsertStepResult(continuation.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name != types.StepCI {
+			if err := database.CompleteStepWithStatus(stepResult.ID, types.StepStatusCompleted, 0, 10, ""); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := database.StartStep(stepResult.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.InsertStepRound(stepResult.ID, 1, "retry", &findings, nil, 10); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.SetRunAwaitingAgent(continuation.ID); err != nil {
+		t.Fatal(err)
+	}
+	continuation, err = database.GetRun(continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ci := &adaptiveCallStep{
+		name: types.StepCI,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if !sctx.Fixing {
+				return nil, fmt.Errorf("recovered CI gate did not enter fix mode")
+			}
+			if !sctx.DeliveryRetry {
+				t.Error("recovered delivery retry lost delivery-only mode")
+			}
+			return nil, errors.New("a delivery retry never publishes a CI repair")
+		},
+	}
+	steps := []Step{newPassStep(types.StepReview), newPassStep(types.StepTest), newPassStep(types.StepPush), newPassStep(types.StepPR), ci}
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{CI: 3}}, nil, steps, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), continuation, repo, t.TempDir()) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepCI, types.ActionFix, []string{"ci-1"}); err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("recovered delivery retry ended before accepting Fix: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered delivery retry never accepted Fix")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "delivery retry never publishes a CI repair") {
+			t.Fatalf("recovered Fix error = %v, want delivery-only refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered delivery retry did not refuse Fix")
+	}
+}

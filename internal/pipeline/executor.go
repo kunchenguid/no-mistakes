@@ -811,6 +811,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	if err := ValidateRecoveredRun(e.db, run, e.steps); err != nil {
 		return err
 	}
+	if err := e.restoreRetryMode(run.ID); err != nil {
+		return err
+	}
 	gate, err := e.recoveredGate(run.ID)
 	if err != nil {
 		return err
@@ -1093,6 +1096,29 @@ func (e *Executor) runContext(ctx context.Context) context.Context {
 		ctx = git.WithCommitIdentity(ctx, *e.commitIdentity)
 	}
 	return ctx
+}
+
+// restoreRetryMode reconstructs the retry-only execution mode that is not
+// stored on the in-memory executor. A recovered continuation has its retry
+// audit link on disk, so use that link's source run to restore the same
+// delivery proof Execute derives from the retry checkpoint.
+func (e *Executor) restoreRetryMode(runID string) error {
+	retry, err := e.db.GetRunRetry(runID)
+	if err != nil {
+		return fmt.Errorf("read retry record: %w", err)
+	}
+	if retry == nil {
+		return nil
+	}
+	source, err := e.db.GetRun(retry.SourceRunID)
+	if err != nil {
+		return fmt.Errorf("read retry source run: %w", err)
+	}
+	if source == nil {
+		return fmt.Errorf("retry source run %s is missing", retry.SourceRunID)
+	}
+	e.deliveryRetry = source.LastPushedSHA != nil || source.PushGeneration != nil
+	return nil
 }
 
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
