@@ -831,10 +831,11 @@ func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) st
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content with
-// likely credentials redacted (see readEmbeddedArtifactText), truncated from the middle when it exceeds
-// maxEmbeddedArtifactBytes. ok is
-// false when the artifact has no path, points at an image/video, resolves
-// outside the allowed roots, is missing, empty, or is not UTF-8 text.
+// likely credentials redacted (see readEmbeddedArtifactText), truncated from
+// the middle when it exceeds maxEmbeddedArtifactBytes. ok is false when the
+// artifact has no path, points at an image/video, resolves outside the allowed
+// roots, is missing, empty, larger than maxRedactedArtifactBytes, or is not
+// UTF-8 text.
 func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) (string, bool) {
 	if artifact.Path == "" {
 		return "", false
