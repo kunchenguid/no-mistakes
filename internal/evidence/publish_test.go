@@ -551,6 +551,26 @@ func TestPublish_RedactsSecretsInTextEvidence(t *testing.T) {
 	}
 }
 
+// TestPublish_RedactsSecretsInNonUTF8TextEvidence pins that one invalid
+// UTF-8 byte (a Latin-1 response body in a curl trace) does not let a token
+// through raw, and that every other byte is kept as written.
+func TestPublish_RedactsSecretsInNonUTF8TextEvidence(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	text := "> Authorization: Bearer opaque-token-1234\n< caf\xe9 /home/alice/x\n"
+	source := writeEvidence(t, t.TempDir(), map[string]string{"logs/trace.txt": text})
+
+	result, err := Publish(context.Background(), baseRequest(remote, work, source))
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	cmd := exec.Command("git", "cat-file", "blob", result.CommitSHA+":.no-mistakes/evidence/fm/add-login/logs/trace.txt")
+	cmd.Dir = remote
+	got, err := cmd.Output()
+	if want := "> [REDACTED]\n< caf\xe9 /home/alice/x\n"; err != nil || string(got) != want {
+		t.Errorf("published text = %q (%v), want %q", got, err, want)
+	}
+}
+
 func TestPublishCommitIdentityBoundAndUnboundContexts(t *testing.T) {
 	for _, mode := range []string{"bound", "configured", "fallback", "invalid bound"} {
 		t.Run(mode, func(t *testing.T) {

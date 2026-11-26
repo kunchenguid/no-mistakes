@@ -20,6 +20,8 @@ func TestRedact(t *testing.T) {
 		{"cookie header", "> Cookie: session=s3cr3t-value; theme=dark", "s3cr3t-value"},
 		{"set-cookie header", "< Set-Cookie: sid=abc123def456; Path=/; HttpOnly", "abc123def456"},
 		{"x-auth-token header", "X-Auth-Token: tok-9f8e7d6c", "tok-9f8e7d6c"},
+		{"proxy-authorization header", "Proxy-Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"},
+		{"curl -H argument", `curl -H "Authorization: Bearer opaque-token-1234" https://x`, "opaque-token-1234"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -32,7 +34,9 @@ func TestRedact(t *testing.T) {
 }
 
 func TestRedactKeepsOrdinaryText(t *testing.T) {
-	in := "GET /checkout 200\ncookie jar emptied\nX-Request-Id: 42\n"
+	in := "GET /checkout 200\ncookie jar emptied\nX-Request-Id: 42\n" +
+		"Add RBAC. Authorization: only admins may delete projects.\n" +
+		"Cookie: must be HttpOnly and Secure.\n"
 	if got := Redact(in); got != in {
 		t.Errorf("Redact(%q) = %q, want it unchanged", in, got)
 	}
