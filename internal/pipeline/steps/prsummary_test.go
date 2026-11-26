@@ -1131,6 +1131,39 @@ func TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret(t *testing.T) 
 	}
 }
 
+// TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret
+// covers a cut with no line break on either side (a large one-line JSON
+// response): both sides are dropped rather than published mid-token.
+func TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret(t *testing.T) {
+	t.Parallel()
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	headSize := maxEmbeddedArtifactBytes / 2
+	tailSize := maxEmbeddedArtifactBytes - headSize
+	// The head cut falls 15 bytes into the PAT, the tail cut 10 bytes into
+	// the Authorization value, and the file has no line break at all.
+	start := strings.Repeat("h", headSize-len(`{"t":"`)-15) + `{"t":"` + pat + `",`
+	end := `"h":"Authorization: Bearer opaque-tail-token-77"`
+	end += strings.Repeat("c", tailSize+10-len(end)) + "}"
+	fileBody := start + strings.Repeat("m", 40*1024) + end
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "response.json", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"API response","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	for _, leak := range []string{pat[:len("ghp_")+11], "opaque-tail", "tail-token-77"} {
+		if strings.Contains(md, leak) {
+			t.Fatalf("did not expect %q in the PR body", leak)
+		}
+	}
+}
+
 func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")

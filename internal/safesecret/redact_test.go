@@ -39,6 +39,16 @@ func TestRedactEvidence(t *testing.T) {
 	}
 }
 
+// TestRedactEvidenceDropsEveryPartOfAHeaderValue pins the pattern order: if
+// the generic authorization pattern ran first it would rewrite only the name
+// and first token, and the later parts of the value would survive.
+func TestRedactEvidenceDropsEveryPartOfAHeaderValue(t *testing.T) {
+	in := "> Authorization: abcdef1234567890abcdef part-two part-three\n< 200 OK"
+	if got, want := RedactEvidence(in), "> [REDACTED]\n< 200 OK"; got != want {
+		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
+	}
+}
+
 func TestRedactEvidenceKeepsOrdinaryText(t *testing.T) {
 	in := "GET /checkout 200\ncookie jar emptied\nX-Request-Id: 42\n"
 	if got := RedactEvidence(in); got != in {

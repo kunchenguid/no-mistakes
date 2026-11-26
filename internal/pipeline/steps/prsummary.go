@@ -911,15 +911,16 @@ func readEmbeddedArtifactText(fsPath string) (string, error) {
 	if !looksLikeTextArtifact(head) || !looksLikeTextArtifact(tail) {
 		return "", nil
 	}
-	// Drop the line each cut splits. Credential redaction runs on the joined
-	// text and every pattern needs its prefix ("Authorization:", "ghp_"), so a
-	// tail that starts mid-line ("ization: Bearer <token>") or a head that
-	// ends mid-token would otherwise publish the secret.
-	if i := bytes.LastIndexByte(head, '\n'); i >= 0 {
-		head = head[:i+1]
-	}
+	// Drop the line each cut splits, or the whole side when it holds no line
+	// break. Credential redaction runs on the joined text and every pattern
+	// needs its prefix ("Authorization:", "ghp_"), so a tail that starts
+	// mid-line ("ization: Bearer <token>") or a head that ends mid-token would
+	// otherwise publish the secret.
+	head = head[:bytes.LastIndexByte(head, '\n')+1]
 	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
 		tail = tail[i+1:]
+	} else {
+		tail = tail[:0]
 	}
 	omitted := info.Size() - int64(len(head)+len(tail))
 	return neutralizePRControls(string(head) + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + string(tail)), nil

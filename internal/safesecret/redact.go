@@ -44,9 +44,11 @@ func Redact(text string) string {
 // RedactEvidence is Redact plus whole-value redaction of credential-bearing
 // HTTP headers (Authorization, Cookie, Set-Cookie, X-Auth-Token). Use it for
 // agent-captured evidence (logs, traces, saved pages) before it leaves the
-// machine.
+// machine. The header patterns run first: the generic authorization pattern
+// replaces only the name and first token, which would hide the header name
+// and let the rest of a multi-part value through.
 func RedactEvidence(text string) string {
-	return replace(Redact(text), headerPatterns)
+	return Redact(replace(text, headerPatterns))
 }
 
 func replace(text string, pats []*regexp.Regexp) string {
