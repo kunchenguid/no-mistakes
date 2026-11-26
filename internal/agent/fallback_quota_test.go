@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -183,14 +185,73 @@ func TestFallbackWithoutQuotaSwitchNeverMovesOnAQuotaError(t *testing.T) {
 	}
 }
 
+func exitStatusOneError(t *testing.T) *exec.ExitError {
+	t.Helper()
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", "exit", "1")
+	} else {
+		cmd = exec.Command("sh", "-c", "exit 1")
+	}
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
+	}
+	return exitErr
+}
+
+// codexUsageLimitFixtures holds verbatim messages from openai/codex
+// (codex-rs/protocol/src/error.rs UsageLimitReachedError) plus the issue
+// #1806 log wording.
+var codexUsageLimitFixtures = []struct {
+	name   string
+	detail string
+}{
+	{
+		name:   "plus usage limit curly apostrophe",
+		detail: "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:37 PM.",
+	},
+	{
+		name:   "plus usage limit ascii apostrophe",
+		detail: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again later.",
+	},
+	{
+		name:   "model-specific usage limit",
+		detail: "You’ve hit your usage limit for gpt-5.3-codex. Switch to another model now, or try again later.",
+	},
+	{
+		name:   "workspace owner credits depleted",
+		detail: "Your workspace is out of credits. Add credits to continue.",
+	},
+	{
+		name:   "workspace member credits depleted",
+		detail: "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+	},
+	{
+		name:   "workspace owner spend cap",
+		detail: "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+	},
+	{
+		name:   "workspace member spend cap",
+		detail: "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+	},
+}
+
 func TestFallbackQuotaSwitchRecognizesEveryExistingQuotaShape(t *testing.T) {
-	for name, quotaErr := range map[string]error{
+	exitErr := exitStatusOneError(t)
+	cases := map[string]error{
 		"free usage limit":         errors.New("claude failed: You have hit your free usage limit"),
 		"insufficient quota":       errors.New("codex failed: insufficient quota"),
 		"exceeded current quota":   errors.New("codex failed: You exceeded your current quota, please check your plan and billing details"),
 		"quota exhausted":          errors.New("grok failed: quota exhausted"),
 		"claude usage limit event": &claudeAPIError{Status: 429, usageLimitReached: true, Message: "rate limited"},
-	} {
+		"codex quota exceeded":     fmt.Errorf("codex exited: %w: %s", exitErr, "Quota exceeded. Check your plan and billing details."),
+	}
+	for _, fixture := range codexUsageLimitFixtures {
+		cases["codex "+fixture.name] = fmt.Errorf("codex exited: %w: %s", exitErr, fixture.detail)
+	}
+	for name, quotaErr := range cases {
 		t.Run(name, func(t *testing.T) {
 			if !IsQuotaExhaustionError(quotaErr) {
 				t.Fatalf("IsQuotaExhaustionError(%v) = false, want true", quotaErr)
@@ -200,16 +261,127 @@ func TestFallbackQuotaSwitchRecognizesEveryExistingQuotaShape(t *testing.T) {
 }
 
 func TestIsQuotaExhaustionError_RejectsNonQuotaErrors(t *testing.T) {
+	exitErr := exitStatusOneError(t)
 	for name, err := range map[string]error{
-		"nil":              nil,
-		"context":          context.Canceled,
-		"transient":        errors.New("claude failed: overloaded_error"),
-		"unavailable":      errors.New(`claude start: executable file not found`),
-		"structured parse": errors.New(`codex output parse: invalid JSON`),
+		"nil":                                   nil,
+		"context":                               context.Canceled,
+		"transient":                             errors.New("claude failed: overloaded_error"),
+		"unavailable":                           errors.New(`claude start: executable file not found`),
+		"structured parse":                      errors.New(`codex output parse: invalid JSON`),
+		"codex ordinary exit":                   fmt.Errorf("codex exited: %w: %s", exitErr, "stream disconnected before completion"),
+		"codex approaching usage limit warning": fmt.Errorf("codex exited: %w: %s", exitErr, "Warning: approaching your usage limit"),
+		"codex approaching spend cap warning":   fmt.Errorf("codex exited: %w: %s", exitErr, "Warning: approaching your spend cap"),
+		"codex spend limit config error":        fmt.Errorf("codex exited: %w: %s", exitErr, "invalid spend limit configuration"),
+		"codex unrelated credits error":         fmt.Errorf("codex exited: %w: %s", exitErr, "workspace credits report could not be parsed"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if IsQuotaExhaustionError(err) {
 				t.Fatalf("IsQuotaExhaustionError(%v) = true, want false", err)
+			}
+		})
+	}
+}
+
+func TestReviewerQuotaFallbackSwitchesOnCodexUsageLimitWordings(t *testing.T) {
+	exitErr := exitStatusOneError(t)
+	for _, tc := range codexUsageLimitFixtures {
+		t.Run(tc.name, func(t *testing.T) {
+			codexErr := fmt.Errorf("codex exited: %w: %s", exitErr, tc.detail)
+			primary := &quotaTestAgent{name: "primary"}
+			codex := &quotaTestAgent{
+				name:       "codex",
+				resumable:  true,
+				providerOf: "codex",
+				run: func(RunOpts) (*Result, error) {
+					return nil, codexErr
+				},
+			}
+			claude := &quotaTestAgent{
+				name:       "claude",
+				resumable:  true,
+				providerOf: "claude",
+				run: func(RunOpts) (*Result, error) {
+					return &Result{Text: "ok"}, nil
+				},
+			}
+			ag := WithReviewRoles(primary, ReviewRoles{
+				Reviewer: RoundedRole{
+					Agent: NewFallback([]Agent{codex, claude}, WithReviewerQuotaFallback("", "")),
+				},
+			})
+			var events []LifecycleEvent
+			result, err := ag.Run(context.Background(), RunOpts{
+				Purpose:     "review",
+				Session:     &SessionRef{Agent: "codex", ID: "stale-codex-session"},
+				OnLifecycle: func(event LifecycleEvent) { events = append(events, event) },
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v, want fallback to claude", err)
+			}
+			if result == nil || result.Text != "ok" || result.Provider != "claude" {
+				t.Fatalf("Run() result = %+v, want claude's ok", result)
+			}
+			if primary.calls != 0 || codex.calls != 1 || claude.calls != 1 {
+				t.Fatalf("calls = primary %d codex %d claude %d, want 0/1/1", primary.calls, codex.calls, claude.calls)
+			}
+			if len(claude.sessions) != 0 {
+				t.Fatalf("claude sessions = %+v, want a fresh session (nil)", claude.sessions)
+			}
+			if len(events) != 1 || events[0].Phase != LifecyclePhaseFallback || events[0].Agent != "codex" || !strings.Contains(events[0].Message, "claude") {
+				t.Fatalf("events = %+v, want one fallback event from codex to claude", events)
+			}
+			if label, retry := classifyTransient(fmt.Errorf("codex exited: %w: HTTP 429: %s", exitErr, tc.detail)); retry {
+				t.Fatalf("classifyTransient() = (%q, true), want terminal non-retryable for Codex usage limit", label)
+			}
+		})
+	}
+}
+
+func TestReviewerQuotaFallbackDoesNotSwitchOnOrdinaryCodexErrors(t *testing.T) {
+	exitErr := exitStatusOneError(t)
+	for _, tc := range []struct {
+		name   string
+		detail string
+	}{
+		{name: "stream disconnected", detail: "stream disconnected before completion"},
+		{name: "approaching usage limit warning", detail: "Warning: approaching your usage limit"},
+		{name: "approaching spend cap warning", detail: "Warning: approaching your spend cap"},
+		{name: "spend limit config error", detail: "invalid spend limit configuration"},
+		{name: "unrelated credits error", detail: "workspace credits report could not be parsed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			codexErr := fmt.Errorf("codex exited: %w: %s", exitErr, tc.detail)
+			primary := &quotaTestAgent{name: "primary"}
+			codex := &quotaTestAgent{
+				name: "codex",
+				run: func(RunOpts) (*Result, error) {
+					return nil, codexErr
+				},
+			}
+			claude := &quotaTestAgent{
+				name: "claude",
+				run: func(RunOpts) (*Result, error) {
+					return &Result{Text: "unexpected"}, nil
+				},
+			}
+			ag := WithReviewRoles(primary, ReviewRoles{
+				Reviewer: RoundedRole{
+					Agent: NewFallback([]Agent{codex, claude}, WithReviewerQuotaFallback("", "")),
+				},
+			})
+			var events []LifecycleEvent
+			_, err := ag.Run(context.Background(), RunOpts{
+				Purpose:     "review",
+				OnLifecycle: func(event LifecycleEvent) { events = append(events, event) },
+			})
+			if !errors.Is(err, codexErr) {
+				t.Fatalf("Run() error = %v, want original codex error %v", err, codexErr)
+			}
+			if primary.calls != 0 || codex.calls != 1 || claude.calls != 0 {
+				t.Fatalf("calls = primary %d codex %d claude %d, want 0/1/0", primary.calls, codex.calls, claude.calls)
+			}
+			if len(events) != 0 {
+				t.Fatalf("events = %+v, want no fallback events", events)
 			}
 		})
 	}

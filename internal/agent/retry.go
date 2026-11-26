@@ -238,6 +238,13 @@ var terminalNeedles = []struct {
 	{"quota_exceeded", "quota exceeded"},
 	{"quota exhausted", "quota exhausted"},
 	{"quota_exhausted", "quota exhausted"},
+	// Codex CLI usage-limit, workspace-credit, and workspace spend-cap messages
+	// (openai/codex codex-rs/protocol/src/error.rs). Kept narrow rather than
+	// matching bare "usage limit" or "spend cap" so non-terminal warnings
+	// stay ordinary failures.
+	{"hit your usage limit", "usage limit"},
+	{"workspace is out of credits", "workspace out of credits"},
+	{"hit your spend cap", "spend cap"},
 }
 
 // classifyTransient reports whether an error message looks like a transient
@@ -321,9 +328,10 @@ func isTerminalRetryError(msg string) bool {
 // IsQuotaExhaustionError reports whether an error is a recognised
 // subscription-quota exhaustion: the same terminal needle set the retry
 // layer has always classified (free usage limit, insufficient quota, quota
-// exceeded/exhausted) plus claude's typed usage-limit response. Only these
-// concrete shapes may trigger the quota-aware mid-run switch - transient
-// overload, unavailability, and parse failures never do.
+// exceeded/exhausted, Codex usage-limit, workspace-credit, and workspace spend-cap
+// messages) plus claude's typed usage-limit response. Only these concrete
+// shapes may trigger the quota-aware mid-run switch - transient overload,
+// unavailability, and parse failures never do.
 func IsQuotaExhaustionError(err error) bool {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return false
