@@ -1318,7 +1318,7 @@ func TestAssembleDraftPRBody_ReservesRoomForIssuesUnderALimit(t *testing.T) {
 	limit := 400
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
 
-	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
+	got := mustAssembleDraftPRBody(t, sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
@@ -1335,7 +1335,7 @@ func TestAssembleDraftPRBody_OmitsIssuesThatCannotFit(t *testing.T) {
 	limit := 10
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
 
-	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
+	got := mustAssembleDraftPRBody(t, sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", "", limit, scm.ProviderAzureDevOps)
 
 	if strings.Contains(got, "## Issues") {
 		t.Fatalf("a section that cannot fit must be omitted, got:\n%s", got)
@@ -1758,7 +1758,7 @@ func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) 
 	sctx.ClosingIssueRefs = []string{"42"}
 	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("x", maxPullRequestBodyBytes)
 
-	got := assembleDraftPRBody(sctx, body, "low risk", "", "", "", 0, scm.ProviderGitHub)
+	got := mustAssembleDraftPRBody(t, sctx, body, "low risk", "", "", "", 0, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {

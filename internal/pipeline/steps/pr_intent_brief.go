@@ -80,7 +80,7 @@ Final diff paths and statuses:
 }
 
 func needsPRIntentBrief(sctx *pipeline.StepContext) bool {
-	return sctx != nil && sctx.Config != nil && strings.EqualFold(strings.TrimSpace(sctx.Config.PR.Intent.Format), "brief") && publicPRIntentSource(sctx) != ""
+	return sctx != nil && sctx.Config != nil && strings.EqualFold(strings.TrimSpace(sctx.Config.PR.Intent.Format), "brief") && publicPRIntentSource(sctx) != "" && sctx.PublishedPRIntent == ""
 }
 
 func prIntentBriefSections(sctx *pipeline.StepContext) []string {
