@@ -522,6 +522,35 @@ func TestPublish_RedactsRunWorktreePathsInTextEvidence(t *testing.T) {
 	}
 }
 
+// TestPublish_RedactsSecretsInTextEvidence pins that a captured trace carrying
+// a live credential is scrubbed before it reaches the evidence branch. The
+// PAT-shaped value is built at runtime so the source tree holds no literal.
+func TestPublish_RedactsSecretsInTextEvidence(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	text := "> GET /api/me HTTP/1.1\n" +
+		"> Authorization: Bearer " + pat + "\n" +
+		"> Cookie: session=s3cr3t-session-value\n" +
+		"< HTTP/1.1 200 OK\n"
+	source := writeEvidence(t, t.TempDir(), map[string]string{"logs/trace.txt": text})
+
+	result, err := Publish(context.Background(), baseRequest(remote, work, source))
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	got := runGit(t, remote, "cat-file", "-p", result.CommitSHA+":.no-mistakes/evidence/fm/add-login/logs/trace.txt")
+	want := "> GET /api/me HTTP/1.1\n" +
+		"> [REDACTED]\n" +
+		"> [REDACTED]\n" +
+		"< HTTP/1.1 200 OK"
+	if got != want {
+		t.Errorf("published text = %q, want %q", got, want)
+	}
+	if local, err := os.ReadFile(filepath.Join(source, "logs", "trace.txt")); err != nil || string(local) != text {
+		t.Errorf("local evidence = %q (%v), want it untouched", local, err)
+	}
+}
+
 func TestPublishCommitIdentityBoundAndUnboundContexts(t *testing.T) {
 	for _, mode := range []string{"bound", "configured", "fallback", "invalid bound"} {
 		t.Run(mode, func(t *testing.T) {

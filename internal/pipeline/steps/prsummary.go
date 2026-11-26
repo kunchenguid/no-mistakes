@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -616,7 +617,7 @@ func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool
 		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
 		artifact.Path = sanitizeArtifactPath(artifact.Path, opts)
 		artifact.URL = sanitizeArtifactURL(artifact.URL)
-		artifact.Content = sanitizePromptMultilineText(artifact.Content)
+		artifact.Content = intent.RedactSecrets(sanitizePromptMultilineText(artifact.Content))
 		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
 		if artifact.Label == "" || seen[key] {
 			continue
@@ -826,8 +827,9 @@ func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) st
 	return fmt.Sprintf("![%s](%s)\n", markdownAltText(label), url)
 }
 
-// embeddedArtifactText reads a file artifact and returns its text content,
-// truncated from the middle when it exceeds maxEmbeddedArtifactBytes. ok is
+// embeddedArtifactText reads a file artifact and returns its text content with
+// likely credentials redacted, truncated from the middle when it exceeds
+// maxEmbeddedArtifactBytes. ok is
 // false when the artifact has no path, points at an image/video, resolves
 // outside the allowed roots, is missing, empty, or is not UTF-8 text.
 func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) (string, bool) {
@@ -848,7 +850,7 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if err != nil {
 		return "", false
 	}
-	text = strings.TrimRight(text, "\n")
+	text = strings.TrimRight(intent.RedactSecrets(text), "\n")
 	if text == "" {
 		return "", false
 	}

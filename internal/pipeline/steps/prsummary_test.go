@@ -925,6 +925,39 @@ func TestBuildTestingSummaryForPR_EmbedsLocalTextEvidenceContent(t *testing.T) {
 	}
 }
 
+// TestBuildTestingSummaryForPR_RedactsSecretsInArtifactContent pins that a
+// credential the test agent captured, either inline as artifact content or in
+// an embedded evidence file, never reaches the PR body. The PAT-shaped value
+// is built at runtime so the source tree holds no literal.
+func TestBuildTestingSummaryForPR_RedactsSecretsInArtifactContent(t *testing.T) {
+	t.Parallel()
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	fileBody := "> GET /api/me\n> Cookie: session=s3cr3t-session-value\n< 200 OK"
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Login log","content":"Authorization: Bearer %s\nlogin ok"},{"kind":"log","label":"HTTP trace","path":%q}]}`, pat, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+	t.Logf("rendered PR testing markdown:\n%s", md)
+
+	for _, secret := range []string{pat, "s3cr3t-session-value"} {
+		if strings.Contains(md, secret) {
+			t.Fatalf("did not expect secret %q in the PR body, got:\n%s", secret, md)
+		}
+	}
+	for _, kept := range []string{"[REDACTED]\nlogin ok", "> GET /api/me\n> [REDACTED]\n< 200 OK"} {
+		if !strings.Contains(md, kept) {
+			t.Fatalf("expected redacted evidence %q to stay in the PR body, got:\n%s", kept, md)
+		}
+	}
+}
+
 func TestBuildTestingSummaryForPR_PreservesPublicURLForEmbeddedTextEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
