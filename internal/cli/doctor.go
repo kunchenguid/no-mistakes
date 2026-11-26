@@ -60,6 +60,12 @@ func newDoctorCmd() *cobra.Command {
 						allOK = false
 					} else {
 						ok("git           ", strings.TrimSpace(string(out)))
+						if err := checkGitCommitIdentity(cmd.Context()); err != nil {
+							fail("git identity  ", err.Error()+"\n    "+gitIdentityHelp)
+							allOK = false
+						} else {
+							ok("git identity  ", "author and committer have a name and email")
+						}
 					}
 				}
 
