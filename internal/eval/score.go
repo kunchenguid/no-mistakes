@@ -8,6 +8,9 @@ import (
 )
 
 const (
+	// Bump matcherVersion whenever scoring semantics change. Cohorts include
+	// it so saved scores from different matching rules never aggregate.
+	matcherVersion       = 2
 	matchExactID         = "exact-id"
 	matchExactText       = "exact-text"
 	matchLocation        = "location"
@@ -33,7 +36,8 @@ type Score struct {
 // applying adjudications and excluding labels without discarding evidence.
 // Scoring semantics are owned by docs/src/content/docs/reference/eval.md.
 //
-// Matching is a documented cascade of strengths: exact-id, exact-text,
+// Matching is a documented cascade of strengths: exact-id (same finding ID
+// in the same file within the location line band), exact-text,
 // nearby-line Jaccard, then gated containment. Assignment is one globally
 // optimal assignment over the whole graph (see assignMatches), so neither
 // candidate ordering nor a tier boundary can consume a candidate another gold
@@ -278,7 +282,7 @@ func hungarianMinCost(cost [][]int64) []int {
 func matchAt(gold FindingGold, finding types.Finding, strength string) bool {
 	switch strength {
 	case matchExactID:
-		return gold.ID != "" && gold.ID == finding.ID
+		return exactIDMatch(gold, finding)
 	case matchExactText:
 		return exactTextMatch(gold, finding)
 	case matchLocation:
@@ -288,6 +292,18 @@ func matchAt(gold FindingGold, finding types.Finding, strength string) bool {
 	default:
 		return false
 	}
+}
+
+// exactIDMatch credits a same-ID pair only when the finding sits in the same
+// file as the gold item and within the location line band. Generic IDs such
+// as review-N or R<n> collide across unrelated defects and files, so a
+// same-ID pair failing that precondition falls through to the later tiers
+// instead of crediting on the ID coincidence alone.
+func exactIDMatch(gold FindingGold, finding types.Finding) bool {
+	if gold.ID == "" || gold.ID != finding.ID {
+		return false
+	}
+	return sameFileAndLineBand(gold, finding)
 }
 
 func exactTextMatch(gold FindingGold, finding types.Finding) bool {
@@ -300,18 +316,30 @@ func exactTextMatch(gold FindingGold, finding types.Finding) bool {
 }
 
 func locationMatch(gold FindingGold, finding types.Finding) bool {
-	goldFile, goldDesc := normalizeIssue(gold.File, gold.Description)
-	candFile, candDesc := normalizeIssue(finding.File, finding.Description)
-	if goldFile == "" || candFile == "" || goldDesc == "" || candDesc == "" {
+	_, goldDesc := normalizeIssue(gold.File, gold.Description)
+	_, candDesc := normalizeIssue(finding.File, finding.Description)
+	if goldDesc == "" || candDesc == "" {
 		return false
 	}
-	if goldFile != candFile || gold.Line <= 0 || finding.Line <= 0 {
-		return false
-	}
-	if absInt(gold.Line-finding.Line) > locationLineBand {
+	if !sameFileAndLineBand(gold, finding) {
 		return false
 	}
 	return tokenJaccard(goldDesc, candDesc) >= locationJaccardMin
+}
+
+// sameFileAndLineBand reports whether a gold item and a candidate finding
+// sit in the same file with both lines known and within locationLineBand.
+// It is the shared precondition of the exact-id tier and the location tier.
+func sameFileAndLineBand(gold FindingGold, finding types.Finding) bool {
+	goldFile, _ := normalizeIssue(gold.File, "")
+	candFile, _ := normalizeIssue(finding.File, "")
+	if goldFile == "" || candFile == "" || goldFile != candFile {
+		return false
+	}
+	if gold.Line <= 0 || finding.Line <= 0 {
+		return false
+	}
+	return absInt(gold.Line-finding.Line) <= locationLineBand
 }
 
 func containmentMatch(gold FindingGold, finding types.Finding) bool {
