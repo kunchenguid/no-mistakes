@@ -22,29 +22,40 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+`),
 }
 
+// headerValue matches one header value. A quoted value (escapes allowed) is
+// taken alone only when its closing quote is followed by a structural
+// delimiter (',', '}', ']' or the end of the line), which group 1 captures so
+// the replacement can keep it; anything else, such as an escaped quote or a
+// quoted prefix (Cookie: "a" sessionid=...), runs to the end of the line.
+const headerValue = `(?:(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')([ \t\r]*(?:[,}\]]|$))|\S[^\r\n]*)`
+
 // headerPatterns redact the whole value of an HTTP header that carries a
 // session or auth token, whatever the scheme ("Bearer", "Basic", "SSWS",
 // "Bot", "ApiKey", ...). The \b also covers Proxy-Authorization.
 //
 // The name may be quoted, as in a JSON log or a printed request object
-// ({"Authorization": "Bearer ..."}). A quoted value ends at its closing quote,
-// so the rest of a one-line JSON file survives; an unquoted value runs to the
-// end of the line, since cookie values contain spaces, ';' and '='. The last
-// pattern covers the HAR / Playwright {"name": "Cookie", "value": "..."} shape.
+// ({"Authorization": "Bearer ..."}), so the rest of a one-line JSON file
+// survives the redaction of one value. An unquoted value runs to the end of
+// the line, since cookie values contain spaces, ';' and '='. The last pattern
+// covers the HAR / Playwright header entry {"name": "Cookie", "value": "..."};
+// a HAR file's separate request/response "cookies" arrays are not covered.
 //
 // They fail closed, so they are applied only to captured evidence, never to
 // intent or prompt text, where a line such as "Authorization: only admins may
 // delete projects" is a requirement, not a credential.
 var headerPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\bauthorization['"]?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\S[^\r\n]*)`),
-	regexp.MustCompile(`(?i)\b(?:set-)?cookie['"]?\s*:\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\S[^\r\n]*)`),
-	regexp.MustCompile(`(?i)\bx-auth-token['"]?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\S[^\r\n]*)`),
-	regexp.MustCompile(`(?i)"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"\s*,\s*"value"\s*:\s*"[^"\r\n]*"`),
+	regexp.MustCompile(`(?im)\bauthorization['"]?\s*[:=][ \t]*` + headerValue),
+	regexp.MustCompile(`(?im)\b(?:set-)?cookie['"]?\s*:[ \t]*` + headerValue),
+	regexp.MustCompile(`(?im)\bx-auth-token['"]?\s*[:=][ \t]*` + headerValue),
+	regexp.MustCompile(`(?i)"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"\s*,\s*"value"\s*:\s*"(?:[^"\\\r\n]|\\.)*"`),
 }
 
 // Redact returns text with likely credentials replaced by [REDACTED].
 func Redact(text string) string {
-	return replace(text, patterns)
+	for _, pat := range patterns {
+		text = pat.ReplaceAllString(text, "[REDACTED]")
+	}
+	return text
 }
 
 // RedactEvidence is Redact plus whole-value redaction of credential-bearing
@@ -54,12 +65,9 @@ func Redact(text string) string {
 // replaces only the name and first token, which would hide the header name
 // and let the rest of a multi-part value through.
 func RedactEvidence(text string) string {
-	return Redact(replace(text, headerPatterns))
-}
-
-func replace(text string, pats []*regexp.Regexp) string {
-	for _, pat := range pats {
-		text = pat.ReplaceAllString(text, "[REDACTED]")
+	for _, pat := range headerPatterns {
+		// ${1} keeps the delimiter after a quoted value; it is empty otherwise.
+		text = pat.ReplaceAllString(text, "[REDACTED]${1}")
 	}
-	return text
+	return Redact(text)
 }

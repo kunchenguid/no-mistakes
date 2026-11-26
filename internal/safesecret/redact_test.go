@@ -64,6 +64,34 @@ func TestRedactEvidenceStopsAtAQuotedValue(t *testing.T) {
 	}
 }
 
+// TestRedactEvidenceQuotedValueEdges pins that a quoted value is taken alone
+// only when it is a whole, delimited string. An escaped quote inside it, an
+// escaped quote around the whole header, or a quoted prefix followed by more
+// text must not stop the redaction early.
+func TestRedactEvidenceQuotedValueEdges(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"escaped quotes inside a json value", `{"Authorization": "Bearer \"abc\" xyz-secret", "ok": 1}`, `{"[REDACTED], "ok": 1}`},
+		{"header inside an escaped json string", `"line": "Authorization: \"Bearer abc\" xyz-secret"`, `"line": "[REDACTED]`},
+		{"quoted prefix", `Cookie: "a" sessionid=SECRET`, `[REDACTED]`},
+		{"single-quoted prefix", `x-auth-token: 'a' rest-SECRET`, `[REDACTED]`},
+		{"quoted value at end of line", "Authorization: \"Bearer SECRET\"\r\nHost: x", "[REDACTED]\r\nHost: x"},
+		{"quoted value in an array", `["cookie: \"sid=SECRET\"", 'cookie': 'sid=SECRET2']`, `["[REDACTED]`},
+		{"har value with escapes", `{"name":"Cookie","value":"sid=\"SECRET\""}`, `{[REDACTED]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RedactEvidence(tt.in)
+			if got != tt.want || strings.Contains(got, "SECRET") || strings.Contains(got, "xyz-secret") {
+				t.Errorf("RedactEvidence(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRedactEvidenceKeepsOrdinaryText(t *testing.T) {
 	in := "GET /checkout 200\ncookie jar emptied\nX-Request-Id: 42\n"
 	if got := RedactEvidence(in); got != in {
