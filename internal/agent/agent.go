@@ -676,10 +676,12 @@ type bareObject struct {
 // bareJSONObjects scans text for balanced {...} substrings outside code fences
 // that parse as JSON and validate against the schema. Only concluding objects
 // are candidates; an incidental object followed by substantive prose is not a
-// verdict, and provider protocol residue after a complete object is. A single
-// answer split across adjacent objects - nothing between them but whitespace or
-// a single comma - is returned as their union when their keys are disjoint and
-// the union validates (see fuseAdjacentBareObjects).
+// verdict, and provider protocol residue after a complete object is. A
+// concluding run of adjacent value-identical objects collapses to that single
+// object (see identicalConcludingBareObjects). A single answer split across
+// adjacent objects - nothing between them but whitespace or a single comma -
+// is returned as their union when their keys are disjoint and the union
+// validates (see fuseAdjacentBareObjects).
 func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
 	var valid []bareObject
 	var objects []bareObject
@@ -719,6 +721,9 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 		i = end - 1
 	}
 	if len(valid) > 1 {
+		if identicalConcludingBareObjects(text, valid) {
+			return []json.RawMessage{valid[0].obj}, nil
+		}
 		parsed := make([]json.RawMessage, 0, len(valid))
 		for _, candidate := range valid {
 			parsed = append(parsed, candidate.obj)
@@ -738,6 +743,25 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 		}
 	}
 	return nil, lastErr
+}
+
+// identicalConcludingBareObjects reports whether valid is a concluding run of
+// adjacent, value-identical bare objects. Adjacent uses the same separator rule
+// as fuseAdjacentBareObjects (whitespace or a single comma), and concluding
+// uses the same trailingNonJSONResidue check as a single bare object.
+func identicalConcludingBareObjects(text string, valid []bareObject) bool {
+	if len(valid) < 2 || !trailingNonJSONResidue(text[valid[len(valid)-1].endIndex:]) {
+		return false
+	}
+	for i := 1; i < len(valid); i++ {
+		if !isBareObjectSeparator(text[valid[i-1].endIndex:valid[i].startIndex]) {
+			return false
+		}
+		if !jsonEqual(valid[0].obj, valid[i].obj) {
+			return false
+		}
+	}
+	return true
 }
 
 // trailingNonJSONResidue reports whether rest - the text following a single
