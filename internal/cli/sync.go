@@ -271,7 +271,11 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		}
 		if keepLocal {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
-			if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "pinned_head" {
+			if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "available_head" {
+				fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring the available pipeline commits and moving")
+				fmt.Fprintln(cmd.OutOrStdout(), "  the local gate branch to the kept local head; the worktree is never touched")
+				fmt.Fprintln(cmd.OutOrStdout(), "  and the unpublished pipeline commits remain off the branch.")
+			} else if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "pinned_head" {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible Git change is moving the local gate branch to the exact required")
 				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree is never touched and the pipeline commits stay at the")
 				fmt.Fprintln(cmd.OutOrStdout(), "  recovery ref.")
@@ -404,6 +408,9 @@ func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
+			if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "available_head" {
+				return "explicit recovery will preserve the pipeline commits at the recovery ref and keep the current local head with `no-mistakes sync --recover --keep-local`"
+			}
 			if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "pinned_head" {
 				return "pipeline commits stay at the recovery ref and are not on the branch; recover custody at the current local head with `no-mistakes sync --recover --keep-local`"
 			}

@@ -636,9 +636,10 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 // already carries every local change. That proof is deliberately narrow, and
 // everything it cannot decide - including a rebase whose fix rounds also
 // rewrote the operator's lines - falls through to the plain diverged refusal.
-// Status then offers --recover --keep-local when that verified head is already
-// pinned at the run recovery ref in the gate. The branch stays put. An
-// unverified terminal head is not offered that keep-local command.
+// Status delegates the keep-local offer to pinnedKeepLocalOffer, including
+// its narrower unpinned-head case. Inspection never creates the pin; explicit
+// recovery must preserve the commits before returning custody. The branch stays
+// put. An unverified terminal head is not offered that keep-local command.
 // No-data-loss outranks convenience here: when nothing can distinguish a
 // deliberate pipeline fix from a dropped change, the operator decides.
 //
@@ -2602,8 +2603,10 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	)
 }
 
-// pinnedKeepLocalOffer refuses an unverified terminal head. Recover refuses
-// that head before keep-local, so status must not advertise the command.
+// pinnedKeepLocalOffer also covers a legacy verified head that Recover can
+// pin explicitly. Without an existing pin, keep the offer within the archive
+// recovery shape: a clean recorded local head and no independent gate head.
+// An unverified terminal head must never be advertised here.
 func (s *Service) pinnedKeepLocalOffer(ctx context.Context, state *State, run *db.Run) (recoverySourceProof, bool) {
 	if state == nil || run == nil || !state.Local.Clean || run.TerminalHeadVerifiedAt == nil || !terminalRunStatus(run.Status) || strings.TrimSpace(run.HeadSHA) == "" {
 		return recoverySourceProof{}, false
@@ -2623,9 +2626,14 @@ func (s *Service) pinnedKeepLocalOffer(ctx context.Context, state *State, run *d
 	if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", ref); err == nil && symbolic != "" {
 		return recoverySourceProof{}, false
 	}
-	anchored, err := git.Run(ctx, gateDir, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil || anchored != preserved {
+	anchored, pinned, err := git.ExactRefTarget(ctx, gateDir, ref)
+	if err != nil || (pinned && anchored != preserved) {
 		return recoverySourceProof{}, false
+	}
+	if !pinned {
+		if _, recorded := archiveRequiredHead(*state, run); !recorded {
+			return recoverySourceProof{}, false
+		}
 	}
 	if compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, preserved); err != nil || !compatible {
 		return recoverySourceProof{}, false
@@ -2633,6 +2641,16 @@ func (s *Service) pinnedKeepLocalOffer(ctx context.Context, state *State, run *d
 	gateHead, gateHeadExists, err := git.ExactRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch)
 	if err != nil {
 		return recoverySourceProof{}, false
+	}
+	if !pinned {
+		// This is guidance for the existing explicit recovery, not authority
+		// to reconcile a third head or select an arbitrary working result.
+		if !gateHeadExists || (gateHead != state.Local.Head && gateHead != preserved) {
+			return recoverySourceProof{}, false
+		}
+		if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", "refs/heads/"+state.Local.Branch); err == nil && symbolic != "" {
+			return recoverySourceProof{}, false
+		}
 	}
 	if gateHeadExists && gateHead != state.Local.Head && gateHead != preserved {
 		if !objectExists(ctx, gateDir, gateHead) {
@@ -2646,12 +2664,18 @@ func (s *Service) pinnedKeepLocalOffer(ctx context.Context, state *State, run *d
 	if s.Repo != nil {
 		repoID = s.Repo.ID
 	}
+	source := "pinned_head"
+	message := fmt.Sprintf("the run finished %s; its pipeline commits stay at %s and are not on the branch", run.Status, ref)
+	if !pinned {
+		source = "available_head"
+		message = fmt.Sprintf("the run finished %s; explicit keep-local recovery will preserve its pipeline commits at %s without putting them on the branch; the current local head is kept", run.Status, ref)
+	}
 	return recoverySourceProof{
 		available: true,
 		action:    NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"},
-		err:       fmt.Sprintf("the run finished %s; its pipeline commits stay at %s and are not on the branch", run.Status, ref),
+		err:       message,
 		evidence: &RecoveryEvidence{
-			Source: "pinned_head", RepositoryID: repoID, RunID: run.ID,
+			Source: source, RepositoryID: repoID, RunID: run.ID,
 			Branch: state.Local.Branch, RequiredHead: state.Local.Head, PreservedHead: preserved,
 			KeepLocal: true, Proof: "verified",
 		},
