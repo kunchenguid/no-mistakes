@@ -1094,9 +1094,9 @@ func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testin
 }
 
 // TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret pins that a
-// middle-truncated file drops the lines each cut splits before redaction:
-// otherwise the head ends mid-token (too short to match) and the tail starts
-// mid-header ("ization: Bearer ..."), and both leak.
+// middle-truncated file is redacted whole before the middle cut: redacting
+// after the cut would leave the head ending mid-token (too short to match)
+// and the tail starting mid-header ("ization: Bearer ..."), and both leak.
 func TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret(t *testing.T) {
 	t.Parallel()
 	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
@@ -1133,7 +1133,8 @@ func TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret(t *testing.T) 
 
 // TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret
 // covers a cut with no line break on either side (a large one-line JSON
-// response): both sides are dropped rather than published mid-token.
+// response): the whole file is redacted before the middle cut, so neither
+// side can publish a secret split mid-token.
 func TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret(t *testing.T) {
 	t.Parallel()
 	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
