@@ -1093,6 +1093,44 @@ func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testin
 	}
 }
 
+// TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret pins that a
+// middle-truncated file drops the lines each cut splits before redaction:
+// otherwise the head ends mid-token (too short to match) and the tail starts
+// mid-header ("ization: Bearer ..."), and both leak.
+func TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret(t *testing.T) {
+	t.Parallel()
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	headSize := maxEmbeddedArtifactBytes / 2
+	tailSize := maxEmbeddedArtifactBytes - headSize
+	// The head cut falls 15 bytes into the PAT.
+	headLine := strings.Repeat("h", headSize-len("token ")-15-1) + "\n"
+	patLine := "token " + pat + "\n"
+	// The tail cut falls 10 bytes into the Authorization line.
+	authLine := "> Authorization: Bearer opaque-tail-token-77\n"
+	suffix := strings.Repeat("c", tailSize+10-len(authLine)-1) + "\n"
+	fileBody := headLine + patLine + strings.Repeat("m\n", 20*1024) + authLine + suffix
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"HTTP trace","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	if !strings.Contains(md, "bytes truncated") {
+		t.Fatalf("expected the file to be middle-truncated, got:\n%s", md[:min(len(md), 600)])
+	}
+	for _, leak := range []string{pat[:len("ghp_")+11], "opaque-tail-token-77"} {
+		if strings.Contains(md, leak) {
+			t.Fatalf("did not expect %q in the PR body", leak)
+		}
+	}
+}
+
 func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")

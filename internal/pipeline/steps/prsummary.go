@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/intent"
+	"github.com/kunchenguid/no-mistakes/internal/safesecret"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -617,7 +617,7 @@ func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool
 		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
 		artifact.Path = sanitizeArtifactPath(artifact.Path, opts)
 		artifact.URL = sanitizeArtifactURL(artifact.URL)
-		artifact.Content = intent.RedactSecrets(sanitizePromptMultilineText(artifact.Content))
+		artifact.Content = safesecret.RedactEvidence(sanitizePromptMultilineText(artifact.Content))
 		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
 		if artifact.Label == "" || seen[key] {
 			continue
@@ -850,7 +850,7 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if err != nil {
 		return "", false
 	}
-	text = strings.TrimRight(intent.RedactSecrets(text), "\n")
+	text = strings.TrimRight(safesecret.RedactEvidence(text), "\n")
 	if text == "" {
 		return "", false
 	}
@@ -910,6 +910,16 @@ func readEmbeddedArtifactText(fsPath string) (string, error) {
 	tail = trimUTF8Start(tail)
 	if !looksLikeTextArtifact(head) || !looksLikeTextArtifact(tail) {
 		return "", nil
+	}
+	// Drop the line each cut splits. Credential redaction runs on the joined
+	// text and every pattern needs its prefix ("Authorization:", "ghp_"), so a
+	// tail that starts mid-line ("ization: Bearer <token>") or a head that
+	// ends mid-token would otherwise publish the secret.
+	if i := bytes.LastIndexByte(head, '\n'); i >= 0 {
+		head = head[:i+1]
+	}
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
 	}
 	omitted := info.Size() - int64(len(head)+len(tail))
 	return neutralizePRControls(string(head) + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + string(tail)), nil

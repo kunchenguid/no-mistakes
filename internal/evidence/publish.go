@@ -211,7 +211,7 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 // redaction the PR title and body get, because captured command output carries
 // absolute paths under the operator's home, after the run worktree paths are
 // rewritten. Any file without NUL bytes then gets credential redaction
-// (safesecret.Redact), because a captured HTTP trace or verbose command output
+// (safesecret.RedactEvidence), because a captured HTTP trace or verbose command output
 // can carry a live token, and one stray non-UTF-8 byte in such a log must not
 // let it through raw; the regexp copies every unmatched byte as is. Binary
 // artifacts (NUL bytes) and the local file itself are left untouched.
@@ -225,7 +225,7 @@ func hashEvidenceFile(ctx context.Context, req Request, env []string, abs string
 		if utf8.Valid(content) {
 			redacted = safepath.RedactText(safepath.RedactWorktrees(redacted, req.RunWorktree, req.WorktreesRoot))
 		}
-		redacted = safesecret.Redact(redacted)
+		redacted = safesecret.RedactEvidence(redacted)
 		if redacted != string(content) {
 			return git.RunWithInput(ctx, req.RepoDir, redacted, "hash-object", "-w", "--stdin")
 		}
