@@ -22,32 +22,26 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+`),
 }
 
-// headerValue matches one header value. A quoted value (escapes allowed) is
-// taken alone only when its closing quote is followed by a structural
-// delimiter (',', '}', ']' or the end of the line), which group 1 captures so
-// the replacement can keep it; anything else, such as an escaped quote or a
-// quoted prefix (Cookie: "a" sessionid=...), runs to the end of the line.
-const headerValue = `(?:(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')([ \t\r]*(?:[,}\]]|$))|\S[^\r\n]*)`
-
 // headerPatterns redact the whole value of an HTTP header that carries a
 // session or auth token, whatever the scheme ("Bearer", "Basic", "SSWS",
-// "Bot", "ApiKey", ...). The \b also covers Proxy-Authorization.
+// "Bot", "ApiKey", ...), from the first non-space character after the ':' or
+// '=' to the end of that line. The \b also covers Proxy-Authorization, and
+// the name may be quoted, as in a JSON log or a printed request object
+// ({"Authorization": "Bearer ..."}). As in the generic patterns, the space
+// after the separator may span a line break, so a value on the next line
+// ("Cookie:\n  sid=...") is redacted too. The last pattern covers the HAR /
+// Playwright header entry {"name": "Cookie", "value": "..."}; a HAR file's
+// separate request/response "cookies" arrays are not covered.
 //
-// The name may be quoted, as in a JSON log or a printed request object
-// ({"Authorization": "Bearer ..."}), so the rest of a one-line JSON file
-// survives the redaction of one value. An unquoted value runs to the end of
-// the line, since cookie values contain spaces, ';' and '='. The last pattern
-// covers the HAR / Playwright header entry {"name": "Cookie", "value": "..."};
-// a HAR file's separate request/response "cookies" arrays are not covered.
-//
-// They fail closed, so they are applied only to captured evidence, never to
-// intent or prompt text, where a line such as "Authorization: only admins may
-// delete projects" is a requirement, not a credential.
+// They fail closed: in a one-line JSON file the rest of the line goes with the
+// value. So they are applied only to captured evidence, never to intent or
+// prompt text, where a line such as "Authorization: only admins may delete
+// projects" is a requirement, not a credential.
 var headerPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?im)\bauthorization['"]?\s*[:=][ \t]*` + headerValue),
-	regexp.MustCompile(`(?im)\b(?:set-)?cookie['"]?\s*:[ \t]*` + headerValue),
-	regexp.MustCompile(`(?im)\bx-auth-token['"]?\s*[:=][ \t]*` + headerValue),
-	regexp.MustCompile(`(?i)"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"\s*,\s*"value"\s*:\s*"(?:[^"\\\r\n]|\\.)*"`),
+	regexp.MustCompile(`(?i)\bauthorization['"]?\s*[:=]\s*\S[^\r\n]*`),
+	regexp.MustCompile(`(?i)\b(?:set-)?cookie['"]?\s*:\s*\S[^\r\n]*`),
+	regexp.MustCompile(`(?i)\bx-auth-token['"]?\s*[:=]\s*\S[^\r\n]*`),
+	regexp.MustCompile(`(?i)"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"\s*,\s*"value"\s*:\s*"(?:[^"\\]|\\.)*"`),
 }
 
 // Redact returns text with likely credentials replaced by [REDACTED].
@@ -66,8 +60,7 @@ func Redact(text string) string {
 // and let the rest of a multi-part value through.
 func RedactEvidence(text string) string {
 	for _, pat := range headerPatterns {
-		// ${1} keeps the delimiter after a quoted value; it is empty otherwise.
-		text = pat.ReplaceAllString(text, "[REDACTED]${1}")
+		text = pat.ReplaceAllString(text, "[REDACTED]")
 	}
 	return Redact(text)
 }

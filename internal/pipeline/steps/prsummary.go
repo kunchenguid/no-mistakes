@@ -35,7 +35,10 @@ func prBodyFlavorFor(provider scm.Provider) prBodyFlavor {
 }
 
 const (
-	maxEmbeddedArtifactBytes               = 16 * 1024
+	maxEmbeddedArtifactBytes = 16 * 1024
+	// maxRedactedArtifactBytes caps the evidence file read whole for
+	// redaction before it is cut down to maxEmbeddedArtifactBytes.
+	maxRedactedArtifactBytes               = 8 << 20
 	maxEmbeddedArtifactsTotalBytes         = 32 * 1024
 	noMistakesPRSignature                  = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
 	pipelineAttestationCommentPrefix       = "<!-- no-mistakes-pipeline-attestation:v1 "
@@ -828,7 +831,7 @@ func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) st
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content with
-// likely credentials redacted, truncated from the middle when it exceeds
+// likely credentials redacted (see readEmbeddedArtifactText), truncated from the middle when it exceeds
 // maxEmbeddedArtifactBytes. ok is
 // false when the artifact has no path, points at an image/video, resolves
 // outside the allowed roots, is missing, empty, or is not UTF-8 text.
@@ -850,7 +853,7 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if err != nil {
 		return "", false
 	}
-	text = strings.TrimRight(safesecret.RedactEvidence(text), "\n")
+	text = strings.TrimRight(text, "\n")
 	if text == "" {
 		return "", false
 	}
@@ -882,47 +885,28 @@ func readEmbeddedArtifactText(fsPath string) (string, error) {
 	if err != nil || info.IsDir() {
 		return "", err
 	}
-	if info.Size() <= int64(maxEmbeddedArtifactBytes) {
-		data, err := os.ReadFile(fsPath)
-		if err != nil || !looksLikeTextArtifact(data) {
-			return "", err
-		}
-		return neutralizePRControls(string(data)), nil
+	// Credential redaction runs on the whole file before the middle cut: a
+	// cut can then only split a [REDACTED] marker, never a secret whose
+	// pattern needs both sides ("Authorization:" and its value, a HAR name
+	// line and its value line). A file too large to read whole is not
+	// embedded.
+	if info.Size() > maxRedactedArtifactBytes {
+		return "", nil
 	}
-
-	file, err := os.Open(fsPath)
-	if err != nil {
+	data, err := os.ReadFile(fsPath)
+	if err != nil || !looksLikeTextArtifact(data) {
 		return "", err
 	}
-	defer file.Close()
+	text := safesecret.RedactEvidence(string(data))
+	if len(text) <= maxEmbeddedArtifactBytes {
+		return neutralizePRControls(text), nil
+	}
 
 	headSize := maxEmbeddedArtifactBytes / 2
 	tailSize := maxEmbeddedArtifactBytes - headSize
-	head := make([]byte, headSize)
-	if _, err := file.ReadAt(head, 0); err != nil {
-		return "", err
-	}
-	tail := make([]byte, tailSize)
-	if _, err := file.ReadAt(tail, info.Size()-int64(tailSize)); err != nil {
-		return "", err
-	}
-	head = trimUTF8End(head)
-	tail = trimUTF8Start(tail)
-	if !looksLikeTextArtifact(head) || !looksLikeTextArtifact(tail) {
-		return "", nil
-	}
-	// Drop the line each cut splits, or the whole side when it holds no line
-	// break. Credential redaction runs on the joined text and every pattern
-	// needs its prefix ("Authorization:", "ghp_"), so a tail that starts
-	// mid-line ("ization: Bearer <token>") or a head that ends mid-token would
-	// otherwise publish the secret.
-	head = head[:bytes.LastIndexByte(head, '\n')+1]
-	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
-		tail = tail[i+1:]
-	} else {
-		tail = tail[:0]
-	}
-	omitted := info.Size() - int64(len(head)+len(tail))
+	head := trimUTF8End([]byte(text[:headSize]))
+	tail := trimUTF8Start([]byte(text[len(text)-tailSize:]))
+	omitted := len(text) - (len(head) + len(tail))
 	return neutralizePRControls(string(head) + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + string(tail)), nil
 }
 

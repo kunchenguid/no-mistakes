@@ -1164,6 +1164,40 @@ func TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret(t *te
 	}
 }
 
+// TestBuildTestingSummaryForPR_TruncationCannotSplitAHARHeader covers a
+// pretty-printed HAR file whose tail cut lands inside the "name" line of an
+// Authorization entry: the value line alone matches no pattern, so the file
+// has to be redacted before it is cut.
+func TestBuildTestingSummaryForPR_TruncationCannotSplitAHARHeader(t *testing.T) {
+	t.Parallel()
+	tailSize := maxEmbeddedArtifactBytes - maxEmbeddedArtifactBytes/2
+	nameLine := "      \"name\": \"Authorization\",\n"
+	entry := nameLine + "      \"value\": \"Bearer opaque-okta-token\"\n    }\n"
+	suffix := strings.Repeat("    {\"name\": \"Accept\", \"value\": \"*/*\"},\n", tailSize/60)
+	// The tail cut falls 10 bytes before the end of the name line.
+	pad := tailSize - (len(entry) - len(nameLine) + 10) - len(suffix)
+	suffix += strings.Repeat(" ", pad-1) + "\n"
+	fileBody := "{\"log\": {\"entries\": [\n" + strings.Repeat("    {},\n", 4*1024) + "    {\n" + entry + suffix
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.har", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"HAR trace","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	if !strings.Contains(md, "bytes truncated") {
+		t.Fatalf("expected the file to be middle-truncated, got:\n%s", md[:min(len(md), 600)])
+	}
+	if strings.Contains(md, "opaque-okta-token") {
+		t.Fatalf("did not expect the HAR token in the PR body")
+	}
+}
+
 func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")

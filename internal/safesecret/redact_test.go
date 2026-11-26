@@ -5,9 +5,40 @@ import (
 	"testing"
 )
 
-// fakeGitHubPAT is built at runtime so the source tree holds no contiguous
-// ghp_<20+ alnum> literal for a public-push scanner to flag.
-var fakeGitHubPAT = "ghp_" + "abcdefghijklmnopqrstuvwx12"
+// fakeGitHubPAT and fakeAWSKey are built at runtime so the source tree holds
+// no contiguous credential-shaped literal for a public-push scanner to flag.
+var (
+	fakeGitHubPAT = "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	fakeAWSKey    = "AKIA" + "IOSFODNN7EXAMPLE"
+)
+
+// TestRedactKeepsMainsCoverage runs the inputs the redactor caught before
+// this package existed (internal/intent/redact_test.go on main) through both
+// entry points: neither may be weaker than main.
+func TestRedactKeepsMainsCoverage(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+	}{
+		{"github pat", "use " + fakeGitHubPAT + " to push", fakeGitHubPAT},
+		{"openai key", "key sk-abcdefghijklmnop12345678", "sk-abcdefghijklmnop12345678"},
+		{"aws key", fakeAWSKey + " inline", fakeAWSKey},
+		{"jwt", "token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM works", "eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM"},
+		{"api_key assignment", `api_key = "abcdef1234567890abc"`, "abcdef1234567890abc"},
+		{"authorization assignment", "authorization=abcdef1234567890abc", "abcdef1234567890abc"},
+		{"password on the next line", "password:\n  abcdef1234567890abc", "abcdef1234567890abc"},
+	}
+	for _, tt := range tests {
+		for name, redact := range map[string]func(string) string{"Redact": Redact, "RedactEvidence": RedactEvidence} {
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				if got := redact(tt.in); strings.Contains(got, tt.secret) || !strings.Contains(got, "[REDACTED]") {
+					t.Errorf("%s(%q) = %q, want %q replaced by [REDACTED]", name, tt.in, got, tt.secret)
+				}
+			})
+		}
+	}
+}
 
 func TestRedactEvidence(t *testing.T) {
 	tests := []struct {
@@ -15,7 +46,6 @@ func TestRedactEvidence(t *testing.T) {
 		in     string
 		secret string
 	}{
-		{"github pat", "push with " + fakeGitHubPAT, fakeGitHubPAT},
 		{"bearer", "Authorization: Bearer abcdef1234567890abcdef", "abcdef1234567890abcdef"},
 		{"short bearer", "> Authorization: Bearer tok-42", "tok-42"},
 		{"okta ssws", "Authorization: SSWS 00aBcDeF", "00aBcDeF"},
@@ -28,12 +58,19 @@ func TestRedactEvidence(t *testing.T) {
 		{"set-cookie header", "< Set-Cookie: sid=abc123def456; Path=/; HttpOnly", "abc123def456"},
 		{"x-auth-token header", "X-Auth-Token: tok-9f8e7d6c", "tok-9f8e7d6c"},
 		{"x-auth-token assignment", "x-auth-token=tok-1a2b3c", "tok-1a2b3c"},
+		{"cookie on the next line", "Cookie:\n  sid=SECRET-next", "SECRET-next"},
+		{"authorization on the next line", "Authorization:\n  Bearer SECRET-next", "SECRET-next"},
 		{"json authorization", `{"Authorization": "Bearer opaque-token-abc"}`, "opaque-token-abc"},
 		{"python dict", `{'authorization': 'Bearer opaque-py', 'cookie': 'sid=xyz'}`, "opaque-py"},
 		{"python dict cookie", `{'authorization': 'Bearer opaque-py', 'cookie': 'sid=xyz'}`, "sid=xyz"},
 		{"json x-auth-token", `"x-auth-token": "tok-abc"`, "tok-abc"},
+		{"escaped quotes in a json value", `{"Authorization": "Bearer \"abc\" xyz-secret", "ok": 1}`, "xyz-secret"},
+		{"quoted prefix", `Cookie: "a" sessionid=SECRET-q`, "SECRET-q"},
+		{"quoted prefix and comma", `Set-Cookie: "a", sid=SECRET-c`, "SECRET-c"},
 		{"har cookie", `{"name":"Cookie","value":"sid=secretval"}`, "secretval"},
 		{"har authorization", `{"name": "authorization", "value": "SSWS opaque-har"}`, "opaque-har"},
+		{"har value with escapes", `{"name":"Cookie","value":"sid=\"SECRET-e\""}`, "SECRET-e"},
+		{"pretty-printed har", "{\n  \"name\": \"Authorization\",\n  \"value\": \"Bearer opaque-okta\"\n}", "opaque-okta"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,43 +89,6 @@ func TestRedactEvidenceDropsEveryPartOfAHeaderValue(t *testing.T) {
 	in := "> Authorization: abcdef1234567890abcdef part-two part-three\n< 200 OK"
 	if got, want := RedactEvidence(in), "> [REDACTED]\n< 200 OK"; got != want {
 		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
-	}
-}
-
-// TestRedactEvidenceStopsAtAQuotedValue pins that a quoted value ends at its
-// closing quote, so one header in a one-line JSON file does not wipe the rest.
-func TestRedactEvidenceStopsAtAQuotedValue(t *testing.T) {
-	in := `{"Authorization": "Bearer opaque-token-abc", "status": 200}`
-	if got, want := RedactEvidence(in), `{"[REDACTED], "status": 200}`; got != want {
-		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
-	}
-}
-
-// TestRedactEvidenceQuotedValueEdges pins that a quoted value is taken alone
-// only when it is a whole, delimited string. An escaped quote inside it, an
-// escaped quote around the whole header, or a quoted prefix followed by more
-// text must not stop the redaction early.
-func TestRedactEvidenceQuotedValueEdges(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"escaped quotes inside a json value", `{"Authorization": "Bearer \"abc\" xyz-secret", "ok": 1}`, `{"[REDACTED], "ok": 1}`},
-		{"header inside an escaped json string", `"line": "Authorization: \"Bearer abc\" xyz-secret"`, `"line": "[REDACTED]`},
-		{"quoted prefix", `Cookie: "a" sessionid=SECRET`, `[REDACTED]`},
-		{"single-quoted prefix", `x-auth-token: 'a' rest-SECRET`, `[REDACTED]`},
-		{"quoted value at end of line", "Authorization: \"Bearer SECRET\"\r\nHost: x", "[REDACTED]\r\nHost: x"},
-		{"quoted value in an array", `["cookie: \"sid=SECRET\"", 'cookie': 'sid=SECRET2']`, `["[REDACTED]`},
-		{"har value with escapes", `{"name":"Cookie","value":"sid=\"SECRET\""}`, `{[REDACTED]}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := RedactEvidence(tt.in)
-			if got != tt.want || strings.Contains(got, "SECRET") || strings.Contains(got, "xyz-secret") {
-				t.Errorf("RedactEvidence(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -113,8 +113,5 @@ func TestRedactLeavesHeaderShapedProse(t *testing.T) {
 	in := "Add RBAC. Authorization: only admins may delete projects.\nCookie: must be HttpOnly."
 	if got := Redact(in); got != in {
 		t.Errorf("Redact(%q) = %q, want it unchanged", in, got)
-	}
-	if got := Redact("use " + fakeGitHubPAT); got != "use [REDACTED]" {
-		t.Errorf("Redact still has to catch token shapes, got %q", got)
 	}
 }
