@@ -1199,6 +1199,62 @@ func TestBuildTestingSummaryForPR_TruncationCannotSplitAHARHeader(t *testing.T) 
 	}
 }
 
+// TestBuildTestingSummaryForPR_RedactsReorderedHARHeaderEntry pins that an
+// embedded HAR header entry with "value" before "name" is redacted too.
+func TestBuildTestingSummaryForPR_RedactsReorderedHARHeaderEntry(t *testing.T) {
+	t.Parallel()
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	body := "{\"headers\": [\n  {\"value\": \"sid=opaque-session-42\", \"name\": \"Cookie\"}\n]}\n"
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.har", []byte(body))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"HAR trace","path":%q},{"label":"Inline HAR","content":"{\"value\":\"sid=opaque-inline-43\",\"name\":\"Cookie\"}"}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	if !strings.Contains(md, "{[REDACTED]}") {
+		t.Fatalf("expected the HAR entry to be embedded redacted, got:\n%s", md)
+	}
+	for _, leak := range []string{"opaque-session-42", "opaque-inline-43"} {
+		if strings.Contains(md, leak) {
+			t.Fatalf("did not expect %q in the PR body", leak)
+		}
+	}
+}
+
+// TestReadEmbeddedArtifactTextDrawsOnOneReadBudget pins that every read
+// spends the shared budget by the file's size, and that a file larger than
+// what is left is not read at all, while a later file that fits still is.
+func TestReadEmbeddedArtifactTextDrawsOnOneReadBudget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	first := write("first.txt", strings.Repeat("a", 60))
+	tooBig := write("big.txt", strings.Repeat("b", 50))
+	small := write("small.txt", strings.Repeat("c", 40))
+
+	budget := int64(100)
+	if got, err := readEmbeddedArtifactText(first, &budget); err != nil || got != strings.Repeat("a", 60) || budget != 40 {
+		t.Fatalf("first = %q, %v, budget %d; want it read and the budget at 40", got, err, budget)
+	}
+	if got, err := readEmbeddedArtifactText(tooBig, &budget); err != nil || got != "" || budget != 40 {
+		t.Fatalf("over-budget = %q, %v, budget %d; want it skipped and the budget kept at 40", got, err, budget)
+	}
+	if got, err := readEmbeddedArtifactText(small, &budget); err != nil || got != strings.Repeat("c", 40) || budget != 0 {
+		t.Fatalf("small = %q, %v, budget %d; want it read and the budget at 0", got, err, budget)
+	}
+}
+
 func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")

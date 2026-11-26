@@ -29,9 +29,11 @@ var patterns = []*regexp.Regexp{
 // the name may be quoted, as in a JSON log or a printed request object
 // ({"Authorization": "Bearer ..."}). As in the generic patterns, the space
 // after the separator may span a line break, so a value on the next line
-// ("Cookie:\n  sid=...") is redacted too. The last pattern covers the HAR /
-// Playwright header entry {"name": "Cookie", "value": "..."}; a HAR file's
-// separate request/response "cookies" arrays are not covered.
+// ("Cookie:\n  sid=...") is redacted too. The last two patterns cover the HAR
+// / Playwright header entry {"name": "Cookie", "value": "..."} with its keys
+// in either order and other fields between them (harOtherFields never leaves
+// the entry's object); a HAR file's separate request/response "cookies"
+// arrays are not covered.
 //
 // They fail closed: in a one-line JSON file the rest of the line goes with the
 // value. So they are applied only to captured evidence, never to intent or
@@ -41,8 +43,17 @@ var headerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bauthorization['"]?\s*[:=]\s*\S[^\r\n]*`),
 	regexp.MustCompile(`(?i)\b(?:set-)?cookie['"]?\s*:\s*\S[^\r\n]*`),
 	regexp.MustCompile(`(?i)\bx-auth-token['"]?\s*[:=]\s*\S[^\r\n]*`),
-	regexp.MustCompile(`(?i)"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"\s*,\s*"value"\s*:\s*"(?:[^"\\]|\\.)*"`),
+	regexp.MustCompile(`(?i)` + harName + harOtherFields + harValue),
+	regexp.MustCompile(`(?i)` + harValue + harOtherFields + harName),
 }
+
+const (
+	harName  = `"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"`
+	harValue = `"value"\s*:\s*"(?:[^"\\]|\\.)*"`
+	// harOtherFields is anything between the two keys of one entry: whole
+	// JSON strings, or characters that are not a brace or a quote.
+	harOtherFields = `(?:[^{}"]|"(?:[^"\\]|\\.)*")*?`
+)
 
 // Redact returns text with likely credentials replaced by [REDACTED].
 func Redact(text string) string {

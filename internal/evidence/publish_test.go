@@ -551,6 +551,23 @@ func TestPublish_RedactsSecretsInTextEvidence(t *testing.T) {
 	}
 }
 
+// TestPublish_RedactsReorderedHARHeaderEntries pins that a HAR header entry
+// with "value" before "name" is scrubbed on the evidence branch too.
+func TestPublish_RedactsReorderedHARHeaderEntries(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	text := `{"headers":[{"value":"sid=opaque-session-42","name":"Cookie"}]}` + "\n"
+	source := writeEvidence(t, t.TempDir(), map[string]string{"trace.har": text})
+
+	result, err := Publish(context.Background(), baseRequest(remote, work, source))
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	got := runGit(t, remote, "cat-file", "-p", result.CommitSHA+":.no-mistakes/evidence/fm/add-login/trace.har")
+	if want := `{"headers":[{[REDACTED]}]}`; got != want {
+		t.Errorf("published text = %q, want %q", got, want)
+	}
+}
+
 // TestPublish_RedactsSecretsInNonUTF8TextEvidence pins that one invalid
 // UTF-8 byte (a Latin-1 response body in a curl trace) does not let a token
 // through raw, and that every other byte is kept as written.

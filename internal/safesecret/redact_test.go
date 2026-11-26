@@ -70,6 +70,9 @@ func TestRedactEvidence(t *testing.T) {
 		{"har cookie", `{"name":"Cookie","value":"sid=secretval"}`, "secretval"},
 		{"har authorization", `{"name": "authorization", "value": "SSWS opaque-har"}`, "opaque-har"},
 		{"har value with escapes", `{"name":"Cookie","value":"sid=\"SECRET-e\""}`, "SECRET-e"},
+		{"har value before name", `{"value":"sid=opaque-session-42","name":"Cookie"}`, "opaque-session-42"},
+		{"har field between name and value", `{"name":"Cookie","comment":"x","value":"sid=opaque-mid-1"}`, "opaque-mid-1"},
+		{"har field between value and name", `{"value":"Bearer opaque-mid-2","comment":"{x}","name":"Authorization"}`, "opaque-mid-2"},
 		{"pretty-printed har", "{\n  \"name\": \"Authorization\",\n  \"value\": \"Bearer opaque-okta\"\n}", "opaque-okta"},
 	}
 	for _, tt := range tests {
@@ -88,6 +91,17 @@ func TestRedactEvidence(t *testing.T) {
 func TestRedactEvidenceDropsEveryPartOfAHeaderValue(t *testing.T) {
 	in := "> Authorization: abcdef1234567890abcdef part-two part-three\n< 200 OK"
 	if got, want := RedactEvidence(in), "> [REDACTED]\n< 200 OK"; got != want {
+		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
+	}
+}
+
+// TestRedactEvidenceHARMatchStaysInsideOneEntry pins that the either-order
+// HAR patterns never pair a credential name in one header entry with the
+// value of a neighbouring, harmless entry.
+func TestRedactEvidenceHARMatchStaysInsideOneEntry(t *testing.T) {
+	in := `[{"name":"Accept","value":"*/*"},{"value":"sid=opaque-7","name":"Cookie"},{"name":"Host","value":"example.com"}]`
+	want := `[{"name":"Accept","value":"*/*"},{[REDACTED]},{"name":"Host","value":"example.com"}]`
+	if got := RedactEvidence(in); got != want {
 		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
 	}
 }
