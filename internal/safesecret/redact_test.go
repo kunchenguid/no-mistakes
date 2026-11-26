@@ -28,6 +28,12 @@ func TestRedactEvidence(t *testing.T) {
 		{"set-cookie header", "< Set-Cookie: sid=abc123def456; Path=/; HttpOnly", "abc123def456"},
 		{"x-auth-token header", "X-Auth-Token: tok-9f8e7d6c", "tok-9f8e7d6c"},
 		{"x-auth-token assignment", "x-auth-token=tok-1a2b3c", "tok-1a2b3c"},
+		{"json authorization", `{"Authorization": "Bearer opaque-token-abc"}`, "opaque-token-abc"},
+		{"python dict", `{'authorization': 'Bearer opaque-py', 'cookie': 'sid=xyz'}`, "opaque-py"},
+		{"python dict cookie", `{'authorization': 'Bearer opaque-py', 'cookie': 'sid=xyz'}`, "sid=xyz"},
+		{"json x-auth-token", `"x-auth-token": "tok-abc"`, "tok-abc"},
+		{"har cookie", `{"name":"Cookie","value":"sid=secretval"}`, "secretval"},
+		{"har authorization", `{"name": "authorization", "value": "SSWS opaque-har"}`, "opaque-har"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -45,6 +51,15 @@ func TestRedactEvidence(t *testing.T) {
 func TestRedactEvidenceDropsEveryPartOfAHeaderValue(t *testing.T) {
 	in := "> Authorization: abcdef1234567890abcdef part-two part-three\n< 200 OK"
 	if got, want := RedactEvidence(in), "> [REDACTED]\n< 200 OK"; got != want {
+		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
+	}
+}
+
+// TestRedactEvidenceStopsAtAQuotedValue pins that a quoted value ends at its
+// closing quote, so one header in a one-line JSON file does not wipe the rest.
+func TestRedactEvidenceStopsAtAQuotedValue(t *testing.T) {
+	in := `{"Authorization": "Bearer opaque-token-abc", "status": 200}`
+	if got, want := RedactEvidence(in), `{"[REDACTED], "status": 200}`; got != want {
 		t.Errorf("RedactEvidence(%q) = %q, want %q", in, got, want)
 	}
 }

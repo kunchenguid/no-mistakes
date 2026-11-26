@@ -24,16 +24,22 @@ var patterns = []*regexp.Regexp{
 
 // headerPatterns redact the whole value of an HTTP header that carries a
 // session or auth token, whatever the scheme ("Bearer", "Basic", "SSWS",
-// "Bot", "ApiKey", ...). The value runs to the end of the line, since cookie
-// values contain spaces, ';' and '='. The \b also covers Proxy-Authorization.
+// "Bot", "ApiKey", ...). The \b also covers Proxy-Authorization.
+//
+// The name may be quoted, as in a JSON log or a printed request object
+// ({"Authorization": "Bearer ..."}). A quoted value ends at its closing quote,
+// so the rest of a one-line JSON file survives; an unquoted value runs to the
+// end of the line, since cookie values contain spaces, ';' and '='. The last
+// pattern covers the HAR / Playwright {"name": "Cookie", "value": "..."} shape.
 //
 // They fail closed, so they are applied only to captured evidence, never to
 // intent or prompt text, where a line such as "Authorization: only admins may
 // delete projects" is a requirement, not a credential.
 var headerPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\bauthorization\s*[:=]\s*\S[^\r\n]*`),
-	regexp.MustCompile(`(?i)\b(?:set-)?cookie\s*:\s*\S[^\r\n]*`),
-	regexp.MustCompile(`(?i)\bx-auth-token\s*[:=]\s*\S[^\r\n]*`),
+	regexp.MustCompile(`(?i)\bauthorization['"]?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\S[^\r\n]*)`),
+	regexp.MustCompile(`(?i)\b(?:set-)?cookie['"]?\s*:\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\S[^\r\n]*)`),
+	regexp.MustCompile(`(?i)\bx-auth-token['"]?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\S[^\r\n]*)`),
+	regexp.MustCompile(`(?i)"name"\s*:\s*"(?:(?:proxy-)?authorization|(?:set-)?cookie|x-auth-token)"\s*,\s*"value"\s*:\s*"[^"\r\n]*"`),
 }
 
 // Redact returns text with likely credentials replaced by [REDACTED].
