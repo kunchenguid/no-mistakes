@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const (
@@ -129,8 +130,23 @@ func usableChannelRelease(r releaseResponse, includePrereleases bool) bool {
 }
 
 func (u *updater) fetchReleaseFromManifest(ctx context.Context) (*releaseResponse, error) {
+	manifest, err := u.fetchChannelsManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	u.stableVersion = ""
+	if manifest.Stable != nil {
+		u.stableVersion = manifest.Stable.TagName
+	}
+	return manifest.channel(u.includePrereleases)
+}
+
+func (u *updater) fetchChannelsManifest(ctx context.Context) (*channelsManifest, error) {
 	if err := ensureHTTPS(u.manifestURL); err != nil {
 		return nil, err
+	}
+	if u.httpClient == nil {
+		u.httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.manifestURL, nil)
 	if err != nil {
@@ -151,9 +167,5 @@ func (u *updater) fetchReleaseFromManifest(ctx context.Context) (*releaseRespons
 	if len(body) > maxAPIResponseSize {
 		return nil, fmt.Errorf("channel manifest exceeds %d bytes", maxAPIResponseSize)
 	}
-	manifest, err := parseChannelsManifest(body)
-	if err != nil {
-		return nil, err
-	}
-	return manifest.channel(u.includePrereleases)
+	return parseChannelsManifest(body)
 }

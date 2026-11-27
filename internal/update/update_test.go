@@ -930,6 +930,45 @@ func TestUpdaterMaybeNotifyAndCheck(t *testing.T) {
 	}
 }
 
+// The advice must select the offered release's channel, even when the installed
+// build has a different channel or the beta release uses a plain semver tag.
+func TestUpdaterNoticeAdviceFollowsOfferedReleaseChannel(t *testing.T) {
+	for _, tt := range []struct {
+		name, current, latest, stable, advice string
+		betaCache                             bool
+	}{
+		{"plain semver beta", "v1.97.2", "v1.100.2", "v1.84.0", `Run "no-mistakes update --beta" to update`, true},
+		{"prerelease beta", "v1.99.0-beta.1", "v1.100.2-beta.1", "v1.84.0", `Run "no-mistakes update --beta" to update`, true},
+		{"beta install offered stable", "v1.99.0-beta.1", "v1.100.2", "v1.100.2", `Run "no-mistakes update" to update`, true},
+		{"stable install offered stable", "v1.84.0", "v1.100.2", "v1.100.2", `Run "no-mistakes update" to update`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stderr := new(bytes.Buffer)
+			now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+			u := &updater{
+				appName:        "no-mistakes",
+				currentVersion: tt.current,
+				cachePath:      filepath.Join(t.TempDir(), "update-check.json"),
+				stderr:         stderr,
+				noColor:        true,
+				now:            func() time.Time { return now },
+			}
+			if err := writeCache(u.channelCachePath(tt.betaCache), &checkCache{
+				CheckedAt:     now,
+				LatestVersion: tt.latest,
+				StableVersion: tt.stable,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			u.maybeNotifyAndCheck([]string{"status"})
+			want := fmt.Sprintf("A new version of no-mistakes is available: %s -> %s\n%s\n", tt.current, tt.latest, tt.advice)
+			if got := stderr.String(); got != want {
+				t.Fatalf("notice = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestUpdaterCheckLatestBetaUsesManifest(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })
