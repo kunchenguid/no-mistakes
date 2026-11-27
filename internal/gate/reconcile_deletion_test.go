@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 )
 
 func TestReconcileStaleBranchRebasedAcrossBaseDeletion(t *testing.T) {
@@ -128,7 +129,7 @@ done
 				if runtime.GOOS == "windows" {
 					t.Skip("Git command failure injection uses a POSIX shell wrapper")
 				}
-				realGit, err := exec.LookPath("git")
+				realGit, err := testgit.RealGit()
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 )
 
 var (
@@ -248,7 +250,7 @@ func newGitPause(t *testing.T, dir string) *gitPause {
 	t.Helper()
 	p := &gitPause{binDir: filepath.Join(dir, "bin")}
 	mkdirAll(t, p.binDir)
-	realGit, err := exec.LookPath("git")
+	realGit, err := testgit.RealGit()
 	if err != nil {
 		t.Fatalf("find git: %v", err)
 	}
