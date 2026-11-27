@@ -85,6 +85,9 @@ type CIStep struct {
 	// set only for the duration of that repair's recording. recordRepair
 	// proves a pure replay against exactly this commit and nothing else.
 	replayBase string
+	// repairVerification is the structured verification report for the
+	// commitRepair call inside the current autoFixCI turn.
+	repairVerification ciRepairVerification
 }
 
 // SetPollIntervalOverride is a test hook; production leaves the override unset.
@@ -435,11 +438,21 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := clearCIMonitorReadyForIssues(sctx); err != nil {
 			return nil, err
 		}
-		repair, err := s.retryProtectedPathRepair(sctx)
+		var failedVerification *ciRepairVerification
+		if findingsCarryFailedVerification(refusalFindings) {
+			failedVerification = &ciRepairVerification{reported: true}
+		}
+		repair, err := s.retryProtectedPathRepair(sctx, failedVerification)
 		if err != nil {
 			return nil, err
 		}
 		retryRefusal = false
+		if repair.VerificationFailed {
+			if failedVerification != nil {
+				return ciRepairParkOutcome(pipeline.WithoutProtectedPathRefusal(refusalFindings), "", repair.Summary), nil
+			}
+			return ciVerificationFailedOutcome(Findings{}, "", repair), nil
+		}
 		if repair.HeadAdvanced {
 			s.pendingFixSummary = ciRepairSummary(repair.Summary, sctx.Config.CI.RemoteOnlyVerification)
 		}

@@ -151,6 +151,7 @@ func TestPiStrictDeclarationSatisfiesTheStrictFunctionContract(t *testing.T) {
 		"fix summary":           fixSummarySchema,
 		"housekeeping findings": housekeepingFindingsSchema,
 		"ci fix conclusion":     ciFixConclusionSchema,
+		"ci fix remote-only":    ciFixRemoteOnlyConclusionSchema,
 		"pr content":            prContentSchema,
 		"pr title":              prTitleSchema,
 		"pr template":           templatePRContentSchema,
@@ -197,7 +198,7 @@ func TestPiStrictDeclarationLeavesSummaryLengthToPostValidation(t *testing.T) {
 		{
 			name:   "ci fix conclusion",
 			schema: ciFixConclusionSchema,
-			output: `{"summary":` + string(overLong) + `,"code_change_needed":true}`,
+			output: `{"summary":` + string(overLong) + `,"code_change_needed":true,"verification_passed":true,"verification_ran":"go test"}`,
 			extract: func(result *agent.Result) error {
 				_, err := extractCIFixConclusion(result)
 				return err

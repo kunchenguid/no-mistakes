@@ -753,6 +753,74 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	}
 }
 
+func TestCIStep_MergeConflictPromptVerificationReport(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		remoteOnly bool
+		wantCount  int
+	}{
+		{"local verification", false, 1},
+		{"remote-only", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := t.TempDir()
+			gitCmd(t, upstream, "init", "--bare")
+			dir := t.TempDir()
+			gitCmd(t, dir, "init")
+			gitCmd(t, dir, "config", "user.name", "test")
+			gitCmd(t, dir, "config", "user.email", "test@test.com")
+			gitCmd(t, dir, "checkout", "-b", "main")
+			os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "initial")
+			baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "remote", "add", "origin", upstream)
+			gitCmd(t, dir, "push", "origin", "main")
+			gitCmd(t, dir, "checkout", "-b", "feature")
+			os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "feature")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "push", "origin", "feature")
+
+			checks := []string{
+				`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+				`[{"name":"build","status":"IN_PROGRESS","bucket":"pending"}]`,
+				`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+			}
+			var prompt string
+			ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				if prompt == "" {
+					prompt = opts.Prompt
+				}
+				os.WriteFile(filepath.Join(opts.CWD, "conflict-fix.txt"), []byte("resolved"), 0o644)
+				return &agent.Result{}, nil
+			}}
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = fakeCIGHSequenceMergeable(t, "OPEN", checks, "CONFLICTING")
+			sctx.Run.PRURL = &prURL
+			sctx.Repo.UpstreamURL = upstream
+			sctx.Run.Branch = "refs/heads/feature"
+			sctx.Config.CITimeout = 30 * time.Second
+			sctx.Config.AutoFix = config.AutoFix{CI: 2}
+			sctx.Config.CI.RevalidateRepairs = true
+			sctx.Config.CI.RemoteOnlyVerification = tc.remoteOnly
+
+			step := &CIStep{waitForNextPoll: func(ctx context.Context, interval time.Duration) error { return nil }}
+			driveCI(t, step, sctx)
+			if prompt == "" {
+				t.Fatal("fix agent never ran")
+			}
+			if got := strings.Count(prompt, "Set verification_passed to true only when"); got != tc.wantCount {
+				t.Errorf("conclusion rule appears %d times, want %d:\n%s", got, tc.wantCount, prompt)
+			}
+		})
+	}
+}
+
 func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
