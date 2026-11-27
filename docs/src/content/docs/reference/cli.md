@@ -142,7 +142,7 @@ An active run on another branch does not block starting validation for the curre
 
 ```sh
 no-mistakes axi run --intent "the user's goal"
-no-mistakes axi run --intent "the user's goal" --skip test,lint
+no-mistakes axi run --intent "the user's goal" --skip test,lint --skip-reason "covered by the forge's CI"
 no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
@@ -157,7 +157,8 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `--verification-plan` | `string` | (none) | Path to a nonempty UTF-8 verification plan, at most 64 KiB (65,536 bytes), captured as separate evidence for a new run only |
 | `--caller-restrictions` | `string` | (none) | Capture a UTF-8 file of caller action restrictions as immutable instructions for every agent turn in a new run |
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
-| `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
+| `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip; requires `--skip-reason`                                     |
+| `--skip-reason` | `string` | (none)  | Why the `--skip` steps are skipped; required with `--skip`, refused without it, and recorded on every skipped step and in the PR attestation's [`exceptions`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation) |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
 | `--base-remote` | `string` | `origin` | Named integration remote for this run, independent of a configured fork push target |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
@@ -366,7 +367,7 @@ no-mistakes axi respond --action fix --findings F1,F2 --ignore F3
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
 no-mistakes axi respond --action fix --findings F1 --instructions-file ./guidance.md
 no-mistakes axi respond --action fix --add-finding-file ./finding.json
-no-mistakes axi respond --action skip
+no-mistakes axi respond --action skip --reason "why the step is skipped"
 no-mistakes axi respond --step review --action complete-coverage
 no-mistakes axi respond --action abort --reason "why the gate is rejected"
 no-mistakes axi respond --run <id> --action approve
@@ -381,7 +382,7 @@ no-mistakes axi respond --run <id> --action approve
 | `--ignore`       | `string` | (none)        | Comma-separated finding IDs to decline with `--action fix`; see the accounting rules below |
 | `--instructions` | `string` | (none)        | Driver fix guidance applied to selected findings with `--action fix`; recorded as `driver_instructions`, never as the user's decision; `-` reads stdin until EOF, cancellation, or `--wait`; exclusive with `--instructions-file` |
 | `--instructions-file` | `string` | (none) | Read driver fix guidance from a file; exclusive with `--instructions` |
-| `--reason`       | `string` | (none)        | Operator's reason: optional exception explanation for a Test approval, required with `--action abort` |
+| `--reason`       | `string` | (none)        | Operator's reason: required with `--action skip`, `--action abort`, and a Test approval that records a Test exception |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix; a `driver_instructions` key is refused, since driver guidance comes only from `--instructions`; `-` reads stdin until EOF, cancellation, or `--wait`; exclusive with `--add-finding-file` |
 | `--add-finding-file` | `string` | (none) | Read JSON finding object from a file; exclusive with `--add-finding` |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
@@ -402,12 +403,15 @@ It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--instructions-
 The CLI supplies the observed head, step result, and latest round binding automatically.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
-The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
-The step retains its findings and exit code, and the reason is durable local evidence in `step_results.approval_reason`.
+The reason is required whenever the approval records a Test exception: the gate parked on a failing configured `commands.test`, a `no-go` or `inconclusive` verdict, a budget-cut Test turn, or findings that cannot be read. Without one the response is refused before anything reaches the daemon and the gate stays parked. Approving a `no-surface` park is not an exception and still takes an optional reason.
+The step retains its findings and exit code, and the reason is durable local evidence in `step_results.approval_reason` and is listed in the PR attestation's [`exceptions`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation).
+Approvals that carry no reason - records written before the reason was required, and approvals from the TUI or `--yes`, which take none - are reported with `no operator reason supplied`.
 Revalidation, a new fix round, or skipping the step clears that current-step approval so a later result cannot inherit it.
 This is separate from the configured-command waiver and trusted repository opt-in used by [PR enforcement](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation); neither that policy nor approval authority changes.
 `--instructions` remains fix guidance, not an approval-reason input.
 It is recorded as the driving agent's `driver_instructions`, apart from the TUI's per-finding user instructions: the step's own round history names it as driver guidance that scoped that fix round only, and the decision history carried to other steps and later runs never repeats it as the user's choice.
+
+`--action skip` requires `--reason` as well: the step is marked skipped as before, and the reason is recorded in `step_results.operator_skip_reason` and listed in the PR attestation's [`exceptions`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation). The same holds for the `--skip-reason` that [`axi run --skip`](#no-mistakes-axi-run) requires; `axi run` refuses a skip reason that a running daemon older than this CLI could not record, before starting anything, and tells you to restart the daemon. The outcome word does not change: a run with explicit skips still reports `passed`. A skip from the TUI's skip key, bare `no-mistakes --skip`, or the `no-mistakes.skip=` push option takes no reason and is recorded as an operator skip with `no operator reason supplied`. A running daemon older than this CLI refuses a skip's reason before recording anything; the CLI reports that the daemon is too old, and the restart guidance below for an abort applies.
 
 `--action abort` rejects the parked gate and is the same gate-level abort the executor already has, now reachable from the agent surface.
 It requires `--reason`, so a rejection is never recorded without the operator's explanation.

@@ -146,7 +146,7 @@ func TestCommitIdentityPushPathsCarryLinkedCheckoutSnapshot(t *testing.T) {
 			}
 			chdir(t, linked)
 			if proof {
-				if receipt, err := triggerProofRun(context.Background(), env, "linked", head, nil, "goal", "", false, "nonce", "generation", "", nil, db.RunPRText{}); err != nil || receipt == nil || receipt.RunID != "snapshot-run" {
+				if receipt, err := triggerProofRun(context.Background(), env, "linked", head, nil, "", "goal", "", false, "nonce", "generation", "", nil, db.RunPRText{}); err != nil || receipt == nil || receipt.RunID != "snapshot-run" {
 					t.Fatalf("proof trigger: %+v, %v", receipt, err)
 				}
 			} else if runID, err := triggerRun(context.Background(), env, "linked", nil, "goal", "", false, "", nil); err != nil || runID != "snapshot-run" {

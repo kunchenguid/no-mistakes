@@ -28,7 +28,7 @@ func TestExecutor_ReviewSkipStopsBeforeDownstreamWork(t *testing.T) {
 			workDir := t.TempDir()
 			switch entry {
 			case "configured":
-				executor.SetSkippedSteps([]types.StepName{types.StepReview})
+				executor.SetSkippedSteps([]types.StepName{types.StepReview}, "")
 				go func() { done <- executor.Execute(ctx, run, repo, workDir) }()
 			case "outcome":
 				review.outcome = &StepOutcome{Skipped: true, SkipReason: "review unavailable"}
@@ -106,13 +106,13 @@ func TestExecutor_ReviewSkipLegitimateContinuations(t *testing.T) {
 			}
 			executor := NewExecutor(database, p, nil, nil, steps, nil)
 			if scenario == "publication skipped" {
-				executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR})
+				executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR}, "")
 			}
 			if scenario == "push skipped" {
-				executor.SetSkippedSteps([]types.StepName{types.StepPush})
+				executor.SetSkippedSteps([]types.StepName{types.StepPush}, "")
 			}
 			if scenario == "review and push skipped" {
-				executor.SetSkippedSteps([]types.StepName{types.StepReview, types.StepPush})
+				executor.SetSkippedSteps([]types.StepName{types.StepReview, types.StepPush}, "")
 			}
 			done, _ := startExecutor(t, executor, run, repo, t.TempDir())
 			action := types.ActionSkip

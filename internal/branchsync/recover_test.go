@@ -1739,7 +1739,7 @@ func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
 		&skippedDeliveryStep{name: types.StepCI},
 	}
 	executor := pipelinepkg.NewExecutor(f.db, p, nil, nil, steps, nil)
-	executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR, types.StepCI})
+	executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR, types.StepCI}, "")
 	if err := executor.Execute(context.Background(), f.run, f.repo, managed); err != nil {
 		t.Fatal(err)
 	}

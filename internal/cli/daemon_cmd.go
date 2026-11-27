@@ -138,6 +138,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			skipReason, err := parseOpaquePushOptions(pushOptions, skipReasonPushOptionPrefix, "skip reason")
+			if err != nil {
+				return err
+			}
 			intent, err := parseIntentPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -240,6 +244,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				Old:                    oldSHA,
 				New:                    newSHA,
 				SkipSteps:              skipSteps,
+				SkipReason:             skipReason,
 				Intent:                 intent,
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
@@ -503,6 +508,24 @@ func probeDaemonOmitIntent(client *ipc.Client) error {
 	return nil
 }
 
+// requireDaemonHonorsSkipReason refuses a launch whose skip reason an older
+// daemon would drop: the skip would still happen, with no recorded reason. A
+// launch without a skip reason needs no probe.
+func requireDaemonHonorsSkipReason(client *ipc.Client, reason string) error {
+	if reason == "" {
+		return nil
+	}
+	var result ipc.ProbeSkipReasonResult
+	err := client.Call(ipc.MethodProbeSkipReason, struct{}{}, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the skip-reason capability")
+	}
+	if err != nil {
+		return fmt.Errorf("the running daemon is too old to record a skip reason, so nothing was started (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
 // reconciledPreviousHeadPushOptionPrefix carries the pre-reconciliation private
 // mirror head through a git push. A reconciled branch is deleted and re-created
 // by that push, so the hook sees no previous head of its own.
@@ -580,7 +603,12 @@ func parseClosingIssueRefsPushOptions(options []string) ([]string, error) {
 	return normalizeClosingIssueRefs(values)
 }
 
-func formatSkipPushOptions(steps []types.StepName) []string {
+// skipReasonPushOptionPrefix carries the operator's reason for a run's
+// explicit skips, base64-encoded like the intent so any text survives the
+// line-oriented push-option transport.
+const skipReasonPushOptionPrefix = "no-mistakes.skip-reason="
+
+func formatSkipPushOptions(steps []types.StepName, reason string) []string {
 	if len(steps) == 0 {
 		return nil
 	}
@@ -588,7 +616,11 @@ func formatSkipPushOptions(steps []types.StepName) []string {
 	for _, step := range dedupeSteps(steps) {
 		parts = append(parts, string(step))
 	}
-	return []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+	options := []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+	if reason != "" {
+		options = append(options, formatOpaquePushOption(skipReasonPushOptionPrefix, reason))
+	}
+	return options
 }
 
 func validStep(step types.StepName) bool {

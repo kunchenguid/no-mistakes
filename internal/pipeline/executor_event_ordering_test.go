@@ -120,7 +120,7 @@ func TestExecutor_SkippedStepEventsAlsoFollowTheirDatabaseWrite(t *testing.T) {
 		newPassStep(types.StepReview),
 		newPassStep(types.StepTest),
 	}, onEvent)
-	exec.SetSkippedSteps([]types.StepName{types.StepTest})
+	exec.SetSkippedSteps([]types.StepName{types.StepTest}, "")
 	_ = exec.Execute(context.Background(), run, repo, workDir)
 
 	mu.Lock()

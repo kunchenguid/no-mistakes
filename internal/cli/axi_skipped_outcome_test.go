@@ -92,7 +92,7 @@ func TestAxiOutcomeProviderUnavailableSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor.SetSkippedSteps([]types.StepName{types.StepPR, types.StepCI})
+	executor.SetSkippedSteps([]types.StepName{types.StepPR, types.StepCI}, "")
 	if err := executor.Execute(context.Background(), explicit, repo, dir); err != nil {
 		t.Fatal(err)
 	}

@@ -90,7 +90,10 @@ type Executor struct {
 	commitIdentity *git.CommitIdentity
 	agent          agent.Agent
 	steps          []Step
-	skips          map[types.StepName]bool
+	// skips maps each step this run skips without running to the reason the
+	// operator gave for it. A nil reason is a skip a retry carried from a
+	// source row that recorded none, which stays an ordinary skip.
+	skips map[types.StepName]*string
 	// retrySource is the failed run Execute continues instead of starting the
 	// pipeline from the beginning (SetRetrySource).
 	retrySource string
@@ -192,15 +195,16 @@ func (e *Executor) SetForgeContext(ctx *forgecontext.Context) {
 	e.forge = ctx
 }
 
-// SetSkippedSteps configures steps that should be marked skipped without running.
-func (e *Executor) SetSkippedSteps(steps []types.StepName) {
+// SetSkippedSteps configures steps that should be marked skipped without
+// running, as the operator's explicit skips recorded with reason.
+func (e *Executor) SetSkippedSteps(steps []types.StepName, reason string) {
 	if len(steps) == 0 {
 		e.skips = nil
 		return
 	}
-	e.skips = make(map[types.StepName]bool, len(steps))
+	e.skips = make(map[types.StepName]*string, len(steps))
 	for _, step := range steps {
-		e.skips[step] = true
+		e.skips[step] = &reason
 	}
 }
 
@@ -306,8 +310,9 @@ type ResponseOptions struct {
 // the fix agent runs; ignoreFindingIDs are the findings the response declines,
 // and a fix response must account for every finding the gate shows unless an
 // earlier round of this step already decided it (see splitFixResponse).
-// approvalReason is only accepted for Test approval and for an abort, where it
-// is the operator's recorded reason; it is never passed to a fix agent.
+// approvalReason is only accepted for Test approval, a skip, and an abort,
+// where it is the operator's recorded reason; it is never passed to a fix
+// agent.
 //
 // It returns the dispositions the response recorded, which the daemon echoes
 // to the caller.
@@ -317,8 +322,8 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		option = options[0]
 	}
 	coverage := []*ipc.CoverageBinding{option.Coverage}
-	if approvalReason != "" && action != types.ActionAbort && (step != types.StepTest || action != types.ActionApprove) {
-		return RespondDispositions{}, fmt.Errorf("a reason applies only to Test approval or an abort")
+	if approvalReason != "" && action != types.ActionAbort && action != types.ActionSkip && (step != types.StepTest || action != types.ActionApprove) {
+		return RespondDispositions{}, fmt.Errorf("a reason applies only to Test approval, a skip, or an abort")
 	}
 	// The gate loop dispatches on the action, so an unknown one is refused
 	// here while the gate stays parked for a valid response, rather than
@@ -580,11 +585,17 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			return e.failRun(run, repo, fmt.Errorf("insert step result: %w", err))
 		}
 		stepRecords[step.Name()] = sr
-		if e.skips[step.Name()] {
+		if reason, skip := e.skips[step.Name()]; skip {
 			if err := e.refuseSkippedPRWithClosingIssues(run, repo, step.Name(), sr.ID); err != nil {
 				return e.failRun(run, repo, err, ctx)
 			}
-			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+			var err error
+			if reason != nil {
+				err = e.db.CompleteOperatorSkippedStep(sr.ID, 0, 0, "", *reason)
+			} else {
+				err = e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, 0, 0, "")
+			}
+			if err != nil {
 				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
 			}
 		}
@@ -604,7 +615,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 
 		sr := stepRecords[step.Name()]
-		if e.skips[step.Name()] {
+		if _, skip := e.skips[step.Name()]; skip {
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", nil)
 			continue
 		}
@@ -672,9 +683,9 @@ func (e *Executor) planRetry(run *db.Run) (*RetryCheckpoint, error) {
 	for _, row := range checkpoint.Steps[checkpoint.Index+1:] {
 		if row.Status == types.StepStatusSkipped {
 			if e.skips == nil {
-				e.skips = make(map[types.StepName]bool)
+				e.skips = make(map[types.StepName]*string)
 			}
-			e.skips[row.StepName] = true
+			e.skips[row.StepName] = row.OperatorSkipReason
 		}
 	}
 	for _, row := range checkpoint.Steps[:checkpoint.Index] {
@@ -975,7 +986,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	case types.ActionSkip:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
-		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
+		if err := e.db.CompleteOperatorSkippedStep(gate.stepResult.ID, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult), response.approvalReason); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
@@ -1961,7 +1972,7 @@ rounds:
 			case types.ActionSkip:
 				// Skip - mark step skipped and return (not an error)
 				e.recordDeclinedRound(currentRoundID, effectiveFindings, stepName, roundNum)
-				if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
+				if err := e.db.CompleteOperatorSkippedStep(sr.ID, finalExitCode, executionMS, logPath, response.approvalReason); err != nil {
 					return false, "", fmt.Errorf("complete step %s (skip): %w", stepName, err)
 				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", &executionMS)

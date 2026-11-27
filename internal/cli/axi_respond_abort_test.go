@@ -116,9 +116,9 @@ func TestAxiRespond_AbortRefusesARunThatIsNotAtAGate(t *testing.T) {
 	}
 }
 
-// --reason keeps its old contract for the other actions: only a Test approval
-// exception carries one.
-func TestAxiRespond_ReasonStillRefusedOutsideTestApprovalAndAbort(t *testing.T) {
+// --reason is refused for the other actions: only a Test approval exception,
+// a skip, or an abort carries one.
+func TestAxiRespond_ReasonStillRefusedOutsideTestApprovalSkipAndAbort(t *testing.T) {
 	var responded atomic.Bool
 	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
 		respond: func(context.Context, json.RawMessage) (interface{}, error) {
@@ -128,13 +128,13 @@ func TestAxiRespond_ReasonStillRefusedOutsideTestApprovalAndAbort(t *testing.T) 
 	})
 	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return fx.awaiting(), nil })
 
-	for _, action := range []string{"approve", "skip"} {
+	for _, action := range []string{"approve"} {
 		out, err := executeCmd("axi", "respond", "--action", action, "--reason", "why", "--wait", "3s")
 		var ee *exitError
 		if !errors.As(err, &ee) || ee.code != 2 {
 			t.Fatalf("%s: error = %v, want usage exit 2\n%s", action, err, out)
 		}
-		if !strings.Contains(out, "--reason applies only to --action approve on the Test step, or to --action abort") {
+		if !strings.Contains(out, "--reason applies only to --action approve on the Test step, --action skip, or --action abort") {
 			t.Fatalf("%s: usage output missing the reason contract:\n%s", action, out)
 		}
 	}

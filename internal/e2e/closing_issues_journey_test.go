@@ -210,7 +210,7 @@ func TestClosingIssueRefsGitHubJourney(t *testing.T) {
 
 	// Scenario: invalid references are refused before any run starts.
 	for _, bad := range []string{"#95", "abc", "0", "owner#9", "owner/repo#"} {
-		out, err := h.RunInDir(wt, "axi", "run", "--intent", "close issues", "--skip", "ci", "--closes", bad)
+		out, err := h.RunInDir(wt, "axi", "run", "--intent", "close issues", "--skip", "ci", "--skip-reason", "synthetic e2e run", "--closes", bad)
 		if err == nil || !strings.Contains(out, "invalid --closes") {
 			t.Fatalf("--closes %q should be rejected, err=%v out:\n%s", bad, err, out)
 		}
@@ -221,7 +221,7 @@ func TestClosingIssueRefsGitHubJourney(t *testing.T) {
 	}
 
 	// Scenario: axi run --closes dedupes, orders, persists, and renders once.
-	out, err := h.RunInDir(wt, "axi", "run", "--intent", "close the issues", "--skip", "ci",
+	out, err := h.RunInDir(wt, "axi", "run", "--intent", "close the issues", "--skip", "ci", "--skip-reason", "synthetic e2e run",
 		"--closes", "95", "--closes", "Owner/Repo#7", "--closes", "95", "--closes", "owner/repo#7", "--closes", "12")
 	if err != nil {
 		t.Fatalf("axi run --closes: %v\n%s", err, out)
@@ -317,7 +317,7 @@ func TestClosingIssueRefsGitHubJourney(t *testing.T) {
 	const plainBranch = "fix/issue-321"
 	h.CommitChange(plainBranch, "plain.txt", "plain\n", "Fix #321: plain change")
 	pwt := h.AddWorktree(plainBranch)
-	if out, err := h.RunInDir(pwt, "axi", "run", "--intent", "fixes issue #321", "--skip", "ci"); err != nil {
+	if out, err := h.RunInDir(pwt, "axi", "run", "--intent", "fixes issue #321", "--skip", "ci", "--skip-reason", "synthetic e2e run"); err != nil {
 		t.Fatalf("axi run without closes: %v\n%s", err, out)
 	}
 	waitPublished(t, h, plainBranch, "", "no closes")
@@ -413,7 +413,7 @@ func TestClosingIssueRefsNonGitHubFailsAtPR(t *testing.T) {
 	}
 	h.CommitChange(branch, "g.txt", "g\n", "add gitea fixture")
 	wt := h.AddWorktree(branch)
-	out, _ := h.RunInDir(wt, "axi", "run", "--intent", "gitea closes", "--skip", "ci", "--closes", "5")
+	out, _ := h.RunInDir(wt, "axi", "run", "--intent", "gitea closes", "--skip", "ci", "--skip-reason", "synthetic e2e run", "--closes", "5")
 	run := h.WaitForRun(branch, 3*time.Minute)
 	pr, _ := findStep(run.Steps, types.StepPR)
 	evidence := "$ no-mistakes axi run --closes 5   # origin is Gitea\n" + out + "\nrun status: " + string(run.Status) + "\npr step status: " + string(pr.Status) + "\npr step error: " + deref(pr.Error) + "\nrun error: " + deref(run.Error) + "\n"
@@ -444,7 +444,7 @@ func TestClosingIssueRefsOwnedTemplateJourney(t *testing.T) {
 	const branch = "feature/closes-template"
 	h.CommitChange(branch, "t.txt", "t\n", "add template fixture")
 	wt := h.AddWorktree(branch)
-	if out, err := h.RunInDir(wt, "axi", "run", "--intent", "template closes", "--skip", "ci", "--closes", "95"); err != nil {
+	if out, err := h.RunInDir(wt, "axi", "run", "--intent", "template closes", "--skip", "ci", "--skip-reason", "synthetic e2e run", "--closes", "95"); err != nil {
 		t.Fatalf("axi run: %v\n%s", err, out)
 	}
 	created := waitPublished(t, h, branch, "", "template create")

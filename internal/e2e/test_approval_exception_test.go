@@ -24,15 +24,18 @@ func TestAxiTestApprovalExceptionJourney(t *testing.T) {
 		exit                 int
 		verdict              string
 		qualified            bool
+		// refusedFirst sends the response once without a reason first, which
+		// must be refused while the gate stays parked.
+		refusedFirst bool
 	}{
 		{name: "clean"},
 		{name: "command-reason", exit: 7, action: "approve", reason: "Synthetic exception: accept exit 7 only for this isolated test", qualified: true},
-		{name: "command-no-reason", exit: 7, action: "approve", qualified: true},
+		{name: "command-reason-required", exit: 7, action: "approve", reason: "Synthetic exception after a refused reasonless approval", qualified: true, refusedFirst: true},
 		{name: "evidence-exception", verdict: "no-go", action: "approve", reason: "Synthetic failed scenario accepted for this test", qualified: true},
 		{name: "evidence-inconclusive", verdict: "inconclusive", action: "approve", reason: "Synthetic inconclusive evidence accepted", qualified: true},
 		// A no-surface acknowledgement keeps its reason but completes normally.
 		{name: "no-surface-ack", verdict: "no-surface", action: "approve", reason: "Docs-only change acknowledged"},
-		{name: "skipped", exit: 7, action: "skip"},
+		{name: "skipped", exit: 7, action: "skip", reason: "Synthetic skip of a red suite", refusedFirst: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scenario := ""
@@ -89,7 +92,7 @@ func TestAxiTestApprovalExceptionJourney(t *testing.T) {
 			}
 			h.CommitChange(tc.name, ".no-mistakes.yaml", fmt.Sprintf("commands:\n  test: 'exit %d'\n  lint: 'exit 0'\n", tc.exit), "configure synthetic test")
 			head := h.CommitChange(tc.name, "feature.txt", "synthetic feature\n", "add feature")
-			out, err := h.Run("axi", "run", "--intent", "Validate the synthetic feature", "--skip", "pr,ci")
+			out, err := h.Run("axi", "run", "--intent", "Validate the synthetic feature", "--skip", "pr,ci", "--skip-reason", "synthetic e2e run")
 			if err != nil {
 				t.Fatalf("run: %v\n%s", err, out)
 			}
@@ -99,6 +102,13 @@ func TestAxiTestApprovalExceptionJourney(t *testing.T) {
 					t.Fatalf("wrong gate identity: %+v", gated)
 				}
 				args := []string{"axi", "respond", "--step", "test", "--action", tc.action}
+				if tc.refusedFirst {
+					refused, err := h.Run(args...)
+					if code := exitCode(err); code != 2 || !strings.Contains(refused, "requires --reason") {
+						t.Fatalf("reasonless %s: exit %d, want a usage refusal\n%s", tc.action, code, refused)
+					}
+					waitForStepStatus(t, h, tc.name, types.StepTest, types.StepStatusAwaitingApproval, 30*time.Second)
+				}
 				if tc.reason != "" {
 					args = append(args, "--reason", tc.reason)
 				}
@@ -146,6 +156,9 @@ func TestAxiTestApprovalExceptionJourney(t *testing.T) {
 					}
 				} else if step.ApprovalReason != nil {
 					t.Fatalf("ordinary completion or skip mislabeled as approval: %+v", step)
+				}
+				if reason, ok := step.OperatorSkip(); ok != (tc.action == "skip") || (ok && reason != tc.reason) {
+					t.Fatalf("operator skip = %q, %v; want the skip's reason only on a skip: %+v", reason, ok, step)
 				}
 				// Only a configured-command failure receives the existing marker
 				// consumed by PR enforcement. Evidence approvals cannot change it.

@@ -122,7 +122,7 @@ func TestExecutor_ApprovalReasonCannotChangeOtherActions(t *testing.T) {
 	for _, tc := range []struct {
 		step   types.StepName
 		action types.ApprovalAction
-	}{{types.StepReview, types.ActionApprove}, {types.StepCI, types.ActionApprove}, {types.StepTest, types.ActionFix}, {types.StepTest, types.ActionSkip}} {
+	}{{types.StepReview, types.ActionApprove}, {types.StepCI, types.ActionApprove}, {types.StepTest, types.ActionFix}} {
 		if _, err := executor.RespondWithOverrides(tc.step, tc.action, nil, nil, nil, nil, "reason"); err == nil || !strings.Contains(err.Error(), "only to Test approval") {
 			t.Fatalf("reason accepted for %s/%s: %v", tc.step, tc.action, err)
 		}

@@ -21,7 +21,7 @@ func TestClosingIssueRefsPublishedIntentIsNeutralized(t *testing.T) {
 	h.CommitChange(branch, "n.txt", "n\n", "add neutralize fixture")
 	wt := h.AddWorktree(branch)
 	intent := "Refactor the widget\nFixes #12\nResolves: acme/widgets#3\nCloses https://github.com/example/closes/issues/14\nfixed http://github.com/example/closes/pull/15"
-	if out, err := h.RunInDir(wt, "axi", "run", "--intent", intent, "--skip", "ci"); err != nil {
+	if out, err := h.RunInDir(wt, "axi", "run", "--intent", intent, "--skip", "ci", "--skip-reason", "synthetic e2e run"); err != nil {
 		t.Fatalf("axi run: %v\n%s", err, out)
 	}
 	waitPublished(t, h, branch, "", "neutralize")

@@ -48,7 +48,7 @@ func TestProofRunCarriesTranscriptHomesWithCapableDaemon(t *testing.T) {
 	cliGit(t, gateDir, "config", "receive.advertisePushOptions", "true")
 	cliGit(t, local, "remote", "add", gate.RemoteName, gateDir)
 	head := cliGit(t, local, "rev-parse", "HEAD")
-	receipt, err := triggerProofRun(context.Background(), env, "feature/omit", head, nil, "goal", "", false, "nonce", "generation", "", nil, db.RunPRText{})
+	receipt, err := triggerProofRun(context.Background(), env, "feature/omit", head, nil, "", "goal", "", false, "nonce", "generation", "", nil, db.RunPRText{})
 	if err != nil || receipt == nil || receipt.RunID != "selected-account-run" {
 		t.Fatalf("supporting daemon must launch: receipt=%+v err=%v", receipt, err)
 	}
@@ -161,7 +161,7 @@ func TestTranscriptHomesRefuseOlderDaemonBeforeLaunch(t *testing.T) {
 			case "ordinary":
 				_, err = triggerRun(context.Background(), env, "feature/omit", nil, "", "", false, "", nil)
 			case "proof":
-				_, err = triggerProofRun(context.Background(), env, "feature/omit", head, nil, "goal", "", false, "nonce", "generation", "", nil, db.RunPRText{})
+				_, err = triggerProofRun(context.Background(), env, "feature/omit", head, nil, "", "goal", "", false, "nonce", "generation", "", nil, db.RunPRText{})
 			case "rerun":
 				_, err = executeCmd("rerun")
 			}

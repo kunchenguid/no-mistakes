@@ -374,10 +374,12 @@ The `v1` payload is compact JSON with these required fields:
 
 When the Test step validated the same `head_sha`, the payload also includes `live_validation` with `verdict`, `live` (the number of scenarios driven live), and `total`. The field is omitted for pre-contract findings and whenever a later Document, Lint, Push, or repair commit changes the head without validating that new commit. Consumers therefore never receive a previous head's live-validation verdict as a claim about the current head.
 
-Two additional fields are additive and omitted when empty, so older attestations remain valid:
+Three additional fields are additive and omitted when empty, so older attestations remain valid:
 
 - `steps[].override_reason`: present on a Test step that was approved over a failing configured `commands.test`. Absent on an ordinary green completion and on pre-field attestations, which must be read as not approved over failure.
 - `allow_test_command_override`: the trusted [`test.allow_approve_over_failure`](/no-mistakes/reference/repo-config/#testallow_approve_over_failure) reason copied at PR-write time, including a CI-repair restamp, from the current trusted config rather than a previous attestation, and only when the Test step carries `override_reason`. The required check refuses a Test `override_reason` unless this field is a non-empty recorded reason.
+
+- `exceptions`: every step an operator let through on their own decision instead of its evidence, in pipeline order, each with `step`, `kind`, and `reason`. `kind` is `test-exception` for a Test approval past a failing configured command, a `no-go` or `inconclusive` verdict, or a budget-cut Test turn, which also carries `condition`, the unresolved condition it approved past; or `operator-skip` for a step skipped by `axi run --skip`, `axi respond --action skip`, or another explicit skip. `reason` is the operator's recorded reason, or `no operator reason supplied` for a decision recorded without one. Automatic skips are not listed. A CI-repair restamp that keeps the prior statuses keeps their `exceptions` too. `verify.py` does not read the field, so it changes no PR-enforcement verdict.
 
 A CI step approved over still-failing checks also stores `override_reason` on the step result (and surfaces as `passed-with-override` in AXI), but that CI mark is not copied onto the attestation.
 

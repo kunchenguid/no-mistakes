@@ -97,7 +97,7 @@ func TestSuppliedPRTextJourney(t *testing.T) {
 		{"body with bidi override", []string{"--pr-body-file", bidiBody}},
 		{"body with attestation marker", []string{"--pr-body-file", markerBody}},
 		{"whitespace-only body", []string{"--pr-body-file", blankBody}},
-		{"skip pr with title", []string{"--pr-title", "ok", "--skip", "pr"}},
+		{"skip pr with title", []string{"--pr-title", "ok", "--skip", "pr", "--skip-reason", "synthetic e2e run"}},
 		{"stdin claimed twice", []string{"--intent", "-", "--pr-body-file", "-"}},
 	} {
 		args := append([]string{"axi", "run"}, c.args...)
@@ -122,7 +122,7 @@ func TestSuppliedPRTextJourney(t *testing.T) {
 	if err := os.WriteFile(bodyPath, []byte(narrative), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := h.RunInDir(wt, "axi", "run", "--intent", "supplied pr text", "--skip", "ci", "--pr-title", title, "--pr-body-file", bodyPath)
+	out, err := h.RunInDir(wt, "axi", "run", "--intent", "supplied pr text", "--skip", "ci", "--skip-reason", "synthetic e2e run", "--pr-title", title, "--pr-body-file", bodyPath)
 	if err != nil {
 		t.Fatalf("axi run with PR text: %v\n%s", err, out)
 	}
@@ -230,7 +230,7 @@ func TestSuppliedPRTextJourney(t *testing.T) {
 	const plainBranch = "feature/no-supplied-text"
 	h.CommitChange(plainBranch, "plain.txt", "plain\n", "add plain fixture")
 	pwt := h.AddWorktree(plainBranch)
-	if out, err := h.RunInDir(pwt, "axi", "run", "--intent", "plain change", "--skip", "ci"); err != nil {
+	if out, err := h.RunInDir(pwt, "axi", "run", "--intent", "plain change", "--skip", "ci", "--skip-reason", "synthetic e2e run"); err != nil {
 		t.Fatalf("axi run without PR text: %v\n%s", err, out)
 	}
 	plain := waitPublished(t, h, plainBranch, "", "unconfigured")

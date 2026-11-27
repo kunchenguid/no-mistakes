@@ -59,7 +59,7 @@ func TestExecutor_SkipPersistenceFailureExecutesNoSteps(t *testing.T) {
 	}
 	review, test, push := newPassStep(types.StepReview), newPassStep(types.StepTest), newPassStep(types.StepPush)
 	executor := NewExecutor(database, p, nil, nil, []Step{review, test, push}, nil)
-	executor.SetSkippedSteps([]types.StepName{types.StepPush})
+	executor.SetSkippedSteps([]types.StepName{types.StepPush}, "")
 	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err == nil || !strings.Contains(err.Error(), "skip write failed") {
 		t.Fatalf("Execute() error = %v, want the skip persistence failure", err)
 	}
@@ -95,10 +95,10 @@ func TestExecutorSkipRecoveryProcess(t *testing.T) {
 		}
 	})
 	if os.Getenv("NM_SKIP_FIXTURE_SKIPS") == "push" {
-		executor.SetSkippedSteps([]types.StepName{types.StepPush})
+		executor.SetSkippedSteps([]types.StepName{types.StepPush}, "")
 	}
 	if os.Getenv("NM_SKIP_FIXTURE_SKIPS") == "true" {
-		executor.SetSkippedSteps([]types.StepName{types.StepRebase, types.StepPush, types.StepPR, types.StepCI})
+		executor.SetSkippedSteps([]types.StepName{types.StepRebase, types.StepPush, types.StepPR, types.StepCI}, "")
 	}
 	if err := executor.Execute(context.Background(), run, repo, filepath.Join(root, "checkout")); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestExecutor_RequestedSkipsSurviveParkAndRecovery(t *testing.T) {
 					} else {
 						executor = NewExecutor(database, p, nil, nil, skipRecoverySteps(t, filepath.Join(p.Root(), "calls"), gate), nil)
 						if skipped {
-							executor.SetSkippedSteps([]types.StepName{types.StepRebase, types.StepPush, types.StepPR, types.StepCI})
+							executor.SetSkippedSteps([]types.StepName{types.StepRebase, types.StepPush, types.StepPR, types.StepCI}, "")
 						}
 						go func() { done <- executor.Execute(ctx, run, repo, workDir) }()
 						waitForStepStatus(t, database, run.ID, gate, types.StepStatusAwaitingApproval)
