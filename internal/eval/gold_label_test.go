@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -274,6 +275,148 @@ func TestCaptureShippedUnfixedLeavesSelectedSiblingAsTP(t *testing.T) {
 	}
 	if got := byID["noise"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
 		t.Fatalf("unselected sibling gold = %#v, want shipped-unfixed FP", got)
+	}
+}
+
+func TestCaptureAndRelabelSuppressShippedUnfixedForSameRunSelection(t *testing.T) {
+	findingsForRound := func(description, reusedIDFile, renumberedID, reusedIDDescription string, distinctLine, movedLine int) string {
+		return findingsJSON(
+			findingSpec{ID: "real-bug", Severity: "error", File: "main.go", Line: 1, Description: description, Action: "auto-fix"},
+			findingSpec{ID: "curated-bug", Severity: "error", File: "main.go", Line: 2, Description: "another bug", Action: "ask-user"},
+			findingSpec{ID: "unfixed", Severity: "warning", File: "main.go", Line: 1, Description: "style", Action: "ask-user"},
+			findingSpec{ID: "review-1", Severity: "error", File: reusedIDFile, Line: 1, Description: "unchecked startup error", Action: "ask-user"},
+			findingSpec{ID: renumberedID, Severity: "warning", File: "main.go", Line: 1, Description: "missing package documentation", Action: "ask-user"},
+			findingSpec{ID: "review-4", Severity: "warning", File: ".no-mistakes.yaml", Line: 3, Description: reusedIDDescription, Action: "ask-user"},
+			findingSpec{ID: "distinct-site", Severity: "warning", File: ".no-mistakes.yaml", Line: distinctLine, Description: "review scope is too broad", Action: "ask-user"},
+			findingSpec{ID: "moved-bug", Severity: "error", File: "main.go", Line: movedLine, Description: "Changed does nothing", Action: "auto-fix"},
+		)
+	}
+	reusedIDFiles := []string{"service.go", "cache.go"}
+	renumberedIDs := []string{"review-2", "review-3"}
+	distinctLines := []int{2, 3}
+	movedLines := []int{3, 6}
+	firstFindings := findingsForRound("missing build tag", reusedIDFiles[0], renumberedIDs[0], "path rule is redundant", distinctLines[0], movedLines[0])
+	secondFindings := findingsForRound("  MISSING  Build Tag  ", reusedIDFiles[1], renumberedIDs[1], "path rule misses shell scripts", distinctLines[1], movedLines[1])
+	for selectedIndex, timing := range []string{"earlier", "later"} {
+		for _, operation := range []string{"capture", "recapture", "relabel"} {
+			t.Run(timing+"/"+operation, func(t *testing.T) {
+				ctx := context.Background()
+				p, sourceDB, run, repo, first := setupCapturedRunWithFindings(t, ctx, firstFindings)
+				defer sourceDB.Close()
+				if err := os.WriteFile(filepath.Join(repo.WorkingPath, "main.go"), []byte("package sample\n\n\n\n\nfunc Changed() {}\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, ctx, repo.WorkingPath, "commit", "-am", "move Changed down three lines")
+				mustGit(t, ctx, repo.WorkingPath, "push", "origin", "feature/eval")
+				secondHead := mustGit(t, ctx, repo.WorkingPath, "rev-parse", "HEAD")
+				if err := sourceDB.UpdateRunHeadSHA(run.ID, secondHead); err != nil {
+					t.Fatal(err)
+				}
+				steps, err := sourceDB.GetStepsByRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				second, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "initial", strPtr(secondFindings), nil, secondHead, secondHead, stringValue(first.TrustedConfigSHA), first.GlobalConfigYAML, first.RepoConfigYAML, 25)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rounds := []*db.StepRound{first, second}
+				for _, round := range rounds {
+					if err := sourceDB.SetStepRoundSelection(round.ID, strPtr(`[]`), db.RoundSelectionSourceUserDeclined); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+					t.Fatal(err)
+				}
+
+				selected := rounds[selectedIndex]
+				declinedIndex := 1 - selectedIndex
+				declined := rounds[declinedIndex]
+				store := mustOpenEval(t, p)
+				const adjudicationReason = "confirmed against the reviewed head"
+				if operation != "capture" {
+					cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, c := range cases {
+						if c.SourceRoundID == declined.ID {
+							_, err := store.Adjudicate(ctx, c.ID, "curated-bug", 0, Adjudication{Kind: GoldTruePositive, Reason: adjudicationReason})
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+				}
+				selection := strPtr(`["real-bug","curated-bug","review-1","` + renumberedIDs[selectedIndex] + `","review-4","distinct-site","moved-bug"]`)
+				if err := sourceDB.SetStepRoundSelection(selected.ID, selection, db.RoundSelectionSourceAutoFix); err != nil {
+					t.Fatal(err)
+				}
+
+				var cases []Case
+				if operation == "relabel" {
+					cases, err = RelabelRun(ctx, store, p, sourceDB, run.ID)
+				} else {
+					cases, err = Capture(ctx, store, p, sourceDB, run.ID)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(cases) != 2 {
+					t.Fatalf("cases = %d, want both review rounds", len(cases))
+				}
+				for _, c := range cases {
+					byID := map[string]FindingGold{}
+					for _, gold := range c.Labels.Findings {
+						byID[gold.ID] = gold
+					}
+					if got := byID["unfixed"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+						t.Errorf("round %s unselected sibling = %#v, want shipped-unfixed false-positive", c.SourceRoundID, got)
+					}
+					switch c.SourceRoundID {
+					case selected.ID:
+						for _, id := range []string{"real-bug", "curated-bug", renumberedIDs[selectedIndex], "review-4", "distinct-site", "moved-bug"} {
+							if got := byID[id]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged {
+								t.Errorf("selected finding %s = %#v, want auto-fix-merged true-positive", id, got)
+							}
+						}
+						if got := byID["review-1"]; got.Kind != GoldTruePositive || got.Source != goldSourceAutoFixMerged || got.File != reusedIDFiles[selectedIndex] {
+							t.Errorf("selected review-1 = %#v, want auto-fix-merged true-positive in %s", got, reusedIDFiles[selectedIndex])
+						}
+					case declined.ID:
+						if got := byID["review-1"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.File != reusedIDFiles[declinedIndex] {
+							t.Errorf("unrelated review-1 = %#v, want shipped-unfixed false-positive in %s", got, reusedIDFiles[declinedIndex])
+						}
+						if got, exists := byID["real-bug"]; exists {
+							t.Errorf("declined round's selected-elsewhere finding = %#v, want no gold label", got)
+						}
+						if got := byID[renumberedIDs[declinedIndex]]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+							t.Errorf("unselected finding with a different ID = %#v, want shipped-unfixed false-positive", got)
+						}
+						if got := byID["review-4"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed {
+							t.Errorf("unselected finding with a different description = %#v, want shipped-unfixed false-positive", got)
+						}
+						if got := byID["distinct-site"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.Line != distinctLines[declinedIndex] {
+							t.Errorf("unselected site in unchanged file = %#v, want shipped-unfixed false-positive at line %d", got, distinctLines[declinedIndex])
+						}
+						if got := byID["moved-bug"]; got.Kind != GoldFalsePositive || got.Source != goldSourceShippedUnfixed || got.Line != movedLines[declinedIndex] {
+							t.Errorf("unselected report of moved finding = %#v, want shipped-unfixed false-positive at line %d", got, movedLines[declinedIndex])
+						}
+						got, exists := byID["curated-bug"]
+						if operation != "capture" {
+							if got.Adjudication == nil || got.Adjudication.Kind != GoldTruePositive || got.Adjudication.Reason != adjudicationReason {
+								t.Errorf("adjudicated finding = %#v, want preserved explicit true-positive", got)
+							}
+						} else if exists {
+							t.Errorf("declined round's other selected-elsewhere finding = %#v, want no gold label", got)
+						}
+					default:
+						t.Errorf("unexpected round %s", c.SourceRoundID)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -614,7 +757,7 @@ func TestGoldFromRoundLabelsByRecordedDecision(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			round := &db.StepRound{Round: 1, FindingsJSON: strPtr(tc.findings)}
-			got := goldFromRound(round, tc.decision, tc.prState)
+			got := goldFromRound(round, tc.decision, tc.prState, nil)
 			if tc.wantKind == "" {
 				if got.HasGold() {
 					t.Fatalf("labels = %#v, want unlabeled", got)
