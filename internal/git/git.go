@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -582,12 +583,55 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 // this operation, allowing the caller to publish the verified object with its
 // own create-only or compare-and-swap policy.
 func FetchRemoteRef(ctx context.Context, dir, remote, remoteRef, expectedCommit string) error {
+	return fetchRemoteRef(ctx, dir, nil, remote, remoteRef, expectedCommit)
+}
+
+// FetchCheckoutRef is FetchRemoteRef for a fetch whose source is the caller's
+// own checkout. That checkout may be a partial clone missing objects the
+// fetch needs, and upload-pack disables lazy fetching by default, so the
+// fetch fails with "could not fetch <oid> from promisor remote". Re-enabling
+// lazy fetching lets the checkout download exactly the objects the
+// destination lacks, in one batch, from its own promisor remote. When that
+// still fails, the error names the missing object and the manual fix.
+func FetchCheckoutRef(ctx context.Context, dir, checkout, remoteRef, expectedCommit string) error {
+	err := fetchRemoteRef(ctx, dir, []string{"GIT_NO_LAZY_FETCH=0"}, checkout, remoteRef, expectedCommit)
+	if err == nil {
+		return nil
+	}
+	promisor := promisorRemote(ctx, checkout)
+	if promisor == "" {
+		return err
+	}
+	if match := missingPromisorObject.FindStringSubmatch(err.Error()); match != nil {
+		return fmt.Errorf("%w; %s is a partial clone and object %s was never downloaded from its promisor remote %q: make %q reachable, run `git -C %s cat-file -e %s` to download it, then retry", err, checkout, match[1], promisor, promisor, checkout, match[1])
+	}
+	return fmt.Errorf("%w; %s is a partial clone and may be missing objects from its promisor remote %q: make %q reachable, then retry", err, checkout, promisor, promisor)
+}
+
+var missingPromisorObject = regexp.MustCompile(`could not fetch ([0-9a-f]{40,64}) from promisor remote`)
+
+// promisorRemote names the checkout's promisor remote, or returns "" when the
+// checkout is not a partial clone. Current Git marks it with
+// remote.<name>.promisor; older clones set extensions.partialClone instead.
+func promisorRemote(ctx context.Context, dir string) string {
+	out, _ := Run(ctx, dir, "config", "--type=bool", "--get-regexp", `^remote\..*\.promisor$`)
+	for _, line := range strings.Split(out, "\n") {
+		key, value, _ := strings.Cut(line, " ")
+		if value == "true" {
+			return strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".promisor")
+		}
+	}
+	name, _ := Run(ctx, dir, "config", "--get", "extensions.partialClone")
+	return name
+}
+
+func fetchRemoteRef(ctx context.Context, dir string, extraEnv []string, remote, remoteRef, expectedCommit string) error {
 	temporaryRef := fmt.Sprintf("refs/no-mistakes/fetch/%d-%d", os.Getpid(), time.Now().UnixNano())
 	defer func() {
 		_, _ = Run(context.WithoutCancel(ctx), dir, "update-ref", "--no-deref", "-d", temporaryRef)
 	}()
 	refspec := fmt.Sprintf("+%s:%s", remoteRef, temporaryRef)
-	if _, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec); err != nil {
+	if _, err := RunWithEnv(ctx, dir, extraEnv, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec); err != nil {
 		return err
 	}
 	fetched, err := Run(ctx, dir, "rev-parse", "--verify", temporaryRef+"^{commit}")
