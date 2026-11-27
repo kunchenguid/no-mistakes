@@ -22,6 +22,8 @@ func TestMain(m *testing.M) {
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
+	os.Unsetenv("GIT_CONFIG_PARAMETERS")
+	os.Unsetenv("GIT_CONFIG")
 	// Fixtures must not depend on the machine's system git config: some
 	// distributions ship safe.bareRepository=explicit there, which refuses
 	// the in-directory use of the bare fixture repositories these tests

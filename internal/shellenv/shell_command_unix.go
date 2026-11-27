@@ -283,7 +283,8 @@ func groupGoneWithin(pgid int, window time.Duration) bool {
 }
 
 // detachFromTerminal runs cmd in a new session instead of merely a new process
-// group. It exists for the login-shell probe: an interactive shell (zsh -i)
+// group. This keeps commit rewrites and the login-shell probe off the daemon's
+// controlling terminal. During the probe, an interactive shell (zsh -i)
 // that inherits a controlling terminal insists on being that terminal's
 // foreground process group before it runs anything, and a Setpgid child of a
 // foreground process never is, so zsh stops itself with SIGTTIN and the probe
