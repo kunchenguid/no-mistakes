@@ -36,6 +36,9 @@ func normalizeRepositoryOverrides(raw RepositoryOverrides) (RepositoryOverrides,
 		if err := validateReviewAgents(override.ReviewAgents); err != nil {
 			return nil, fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
 		}
+		if err := validateAutoFixCeiling(override.AutoFixCeiling); err != nil {
+			return nil, fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
+		}
 		overrides[key] = override
 	}
 	return overrides, nil

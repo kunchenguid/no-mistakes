@@ -1381,6 +1381,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		fmt.Fprint(logFile, text)
 		touchLogActivity(text, true)
 	}
+	if e.config != nil && !state.fixing {
+		if requested, ok := e.config.AutoFixCapped[stepName]; ok {
+			// The run's own record of why the budget is below what auto_fix asked for.
+			writeLog(fmt.Sprintf("operator auto_fix_ceiling lowered the %s auto-fix limit from %d to %d", stepName, requested, e.config.AutoFixLimit(stepName)))
+		}
+	}
 	writeLogChunk := func(text string) {
 		if text != "" {
 			lastChunkNewline = strings.HasSuffix(text, "\n")
