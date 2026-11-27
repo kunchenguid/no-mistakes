@@ -13,8 +13,7 @@ The verdict is a pure function of the pull request body plus the PR head SHA:
   2. the body carries a parseable v1 pipeline-step attestation comment;
   3. the attestation's head_sha equals the current PR head SHA, so a later push
      cannot pass on an older attestation;
-  4. review, test, and document each recorded status == "completed". Skips
-     (quota or agent) and failures are not compliant.
+  4. rebase, review, test, and document each recorded status == "completed".
   5. a test step whose attestation carries a non-empty override_reason is
      treated as approved over a failing configured commands.test. That is
      non-compliant unless the attestation also carries a non-empty
@@ -76,7 +75,7 @@ ATTESTATION_CLOSING = " -->"
 # Fixed on purpose: these are the steps whose completion the gate certifies. A
 # caller configures WHO is exempt, never WHICH steps are required, so a repo
 # cannot quietly weaken the gate while still reporting the same check name.
-REQUIRED_STEPS = ("review", "test", "document")
+REQUIRED_STEPS = ("rebase", "review", "test", "document")
 
 VERSION_FLOOR = "1.46.0"
 VERSION_FLOOR_PR = "https://github.com/kunchenguid/no-mistakes/pull/670"

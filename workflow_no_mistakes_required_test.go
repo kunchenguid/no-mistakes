@@ -579,6 +579,7 @@ func runRequiredWorkflowCheckJob(t *testing.T, workflow requiredWorkflow, event 
 func pipelineSummaryWithStatuses(t *testing.T, review, testStep, document types.StepStatus) string {
 	t.Helper()
 	stepResults := []*db.StepResult{
+		{ID: "rebase", StepName: types.StepRebase, Status: types.StepStatusCompleted},
 		{ID: "review", StepName: types.StepReview, Status: review},
 		{ID: "test", StepName: types.StepTest, Status: testStep},
 		{ID: "document", StepName: types.StepDocument, Status: document},

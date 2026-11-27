@@ -27,6 +27,7 @@ func completedSteps(overrideReason string) []map[string]any {
 		test["override_reason"] = overrideReason
 	}
 	return []map[string]any{
+		{"step": "rebase", "status": "completed"},
 		{"step": "review", "status": "completed"},
 		test,
 		{"step": "document", "status": "completed"},
@@ -36,6 +37,7 @@ func completedSteps(overrideReason string) []map[string]any {
 func TestRequireActionRefusesApprovedOverFailureTestStepWithoutOptIn(t *testing.T) {
 	reason := "configured test command failed with exit code 7"
 	stepResults := []*db.StepResult{
+		{ID: "rebase", StepName: types.StepRebase, Status: types.StepStatusCompleted},
 		{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "test", StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: &reason},
 		{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted},

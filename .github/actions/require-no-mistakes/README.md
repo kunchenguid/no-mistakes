@@ -12,8 +12,8 @@ It verifies, in order:
    comment;
 3. the attestation's `head_sha` equals the PR head SHA, so a later push cannot
    pass on an older attestation;
-4. `review`, `test`, and `document` each recorded `status == "completed"`.
-   Quota skips and agent skips are not compliant.
+4. `rebase`, `review`, `test`, and `document` each recorded
+   `status == "completed"`. A skipped, missing, or incomplete step fails the check.
 5. a `test` step whose attestation carries a non-empty `override_reason` is
    treated as approved over a failing configured `commands.test`. That is
    non-compliant unless the attestation also carries a non-empty
@@ -41,6 +41,16 @@ event payload: evaluating compliance against that cached payload is the exact
 staleness hole described above, so a lookup failure must never itself become
 a route to a passing verdict on stale data.
 
+## Updating a published PR
+
+To bring a moved base into an open PR while preserving the published branch
+history, set [`rebase.strategy: merge`](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#rebasestrategy)
+in `.no-mistakes.yaml` on the repository's trusted default branch.
+
+Run the full pipeline for the updated head. Rebase can complete when the heads
+are equal, when the branch is already ahead, or when it fast-forwards.
+Passing `--skip=rebase` records a skip and fails this check.
+
 ## Usage
 
 Consumers pin a release tag or a commit SHA. Never `@main`: `main` is editable
@@ -50,7 +60,7 @@ by the very PR the gate is judging.
 name: Require no-mistakes
 on:
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, synchronize, reopened]
     branches: [main]
 
 permissions:
@@ -75,9 +85,10 @@ that contains this action.
 The job name must stay exactly `PR must be raised via no-mistakes` so branch
 rulesets keep matching the same check across the fleet.
 
-An ordinary `pull_request`-triggered caller forwards no PR facts: the action
-reads the body, head SHA, head branch, author, and number from the workflow
-event payload. Pass the `pr-*` inputs only when driving it from another event.
+An ordinary `pull_request`-triggered caller forwards no PR facts. The action
+reads the head branch, author, and number from the event payload and fetches
+the body and head SHA from the GitHub API. Pass the `pr-*` inputs when driving
+the action from another event.
 
 ## Inputs
 

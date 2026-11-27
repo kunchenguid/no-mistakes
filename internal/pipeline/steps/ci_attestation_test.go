@@ -24,6 +24,7 @@ const verifyPyRelPath = "../../../.github/actions/require-no-mistakes/verify.py"
 func compliantPipelineBody(t *testing.T, headSHA string) string {
 	t.Helper()
 	stepResults := []*db.StepResult{
+		{ID: "rebase", StepName: types.StepRebase, Status: types.StepStatusCompleted},
 		{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "test", StepName: types.StepTest, Status: types.StepStatusCompleted},
 		{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted},
@@ -600,7 +601,7 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, newHead)
 
-	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument} {
+	for _, name := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument} {
 		sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, name)
 		if err != nil {
 			t.Fatal(err)
