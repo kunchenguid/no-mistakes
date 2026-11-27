@@ -603,7 +603,7 @@ func FetchCheckoutRef(ctx context.Context, dir, checkout, remoteRef, expectedCom
 		return err
 	}
 	if match := missingPromisorObject.FindStringSubmatch(err.Error()); match != nil {
-		return fmt.Errorf("%w; %s is a partial clone and object %s was never downloaded from its promisor remote %q: make %q reachable, run `git -C %s cat-file -e %s` to download it, then retry", err, checkout, match[1], promisor, promisor, checkout, match[1])
+		return fmt.Errorf("%w; %s is a partial clone and object %s was never downloaded from its promisor remote %q: make %q reachable, run `git -C %s cat-file -e %s` to download it, then retry", err, checkout, match[1], promisor, promisor, shellSingleQuote(checkout), match[1])
 	}
 	return fmt.Errorf("%w; %s is a partial clone and may be missing objects from its promisor remote %q: make %q reachable, then retry", err, checkout, promisor, promisor)
 }

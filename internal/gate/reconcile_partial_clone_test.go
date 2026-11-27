@@ -34,7 +34,7 @@ func TestPlanStaleBranchReconciliationStagesAHeadFromABloblessPartialClone(t *te
 			writeReconcileFile(t, origin, "feature.txt", "final content\n")
 			reconcileGit(t, origin, "commit", "-am", "final")
 
-			partial := filepath.Join(t.TempDir(), "partial")
+			partial := filepath.Join(t.TempDir(), "partial clone's $HOME")
 			reconcileGit(t, "", "clone", "--no-local", "--filter=blob:none", "-b", "feature/partial", origin, partial)
 			if got := reconcileGit(t, partial, "config", "--get", "remote.origin.partialclonefilter"); got != "blob:none" {
 				t.Fatalf("fixture is not a blobless partial clone: filter %q", got)
@@ -60,12 +60,28 @@ func TestPlanStaleBranchReconciliationStagesAHeadFromABloblessPartialClone(t *te
 					t.Fatal("staging succeeded without the promisor remote")
 				}
 				t.Logf("Staging refusal: %v", err)
-				for _, want := range []string{"partial clone", missingBlob, "git -C " + partial + " cat-file -e " + missingBlob} {
+				for _, want := range []string{"partial clone", missingBlob} {
 					if !strings.Contains(err.Error(), want) {
 						t.Fatalf("error does not name %q:\n%v", want, err)
 					}
 				}
-				return
+				_, after, found := strings.Cut(err.Error(), "run `")
+				if !found {
+					t.Fatalf("error does not include a recovery command:\n%v", err)
+				}
+				recovery, _, found := strings.Cut(after, "` to download it")
+				if !found {
+					t.Fatalf("error does not delimit the recovery command:\n%v", err)
+				}
+				reconcileGit(t, partial, "remote", "set-url", "origin", origin)
+				cmd := exec.Command("sh", "-c", recovery)
+				cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=0")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("run printed recovery command %s: %v\n%s", recovery, err, out)
+				}
+				if !blobPresent(partial, missingBlob) {
+					t.Fatal("printed recovery command did not hydrate the missing blob")
+				}
 			}
 
 			plan, err := PlanStaleBranchReconciliation(ctx, gateDir, partial, "feature/partial", liveHead, "", nil)
