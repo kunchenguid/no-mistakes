@@ -54,7 +54,7 @@ func TestReviewerSelectionFlagsPushOptionsAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := database.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "h", "b", nil, "", "", "", "", false, nil, pin)
+	run, err := database.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "h", "b", nil, "", "", "", "", false, nil, "", pin)
 	if err != nil {
 		t.Fatal(err)
 	}

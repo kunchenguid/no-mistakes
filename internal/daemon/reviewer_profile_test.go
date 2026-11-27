@@ -116,7 +116,7 @@ func TestReviewerSelectionUnavailableDoesNotSupersedeActiveRun(t *testing.T) {
 	cancelled := false
 	m.cancels[active.ID] = func(error) { cancelled = true }
 	pin := &agentcfg.ReviewerProfile{Agent: types.AgentCodex, Model: "reviewer", Effort: agentcfg.EffortHigh}
-	if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "review", "", false, "", nil, pin); err == nil || !strings.Contains(err.Error(), "reviewer unavailable") {
+	if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "review", "", false, "", nil, "", pin); err == nil || !strings.Contains(err.Error(), "reviewer unavailable") {
 		t.Fatalf("unavailable reviewer accepted: %v", err)
 	}
 	runs, err := d.GetRunsByRepo(repo.ID)
@@ -140,7 +140,7 @@ func TestReviewerSelectionRecoveryUsesPersistedPin(t *testing.T) {
 	defer d.Close()
 	repo, head := setupTestGitRepo(t, p, d, "reviewer-recovery")
 	pin := &agentcfg.ReviewerProfile{Agent: types.AgentPi, Model: "openai/reviewer", Effort: agentcfg.EffortHigh}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", head, head, nil, "", "", "", "", false, nil, pin)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", head, head, nil, "", "", "", "", false, nil, "", pin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestReviewerSelectionFreshLaunchDoesNotInherit(t *testing.T) {
 			}
 			repo, head := setupTestGitRepo(t, p, d, "fresh-reviewer")
 			pin := &agentcfg.ReviewerProfile{Agent: types.AgentPi, Model: "openai/old-reviewer", Effort: agentcfg.EffortHigh}
-			previous, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", head, head, nil, "", "", "", "", false, nil, pin)
+			previous, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", head, head, nil, "", "", "", "", false, nil, "", pin)
 			if err != nil {
 				t.Fatal(err)
 			}

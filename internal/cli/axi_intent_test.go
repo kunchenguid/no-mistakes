@@ -257,6 +257,7 @@ func TestNoMistakesBinary_IntentTransport(t *testing.T) {
 	bin := buildNoMistakesBinary(t)
 	requests := make(chan ipc.RerunParams, 8)
 	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
+		currentDaemonHealth(srv)
 		serveTranscriptHomesProbe(srv)
 		srv.HandleStream(ipc.MethodSubscribe, hangSubscribe)
 		srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {

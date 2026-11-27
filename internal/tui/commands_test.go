@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -131,6 +132,8 @@ func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
 func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	dir := tuiIdentityCheckout(t)
 	t.Chdir(dir)
+	claudeProfile := filepath.VolumeName(os.TempDir()) + "/caller/.claude1"
+	t.Setenv(runenv.ClaudeConfigDirEnvVar, claudeProfile)
 	sock := testSocketPath(t)
 	srv := startTestIPCServer(t, sock)
 	srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
@@ -143,18 +146,20 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	newRun.Error = nil
 
 	homes := t.TempDir()
-	claudeHome, codexHome := filepath.Join(homes, "claude account"), filepath.Join(homes, "codex account")
-	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
+	claudeHome, codexHome := claudeProfile, filepath.Join(homes, "codex account")
 	t.Setenv("CODEX_HOME", codexHome)
 	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+	})
+	srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.HealthResult{Status: "ok", ClaudeConfigDir: true}, nil
 	})
 	srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
 		var params ipc.RerunParams
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
-		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" {
+		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" || params.ClaudeConfigDir != claudeProfile {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
 		}
 		if params.CommitIdentity == nil || params.CommitIdentity.AuthorName != "TUI Submitter" || params.CommitIdentity.CommitterEmail != "tui@example.test" {
@@ -728,6 +733,61 @@ func TestModel_RerunRefusesMissingIdentityOrOlderDaemon(t *testing.T) {
 			case <-requests:
 				t.Fatal("refused identity was submitted")
 			default:
+			}
+		})
+	}
+}
+
+func TestModel_RerunRefusesAnOlderDaemonOnlyWhenAProfileIsSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile string
+		refused       bool
+	}{
+		{name: "profile set", profile: filepath.VolumeName(os.TempDir()) + "/caller/.claude1", refused: true},
+		{name: "no profile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(tuiIdentityCheckout(t))
+			t.Setenv(runenv.ClaudeConfigDirEnvVar, tc.profile)
+			sock := testSocketPath(t)
+			srv := startTestIPCServer(t, sock)
+			srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
+				return map[string]bool{"ok": true}, nil
+			})
+			srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+			})
+			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.HealthResult{Status: "ok"}, nil
+			})
+			rerunCalls := 0
+			srv.Handle(ipc.MethodRerun, func(context.Context, json.RawMessage) (interface{}, error) {
+				rerunCalls++
+				return nil, errors.New("stop after the capability check")
+			})
+			client, err := ipc.Dial(sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			run := testRun()
+			run.Status = types.RunFailed
+			run.Error = ptr("push failed")
+			m := NewModel(sock, client, run)
+			_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+			if cmd == nil {
+				t.Fatal("expected rerun command")
+			}
+			msg, ok := cmd().(rerunErrMsg)
+			if !ok {
+				t.Fatalf("expected rerunErrMsg, got %T", msg)
+			}
+			if got := strings.Contains(msg.err.Error(), "honor CLAUDE_CONFIG_DIR"); got != tc.refused {
+				t.Fatalf("Claude profile refusal in %q = %v, want %v", msg.err, got, tc.refused)
+			}
+			if tc.refused && rerunCalls != 0 {
+				t.Fatalf("rerun reached a daemon that ignores the profile")
 			}
 		})
 	}
