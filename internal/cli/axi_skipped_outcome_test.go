@@ -100,8 +100,20 @@ func TestAxiOutcomeProviderUnavailableSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := outcomeForRun(runViewFromDB(explicit, explicitResults, database)); got != "passed" {
+	explicitView := runViewFromDB(explicit, explicitResults, database)
+	if got := outcomeForRun(explicitView); got != "passed" {
 		t.Fatalf("explicit per-run skips: outcome = %q, want passed", got)
+	}
+	// The outcome word is unchanged, but the explicit skips are recorded as the
+	// operator's and listed as validation exceptions rather than read as clean.
+	for _, result := range explicitResults {
+		if result.SkipReason == nil || *result.SkipReason != types.OperatorSkipReason {
+			t.Fatalf("%s explicit skip reason = %v, want the operator marker", result.StepName, result.SkipReason)
+		}
+	}
+	gaps := explicitView.validationGaps()
+	if len(gaps.Exceptions) != 2 || gaps.Exceptions[0].Kind != pipeline.ValidationKindOperatorSkip || gaps.Exceptions[1].Kind != pipeline.ValidationKindOperatorSkip {
+		t.Fatalf("explicit skips are not listed as operator skips: %+v", gaps.Exceptions)
 	}
 }
 
@@ -114,6 +126,7 @@ func TestAxiDriveAutomaticSkips(t *testing.T) {
 	}{
 		{"automatic skip", "gh is not authenticated", "", types.RunCompleted, types.StepStatusSkipped, "passed-with-skips"},
 		{"explicit skip", "", "", types.RunCompleted, types.StepStatusSkipped, "passed"},
+		{"operator skip", types.OperatorSkipReason, "", types.RunCompleted, types.StepStatusSkipped, "passed"},
 		{"completed step", "stale reason", "", types.RunCompleted, types.StepStatusCompleted, "passed"},
 		{"override and skip", "provider unavailable", "live CI failure", types.RunCompleted, types.StepStatusSkipped, "passed-with-override"},
 		{"failed run", "provider unavailable", "", types.RunFailed, types.StepStatusSkipped, "failed"},
@@ -143,7 +156,7 @@ func TestAxiDriveAutomaticSkips(t *testing.T) {
 			if doc.Outcome != tc.want || doc.Run.HeadSHA != r.HeadSHA {
 				t.Fatalf("drive output = %+v", doc)
 			}
-			if tc.reason != "" && tc.stepStatus == types.StepStatusSkipped {
+			if tc.reason != "" && tc.reason != types.OperatorSkipReason && tc.stepStatus == types.StepStatusSkipped {
 				if len(doc.Run.AutomaticSkips) != 1 || doc.Run.AutomaticSkips[0].Reason != tc.reason {
 					t.Fatalf("skip cause lost: %+v", doc.Run.AutomaticSkips)
 				}

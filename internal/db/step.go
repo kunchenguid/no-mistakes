@@ -40,8 +40,10 @@ type StepResult struct {
 	// the configured-command waiver used by PR enforcement. NULL means no
 	// recorded approval; an empty string means approved without a reason.
 	ApprovalReason *string
-	// SkipReason records an automatic PR/CI skip, distinct from an explicit
-	// per-run skip. Legacy rows have no recorded reason.
+	// SkipReason records why a step was skipped: an automatic PR/CI skip's
+	// cause, or types.OperatorSkipReason for an explicit operator skip. NULL is
+	// a step skipped because the branch had nothing to validate, or a legacy
+	// row that predates the operator marker.
 	SkipReason *string
 	// ResponseOrigin records the caller of the latest gate response stored on
 	// the step. Fix selections store their origin on the answered round.
@@ -420,7 +422,8 @@ func (d *DB) CompleteStepWithStatus(id string, status types.StepStatus, exitCode
 	return d.completeStep(id, status, exitCode, durationMS, logPath, "")
 }
 
-// CompleteSkippedStep atomically preserves the automatic skip cause with its status.
+// CompleteSkippedStep atomically preserves the skip cause (automatic, or the
+// operator marker) with its status.
 func (d *DB) CompleteSkippedStep(id string, exitCode int, durationMS int64, logPath, reason string) error {
 	return d.completeStep(id, types.StepStatusSkipped, exitCode, durationMS, logPath, reason)
 }
