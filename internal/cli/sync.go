@@ -28,6 +28,7 @@ func newSyncCmd() *cobra.Command {
 			"equivalent-diverged advance that first anchors the old head and then moves the\n" +
 			"branch to the verified pipeline head with reset semantics. It never stashes,\n" +
 			"merges genuine divergence, rebases, switches branches, or updates a remote.\n" +
+			"Refuses and names ignored local paths that the incoming tree would replace.\n" +
 			"--check performs the fresh proof without applying it.\n" +
 			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
 			"pipeline commits: it anchors an available preserved head, then either\n" +
@@ -90,6 +91,7 @@ func newAxiSyncCmd() *cobra.Command {
 			"an eligible plan without a prompt: strict fast-forward for behind branches, or an\n" +
 			"equivalent advance that anchors the old head before moving the branch to the\n" +
 			"verified pipeline head with reset semantics.\n" +
+			"Refuses and names ignored local paths that the incoming tree would replace.\n" +
 			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
 			"--recover performs the guarded custody return offered by\n" +
 			"next_action.code: recover_custody; --keep-local keeps the current local head.\n" +
