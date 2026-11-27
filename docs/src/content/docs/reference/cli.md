@@ -731,7 +731,8 @@ no-mistakes axi retry --run <id>
 
 An agent invocation failure is an error the agent call returned while its context was still live: a provider processing error, a usage or quota limit, a transport failure, or the agent process exiting.
 The executor records that cause on the failed step when the step fails with that error.
-A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never retried before Push; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
+A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never continued by `axi retry` before Push; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
+For eligible timeout retries within a live run, see the global [`agent_crash_retries` setting](/no-mistakes/reference/global-config/#agent_crash_retries).
 
 The retry starts a new run at the failed run's preserved head, so every correction the pipeline already committed is kept:
 

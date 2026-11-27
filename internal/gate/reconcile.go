@@ -129,7 +129,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
 		return plan, fmt.Errorf("private mirror ref %s does not point at a commit", branchRef)
 	}
-	if err := git.FetchRemoteRef(ctx, gateDir, workDir, liveHead, liveHead); err != nil {
+	if err := git.FetchCheckoutRef(ctx, gateDir, workDir, liveHead, liveHead); err != nil {
 		return plan, fmt.Errorf("stage live head for private mirror reconciliation: %w", err)
 	}
 

@@ -95,6 +95,15 @@ work unchanged.
 
 ### Private mirror reconciliation
 
+Before comparing different live and private heads, reconciliation stages the
+live head in the gate by fetching from your checkout. For this fetch, a partial
+clone can download missing objects from its own promisor remote as needed for
+the transfer, without a separate full-history download pass. If a required
+object cannot be downloaded from the promisor remote, staging fails. When Git
+identifies the missing promisor object, the error names it and prints a
+shell-quoted command to download it. Restore access to the named promisor
+remote, run the printed command, then submit again.
+
 A rebase can leave the gate branch on an older history that rejects the next
 ordinary push. Reconciliation compares exact commit heads and final-tree
 survival; commit messages and per-commit patch identities are not evidence. A
@@ -129,8 +138,9 @@ rebase and push, including a refreshed checkout registration. The caller
 supplies the integration branch selected under the
 [`pr.base_branch` rules](/no-mistakes/reference/repo-config/#prbase_branch).
 Only when this proof is needed does AXI submission without a run override
-fetch the default branch to resolve trusted configuration. A submission
-without a stale mirror does not query upstream for reconciliation.
+fetch the default branch to resolve trusted configuration. A submission with
+no private mirror branch, or with that branch already at the live head, skips
+reconciliation.
 
 The selected base's merge base with the live head identifies the upstream
 changes already integrated by the branch. The live and private heads must
