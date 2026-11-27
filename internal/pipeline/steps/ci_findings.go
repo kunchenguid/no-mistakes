@@ -67,6 +67,10 @@ type ciIssues struct {
 	// whose check completed green or has not registered on the head yet
 	// (ci.review_bot_comments: always).
 	greenBots bool
+	// registeredBotsOnly drops the bots that have no check on the head, so a
+	// bot is read only for a head it has itself reported on
+	// (ci.review_bot_comments_early).
+	registeredBotsOnly bool
 }
 
 // ciObservationFindings converts one settled observation into findings, one
@@ -128,7 +132,12 @@ func ciObservationFindings(issues ciIssues) Findings {
 		})
 	}
 	if issues.greenBots {
-		botChecks = append(botChecks, greenReviewBotChecks(bots, issues.checks)...)
+		for _, green := range greenReviewBotChecks(bots, issues.checks) {
+			if issues.registeredBotsOnly && green.check.Name == "" {
+				continue
+			}
+			botChecks = append(botChecks, green)
+		}
 	}
 	items = append(items, reviewBotFindings(issues.provider, botChecks, issues.botComments)...)
 	if issues.mergeConflict {
@@ -492,6 +501,148 @@ func (s *CIStep) greenReviewBotFindings(sctx *pipeline.StepContext, host scm.Hos
 		botComments:     comments,
 		greenBots:       true,
 	}), nil
+}
+
+// reviewBotCommentsEarly reports whether ci.review_bot_comments_early asks the
+// CI step to surface a review bot's comments while other checks still run.
+func reviewBotCommentsEarly(sctx *pipeline.StepContext) bool {
+	return sctx.Config != nil && sctx.Config.CI.ReviewBotCommentsEarly
+}
+
+// completedReviewBotChecks returns the registered review-bot checks that have
+// completed on this head and that the current ci.review_bot_comments policy
+// reads: a failing one always, a passing or skipped one only under always.
+// A bot with no check on the head yet is never returned, because its
+// unresolved threads can belong to an earlier head.
+func completedReviewBotChecks(sctx *pipeline.StepContext, checks []scm.Check) []scm.Check {
+	bots := scm.ReviewBotsFor(requiredReviews(sctx))
+	var completed []scm.Check
+	for _, check := range checks {
+		if _, ok := scm.ReviewBotForCheck(bots, check); !ok {
+			continue
+		}
+		switch {
+		case check.Failing():
+			completed = append(completed, check)
+		case reviewBotCommentsAlways(sctx) && (check.Bucket == scm.CheckBucketPass || check.Bucket == scm.CheckBucketSkip):
+			completed = append(completed, check)
+		}
+	}
+	return completed
+}
+
+// earlyReviewBotFindings is the observation under
+// ci.review_bot_comments_early while other checks are still running: the
+// unresolved comments of the registered review bots whose own check completed
+// on this head, read through readReviewBotComments and classified by
+// ciObservationFindings exactly as the settled observation does. Empty when
+// no such bot has completed or it left nothing to decide. Only the bot checks
+// are observed: any other check that fails later gets its own round once it
+// completes.
+func (s *CIStep) earlyReviewBotFindings(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, checks []scm.Check) (Findings, error) {
+	completed := completedReviewBotChecks(sctx, checks)
+	if len(completed) == 0 {
+		return Findings{}, nil
+	}
+	comments, err := readReviewBotComments(sctx, host, pr)
+	if err != nil {
+		return Findings{}, err
+	}
+	var failing []string
+	for _, check := range completed {
+		if check.Failing() {
+			failing = append(failing, check.Name)
+		}
+	}
+	sort.Strings(failing)
+	findings := ciObservationFindings(ciIssues{
+		provider:           host.Provider(),
+		requiredReviews:    requiredReviews(sctx),
+		checks:             completed,
+		failing:            failing,
+		reruns:             s.transientReruns.used,
+		botComments:        comments,
+		greenBots:          reviewBotCommentsAlways(sctx),
+		registeredBotsOnly: true,
+	})
+	open := findings.Items[:0:0]
+	for _, item := range findings.Items {
+		if !s.earlyDismissed[earlyFindingKey(item)] {
+			open = append(open, item)
+		}
+	}
+	findings.Items = open
+	return findings, nil
+}
+
+func earlyFindingKey(item Finding) string {
+	return fmt.Sprintf("%s\x00%s\x00%d\x00%s", item.Check, item.File, item.Line, item.Description)
+}
+
+// ContinueAfterApproval keeps the CI step monitoring when an operator approves
+// or skips an early review-bot round: the answer dismisses those comments for
+// the early observation only, and any other check that is still running, has
+// failed, or cannot be read gets its own round from the settled observation.
+// The step completes as an ordinary approve or skip only for a gate that is
+// not made of review-bot findings alone, or when the live checks were read for
+// this head and every check other than a review bot's has completed green.
+func (s *CIStep) ContinueAfterApproval(sctx *pipeline.StepContext, findingsJSON string) bool {
+	if !reviewBotCommentsEarly(sctx) {
+		return false
+	}
+	parsed, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil || len(parsed.Items) == 0 {
+		return false
+	}
+	for _, item := range parsed.Items {
+		if item.Category != types.FindingCategoryCIReviewBot {
+			return false
+		}
+	}
+	if s.otherChecksSettledGreen(sctx) {
+		return false
+	}
+	if s.earlyDismissed == nil {
+		s.earlyDismissed = map[string]bool{}
+	}
+	for _, item := range parsed.Items {
+		s.earlyDismissed[earlyFindingKey(item)] = true
+	}
+	return true
+}
+
+func (s *CIStep) monitoringAfterEarlyApproval() bool {
+	return len(s.earlyDismissed) > 0
+}
+
+func (s *CIStep) otherChecksSettledGreen(sctx *pipeline.StepContext) bool {
+	if sctx.Run == nil || sctx.Run.PRURL == nil {
+		return false
+	}
+	host, _ := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil || host.Available(sctx.Ctx) != nil {
+		return false
+	}
+	prURL := strings.TrimSpace(*sctx.Run.PRURL)
+	prNumber, err := scm.ExtractPRNumber(prURL)
+	if err != nil {
+		return false
+	}
+	pr := &scm.PR{Number: prNumber, URL: prURL, HeadSHA: sctx.Run.HeadSHA}
+	checks, _, moved, err := getCIChecks(sctx.Ctx, host, pr)
+	if err != nil || moved {
+		return false
+	}
+	if hasExecutingPendingChecks(checks) {
+		return false
+	}
+	bots := scm.ReviewBotsFor(requiredReviews(sctx))
+	for _, check := range checks {
+		if _, isBot := scm.ReviewBotForCheck(bots, check); !isBot && check.Failing() {
+			return false
+		}
+	}
+	return true
 }
 
 // reviewBotCommentsReadFailureOutcome parks the step when, under

@@ -68,6 +68,7 @@ type CIStep struct {
 	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
 	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
+	earlyDismissed       map[string]bool           // early review-bot findings an operator approved or skipped while checks still ran, so the early observation never re-parks on them
 	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
 	pendingRepairPublish bool
 	fixAgentCrashes      int
@@ -388,7 +389,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
-		if requiresExternalReview(sctx) {
+		if requiresExternalReview(sctx) || s.monitoringAfterEarlyApproval() {
 			return ciCheckReadFailureOutcome(fmt.Errorf("required external review unavailable: %s", skipReason)), nil
 		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
@@ -398,7 +399,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if pluginContractBroken(err) {
 			return nil, err
 		}
-		if requiresExternalReview(sctx) {
+		if requiresExternalReview(sctx) || s.monitoringAfterEarlyApproval() {
 			return ciCheckReadFailureOutcome(err), nil
 		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
@@ -875,6 +876,27 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 							timeoutFailingChecks = append(timeoutFailingChecks[:i], timeoutFailingChecks[i+1:]...)
 						}
 					}
+				}
+			}
+
+			if checksPending && reviewBotCommentsEarly(sctx) {
+				earlyFindings, earlyErr := s.earlyReviewBotFindings(sctx, host, pr, checks)
+				if earlyErr != nil && pluginPollFailsStep(earlyErr) {
+					if err := clearCIMonitorReady(sctx); err != nil {
+						return nil, err
+					}
+					return nil, earlyErr
+				}
+				if earlyErr != nil {
+					sctx.Log(fmt.Sprintf("warning: could not read review bot comments early: %v", earlyErr))
+				} else if len(earlyFindings.Items) > 0 {
+					if err := clearCIMonitorReady(sctx); err != nil {
+						return nil, err
+					}
+					sctx.DeferredFindings = ""
+					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+					sctx.Log(fmt.Sprintf("issues detected before all checks completed: %s", earlyFindings.Summary))
+					return ciObservationOutcome(earlyFindings), nil
 				}
 			}
 

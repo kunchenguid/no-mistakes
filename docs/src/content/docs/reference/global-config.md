@@ -86,6 +86,7 @@ ci:
   rerun_transient: 0
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
+  review_bot_comments_early: false
   rebase_behind: false
   carry_review_on_replay: false
   release_after_checks_pass: false
@@ -1155,6 +1156,22 @@ ci:
 ```
 
 A value in the trusted repository config overrides this global value. An unrecognized value fails the config rather than falling back to the default.
+
+### ci.review_bot_comments_early
+
+The operator-level fallback for [`ci.review_bot_comments_early`](/no-mistakes/reference/repo-config/#cireview_bot_comments_early), whose per-repository reference owns the semantics and the trust boundary.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+```yaml
+ci:
+  review_bot_comments_early: true
+```
+
+An explicit value in the trusted repository config overrides this value in either direction.
 
 ### ci.rebase_behind
 

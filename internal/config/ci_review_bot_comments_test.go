@@ -94,3 +94,42 @@ func TestCIReviewBotComments_ShippedDefaultConfigKeepsTheDefault(t *testing.T) {
 		t.Errorf("the shipped default config sets ci.review_bot_comments to %q, want it documented at %q", raw.CI.ReviewBotComments, DefaultCIReviewBotComments)
 	}
 }
+
+func resolveReviewBotCommentsEarly(t *testing.T, globalYAML, trustedRepoYAML, pushedRepoYAML string) bool {
+	t.Helper()
+	global, err := LoadGlobalFromBytes([]byte(globalYAML))
+	if err != nil {
+		t.Fatalf("LoadGlobalFromBytes(%q): %v", globalYAML, err)
+	}
+	trusted, err := LoadRepoFromBytes([]byte(trustedRepoYAML))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes(trusted %q): %v", trustedRepoYAML, err)
+	}
+	pushed, err := LoadRepoFromBytes([]byte(pushedRepoYAML))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes(pushed %q): %v", pushedRepoYAML, err)
+	}
+	return Merge(global, EffectiveRepoConfig(pushed, trusted, false)).CI.ReviewBotCommentsEarly
+}
+
+func TestCIReviewBotCommentsEarly_DefaultPrecedenceAndTrust(t *testing.T) {
+	t.Parallel()
+	const on = "ci:\n  review_bot_comments_early: true\n"
+	const off = "ci:\n  review_bot_comments_early: false\n"
+	const unset = "{}\n"
+	for _, tc := range []struct {
+		name, global, trusted, pushed string
+		want                          bool
+	}{
+		{name: "unset everywhere is off", global: unset, trusted: unset, pushed: unset, want: false},
+		{name: "global opt-in", global: on, trusted: unset, pushed: unset, want: true},
+		{name: "trusted repository opt-in", global: unset, trusted: on, pushed: unset, want: true},
+		{name: "trusted repository opts out of global", global: on, trusted: off, pushed: unset, want: false},
+		{name: "pushed branch cannot opt itself in", global: unset, trusted: unset, pushed: on, want: false},
+		{name: "pushed branch cannot opt itself out", global: unset, trusted: on, pushed: off, want: true},
+	} {
+		if got := resolveReviewBotCommentsEarly(t, tc.global, tc.trusted, tc.pushed); got != tc.want {
+			t.Errorf("%s: CI.ReviewBotCommentsEarly = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
