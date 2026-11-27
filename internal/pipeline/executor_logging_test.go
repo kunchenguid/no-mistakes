@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -219,6 +221,71 @@ func TestExecutor_AgentLifecycleLoggedAndClearsPID(t *testing.T) {
 	}
 	if steps[0].AgentPID != nil {
 		t.Fatalf("agent pid = %v, want nil after exit", steps[0].AgentPID)
+	}
+}
+
+func TestExecutor_IntentLifecycleOmitsTranscriptDetails(t *testing.T) {
+	for _, phase := range []string{
+		agent.LifecyclePhaseStart, agent.LifecyclePhaseExit, agent.LifecyclePhaseActivity,
+		agent.LifecyclePhaseRetry, agent.LifecyclePhaseFallback, agent.LifecyclePhaseQuotaSwitch,
+	} {
+		t.Run(phase, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			const private = "PRIVATE-TRANSCRIPT"
+			record := quotarouting.NewRecord(true, nil, nil, quotarouting.Selection{})
+			payload, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetRunQuotaRouting(run.ID, string(payload)); err != nil {
+				t.Fatal(err)
+			}
+			a := &lifecycleEmittingAgent{events: []agent.LifecycleEvent{
+				{Agent: "codex", Phase: phase, PID: 4242, NextAgent: "pi", Message: "codex error: " + private},
+			}}
+			step := &adaptiveCallStep{
+				name: types.StepIntent,
+				fn: func(sctx *StepContext) (*StepOutcome, error) {
+					if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "infer intent", CWD: sctx.WorkDir}); err != nil {
+						t.Fatal(err)
+					}
+					sr, err := database.GetStepResult(sctx.StepResultID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if sr.LastActivity == nil || !strings.Contains(*sr.LastActivity, "codex "+phase) || strings.Contains(*sr.LastActivity, private) {
+						t.Errorf("activity = %v, want safe lifecycle phase", sr.LastActivity)
+					}
+					if phase == agent.LifecyclePhaseStart && (sr.AgentPID == nil || *sr.AgentPID != 4242) {
+						t.Errorf("start lost agent PID: %v", sr.AgentPID)
+					}
+					if phase == agent.LifecyclePhaseExit && sr.AgentPID != nil {
+						t.Errorf("exit retained agent PID: %v", sr.AgentPID)
+					}
+					return &StepOutcome{Skipped: true, SkipReason: "intent extraction failed"}, nil
+				},
+			}
+			var chunks strings.Builder
+			exec := NewExecutor(database, p, nil, a, []Step{step}, func(event ipc.Event) {
+				if event.Type == ipc.EventLogChunk && event.Content != nil {
+					chunks.WriteString(*event.Content)
+				}
+			})
+			if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(p.RunLogDir(run.ID), "intent.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := database.GetRunQuotaRouting(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data)+chunks.String()+stored, private) {
+				t.Fatal("transcript details leaked into lifecycle diagnostics")
+			}
+		})
 	}
 }
 
