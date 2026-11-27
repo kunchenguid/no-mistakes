@@ -37,7 +37,12 @@ func (m Model) View() string {
 	if !useResponsiveLayout && (m.showHelp || hasCI) && (pipelineHeight == 0 || pipelineHeight >= 30) {
 		pipelineHeight = cappedPipelineHeight
 	}
-	pipelineView := renderPipelineView(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight)
+	var pipelineView string
+	if useResponsiveLayout {
+		pipelineView = renderPipelineViewWithPreview(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight, false)
+	} else {
+		pipelineView = renderPipelineView(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight)
+	}
 	banner := renderOutcomeBanner(m.run, m.steps)
 	localBranch := renderLocalBranchStatus(m.branchSync, m.syncRefreshing, leftWidth)
 

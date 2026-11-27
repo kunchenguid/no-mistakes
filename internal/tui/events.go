@@ -470,6 +470,11 @@ func (m Model) stepsWithRunningElapsed() []ipc.StepResultInfo {
 	steps := make([]ipc.StepResultInfo, len(m.steps))
 	copy(steps, m.steps)
 	for i := range steps {
+		if steps[i].StepName == types.StepDocument {
+			if raw, ok := m.stepFindings[types.StepDocument]; ok {
+				steps[i].FindingsJSON = &raw
+			}
+		}
 		if steps[i].DurationMS != nil {
 			continue
 		}

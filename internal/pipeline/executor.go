@@ -572,7 +572,13 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 				return e.failRun(run, repo, err, ctx)
 			}
 			stepRecords[step.Name()] = sr
-			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(sr.Status), "", "", sr.DurationMS)
+			var findings string
+			if step.Name() == types.StepDocument {
+				if _, raw, _ := e.db.DocumentStepReport(sr); raw != nil {
+					findings = *raw
+				}
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(sr.Status), findings, "", sr.DurationMS)
 			continue
 		}
 		sr, err := e.db.InsertStepResult(run.ID, step.Name())
@@ -1294,6 +1300,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
+	var completedDocumentFindings string
 	autoFixLimit := e.autoFixLimit(stepName)
 	maxReviewFixRounds, reviewFixRounds := 0, 0
 	if stepName == types.StepReview {
@@ -1689,6 +1696,9 @@ rounds:
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
+		if stepName == types.StepDocument {
+			completedDocumentFindings = documentCompletionFindings(outcome.Findings)
+		}
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
@@ -2114,11 +2124,20 @@ done:
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
-	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
+	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), completedDocumentFindings, "", &durationMS)
 	if stepName == types.StepCI && !stepSkipped && ciReadyNoCIOnCompletion != nil {
 		ciReadinessChanged(true, *ciReadyNoCIOnCompletion)
 	}
 	return skipRemaining, restartFrom, nil
+}
+
+func documentCompletionFindings(raw string) string {
+	metadata := types.DocumentOffChangeMetadata(&raw)
+	if !metadata.HasDocumentOffChangePaths() {
+		return ""
+	}
+	completion, _ := types.MarshalFindingsJSON(metadata)
+	return completion
 }
 
 // applyApprovalOverride is the single place both ActionApprove sites (the

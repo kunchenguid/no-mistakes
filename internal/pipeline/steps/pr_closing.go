@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
@@ -472,4 +473,18 @@ func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, test
 		return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit-reserve, provider), section)
 	}
 	return appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, maxPullRequestBodyBytes-reserve), section)
+}
+
+func assembleDraftPRBodyWithPreview(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, pipeline prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+	pipelineMD := pipeline.full
+	if pipeline.withoutDocumentPreview != "" {
+		section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
+		body := appendIssuesSection(buildPRBodyWithin(whatChanged, riskLine, testingMD, pipelineMD, sctx, provider, math.MaxInt), section)
+		redacted := redactPRContent(prContent{Body: body}, provider, sctx.WorkDir, nmWorktreesRoot()).Body
+		if validateOwnedPRBudget(redacted, bodyLimit) == nil {
+			return body
+		}
+		pipelineMD = pipeline.withoutDocumentPreview
+	}
+	return assembleDraftPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 }

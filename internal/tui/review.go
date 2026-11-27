@@ -338,7 +338,6 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 			b.WriteString(blueStyle.Render(instr) + "\n")
 		}
 	}
-
 	// Scroll footer for the box border - combines up and down indicators.
 	scrollFooter := ""
 	remaining := len(f.Items) - end

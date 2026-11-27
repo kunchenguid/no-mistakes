@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Finding action constants.
@@ -335,6 +338,10 @@ type Findings struct {
 	// never read as resolution. Empty on every non-review payload.
 	ReviewedPaths       []string             `json:"reviewed_paths,omitempty"`
 	ReviewCoverageScope *ReviewCoverageScope `json:"review_coverage_scope,omitempty"`
+	// DocumentOffChangePaths records paths committed by Document rounds
+	// outside the submitted change. It is metadata, so it never needs a verdict.
+	DocumentOffChangePaths   []string `json:"document_off_change_paths,omitempty"`
+	DocumentOffChangeOmitted bool     `json:"document_off_change_omitted,omitempty"`
 	// WithdrawnFindings is an answer round's explicit re-adjudication: the
 	// carried findings the reviewer now says no longer hold, each with its
 	// reason. On an answer round a carried finding leaves the outstanding set
@@ -373,6 +380,9 @@ type findingsWire struct {
 	RiskLevel           string               `json:"risk_level"`
 	RiskRationale       string               `json:"risk_rationale"`
 	RiskScope           string               `json:"risk_scope"`
+
+	DocumentOffChangePaths   []string `json:"document_off_change_paths"`
+	DocumentOffChangeOmitted bool     `json:"document_off_change_omitted"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -402,7 +412,53 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		RiskLevel:           wire.RiskLevel,
 		RiskRationale:       wire.RiskRationale,
 		RiskScope:           wire.RiskScope,
+
+		DocumentOffChangePaths:   wire.DocumentOffChangePaths,
+		DocumentOffChangeOmitted: wire.DocumentOffChangeOmitted,
 	}, nil
+}
+
+const DocumentOffChangeOmission = "More paths in the Document step log."
+
+func DocumentPathSpelling(path string) string {
+	if !utf8.ValidString(path) || strings.HasPrefix(path, `"`) ||
+		strings.ContainsFunc(path, func(r rune) bool { return !unicode.IsPrint(r) }) ||
+		strings.HasPrefix(path, " ") || strings.HasSuffix(path, " ") || strings.Contains(path, "  ") {
+		return strings.ReplaceAll(strconv.Quote(path), " ", `\x20`)
+	}
+	return path
+}
+
+func DocumentOffChangeMetadata(raw *string) Findings {
+	if raw == nil {
+		return Findings{}
+	}
+	f, _ := ParseFindingsJSON(*raw)
+	paths, omitted := DocumentOffChangePreview(f.DocumentOffChangePaths)
+	return Findings{DocumentOffChangePaths: paths, DocumentOffChangeOmitted: omitted || f.DocumentOffChangeOmitted}
+}
+
+func (f Findings) HasDocumentOffChangePaths() bool {
+	return len(f.DocumentOffChangePaths) != 0 || f.DocumentOffChangeOmitted
+}
+
+func DocumentOffChangePreview(paths []string) ([]string, bool) {
+	const maxPaths = 8
+	remaining := 1024
+	var preview []string
+	omitted := false
+	for _, path := range paths {
+		if len(preview) == maxPaths {
+			return preview, true
+		}
+		if len(path) > remaining {
+			omitted = true
+			continue
+		}
+		preview = append(preview, path)
+		remaining -= len(path)
+	}
+	return preview, omitted
 }
 
 // FindingsMetadata returns findings with its items dropped, so every helper

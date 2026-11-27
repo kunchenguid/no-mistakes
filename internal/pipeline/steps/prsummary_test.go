@@ -16,6 +16,68 @@ import (
 
 const testPipelineHeadSHA = "0123456789abcdef0123456789abcdef01234567"
 
+func TestBuildPipelineSummary_DocumentPRPreviewShowsFiveSortedPaths(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, want, unwanted string
+		omitted              bool
+	}{
+		{"known count", "and 2 more (see the Document step log)", "More paths in the Document step log.", false},
+		{"unknown count", "More paths in the Document step log.", "and 2 more", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := types.MarshalFindingsJSON(types.Findings{
+				DocumentOffChangePaths:   []string{"g.md", "c.md", "e.md", "a.md", "f.md", "b.md", "d.md"},
+				DocumentOffChangeOmitted: tc.omitted,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			step := &db.StepResult{StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &raw}
+			md, _ := BuildPipelineSummary([]*db.StepResult{step}, nil, testPipelineHeadSHA)
+			want := "- <code>a.md</code>\n- <code>b.md</code>\n- <code>c.md</code>\n- <code>d.md</code>\n- <code>e.md</code>\n\n" + tc.want
+			if !strings.Contains(md, want) || strings.Contains(md, tc.unwanted) || strings.Contains(md, "f.md") || strings.Contains(md, "g.md") {
+				t.Fatalf("unexpected Document PR preview:\n%s", md)
+			}
+		})
+	}
+}
+
+func TestBuildPipelineSummary_DocumentPreviewPreservesStatusFormatting(t *testing.T) {
+	t.Parallel()
+	const previewHeading = "Paths Document committed outside the submitted change\n\n"
+	findings := `{"findings":[],"document_off_change_paths":["README.md"]}`
+	steps := []*db.StepResult{{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"document": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+	for _, tc := range []struct {
+		provider scm.Provider
+		heading  string
+		path     string
+	}{
+		{scm.ProviderGitHub, "<summary>✅ **Document** - passed</summary>", "<code>README.md</code>"},
+		{scm.ProviderBitbucket, "✅ **Document** - passed", "`README.md`"},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			full, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
+			without, _ := buildPipelineSummaryWithPreview(steps, rounds, testPipelineHeadSHA, tc.provider, pipelineAttestationPolicy{}, false)
+			preview := previewHeading + "- " + tc.path + "\n\n"
+			if tc.provider == scm.ProviderBitbucket {
+				want := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + tc.heading + "\n"
+				if without != want || full != want+"\n"+strings.TrimSuffix(preview, "\n") {
+					t.Fatalf("expected a plain Document status row with an optional preview, got:\n%s\n%s", without, full)
+				}
+				return
+			}
+			if !strings.Contains(full, tc.heading+"\n\n"+preview+"✅ No issues found.") {
+				t.Fatalf("expected the preview inside the Document block:\n%s", full)
+			}
+			if without != strings.Replace(full, preview, "", 1) {
+				t.Fatalf("omitting the preview changed the Document block:\n%s", without)
+			}
+		})
+	}
+}
+
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	t.Parallel()
 	steps := []*db.StepResult{
@@ -60,11 +122,13 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepTest, Status: types.StepStatusCompleted},
 		{ID: "s3", StepName: types.StepLint, Status: types.StepStatusCompleted},
+		{ID: "s4", StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", DurationMS: 500}},
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
+		"s4": {{Round: 1, Trigger: "initial", DurationMS: 200}},
 	}
 
 	md, risk := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket)
@@ -79,6 +143,7 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 		"✅ **Review** - passed",
 		"✅ **Test** - passed",
 		"✅ **Lint** - passed",
+		"\n✅ **Document** - passed\n",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %q in Bitbucket pipeline summary, got:\n%s", want, md)

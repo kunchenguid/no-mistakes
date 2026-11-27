@@ -270,13 +270,27 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 		{Key: "run", Value: run.ID},
 	}
 	var bounded bool
+	logRunID := run.ID
 	for _, s := range steps {
-		if string(s.StepName) == step && s.FindingsJSON != nil {
-			var recorded []toon.Field
-			recorded, bounded = recordedFindingsFields(*s.FindingsJSON, full)
-			fields = append(fields, recorded...)
-			break
+		if string(s.StepName) != step {
+			continue
 		}
+		raw := s.FindingsJSON
+		if s.StepName == types.StepDocument {
+			logRunID, raw, err = env.d.DocumentStepReport(s)
+			if err != nil {
+				return emitError(cmd, 1, fmt.Sprintf("load Document report: %v", err))
+			}
+			if logRunID != run.ID {
+				fields = append(fields, toon.Field{Key: "source_run", Value: logRunID})
+			}
+		}
+		if raw != nil {
+			var recorded []toon.Field
+			recorded, bounded = recordedFindingsFields(*raw, full)
+			fields = append(fields, recorded...)
+		}
+		break
 	}
 	selectedRunID := ""
 	if runID != "" {
@@ -284,7 +298,7 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 	}
 	fullHelp := fmt.Sprintf("Run `%s` to see the complete summary and entire log", axiLogsFullCommand(step, selectedRunID))
 
-	data, err := os.ReadFile(filepath.Join(env.p.RunLogDir(run.ID), step+".log"))
+	data, err := os.ReadFile(filepath.Join(env.p.RunLogDir(logRunID), step+".log"))
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return emitError(cmd, 1, fmt.Sprintf("read log: %v", err))

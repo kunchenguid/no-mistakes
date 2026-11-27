@@ -1783,6 +1783,8 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		AgentPID:       s.AgentPID,
 	}
 	if s.StepName == types.StepDocument {
+		_, findings, _ := d.DocumentStepReport(s)
+		info.FindingsJSON = findings
 		if combined, err := d.HasAgentInvocationPurpose(s.RunID, string(s.StepName), "housekeeping"); err == nil && combined {
 			info.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
 		}

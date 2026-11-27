@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -308,7 +309,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					return nil, err
 				}
 			}
-			appendix, err := s.buildPRAppendix(sctx, provider)
+			appendix, err := s.buildPRAppendixVariants(sctx, provider)
 			if err != nil {
 				return nil, err
 			}
@@ -320,7 +321,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				body := neutralizeAttestationMarkers(provider, suppliedPRBody(sctx))
 				narrative = &body
 			}
-			if err := updateOwnedPRWithNarrative(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit, narrative); err != nil {
+			if err := updateOwnedPRWithPreview(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit, narrative); err != nil {
 				return nil, err
 			}
 		} else {
@@ -622,7 +623,7 @@ func describePR(pr *scm.PR) string {
 
 // buildPRContent drafts the pull request title and body and then applies the
 // publication redaction boundary. New template bodies and author-preserving
-// updates use composeOwnedPRContent, which calls the same redactPRContent owner
+// updates use composeOwnedPRContentWithPreview, which calls the same redactPRContent owner
 // before stamping its integrity guard. This covers every source: agent-authored
 // prose, extracted user intent, findings, fix summaries, step errors, artifact
 // paths, artifact captions, and captured output embedded from evidence files.
@@ -644,13 +645,12 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		if err != nil {
 			return prContent{}, err
 		}
-		appendix, err := s.buildPRAppendix(sctx, provider)
+		appendix, err := s.buildPRAppendixVariants(sctx, provider)
 		if err != nil {
 			return prContent{}, err
 		}
 		narrative := neutralizeAttestationMarkers(provider, content.Body)
-		appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
-		return composeOwnedPRContent(prOwnedBody{before: narrative}, provider, content.Title, appendix, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
+		return composeOwnedPRContentWithPreview(prOwnedBody{before: narrative}, provider, content.Title, appendix, issuesSection(sctx, narrative), bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 	}
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
@@ -692,10 +692,11 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
 	inventory := prPromptInventory(sctx, finalDiff, baseSHA)
-	var pipelineMD, riskLine, testingMD, evidenceMD string
+	var pipelineMD prBodyVariants
+	var riskLine, testingMD, evidenceMD string
 	if !keepsPRUpdateText(sctx) {
-		pipelineMD, riskLine, testingMD, evidenceMD = s.buildPipelineSection(sctx, provider)
-		if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
+		pipelineMD, riskLine, testingMD, evidenceMD = s.buildPipelineSectionFor(sctx, provider, false)
+		if marker := extractPipelineAttestationMarker(pipelineMD.full); marker != "" &&
 			((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
 			return prContent{}, fmt.Errorf("pipeline attestation exceeds PR body limit")
 		}
@@ -742,7 +743,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		fallback, fallbackErr := s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+		fallback, fallbackErr := s.fallbackPRContentWithPreview(sctx, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 		return fallback, fallbackErr
 	}
 
@@ -771,7 +772,7 @@ Final diff paths and statuses:
 				if keepsPRUpdateText(sctx) {
 					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
 				}
-				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+				content.Body = assembleDraftPRBodyWithPreview(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 				return content, nil
 			}
 		}
@@ -780,7 +781,7 @@ Final diff paths and statuses:
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid configured public Intent brief")
 	}
-	return s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	return s.fallbackPRContentWithPreview(sctx, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 }
 
 func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string) (string, error) {
@@ -993,23 +994,24 @@ func renderPRTitle(sctx *pipeline.StepContext, title string) (string, error) {
 	return sctx.Config.PR.RenderTitle(branch, title)
 }
 
-// buildPipelineSection queries step results and rounds from the DB and
+// buildPipelineSectionFor queries step results and rounds from the DB and
 // produces the deterministic pipeline, risk, and testing sections. These are
 // scoped to this run's own steps and rounds, so they already describe only
 // the final terminal state each step reached in this run.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD, evidenceMD string) {
-	return s.buildPipelineSectionFor(sctx, provider, false)
-}
-
-func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD, evidenceMD string) {
+func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD prBodyVariants, riskLine, testingMD, evidenceMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", "", "", ""
+		return prBodyVariants{}, "", "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
 	for _, sr := range steps {
+		if sr.StepName == types.StepDocument && sr.CarriedFrom != nil {
+			if _, findings, err := sctx.DB.DocumentStepReport(sr); err == nil {
+				sr.FindingsJSON = findings
+			}
+		}
 		r, err := sctx.DB.GetRoundsByStep(sr.RoundsStepID())
 		if err != nil {
 			slog.Warn("failed to query rounds for step", "step", sr.StepName, "error", err)
@@ -1022,27 +1024,44 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 	if sctx.Config != nil {
 		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
 	}
-	pipelineMD, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
-	if s.headProofUnavailable != "" {
-		intro := noMistakesPRSignature + " " + s.headProofUnavailable
-		if pipelineMD == "" {
-			pipelineMD = "## Pipeline\n\n" + intro + "\n\n"
-		} else {
-			pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature, intro, 1)
+	pipelineMD.full, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
+	if appendixMode(sctx) != config.PRAppendixMinimal {
+		for _, sr := range steps {
+			if sr.StepName == types.StepDocument && !shouldOmitPipelineStep(sr) &&
+				db.RecordedDocumentEdits(sr.FindingsJSON, rounds[sr.ID]).HasDocumentOffChangePaths() {
+				pipelineMD.withoutDocumentPreview, _ = buildPipelineSummaryWithPreview(steps, rounds, sctx.Run.HeadSHA, provider, policy, false)
+				break
+			}
 		}
 	}
 	// The review conversation rides inside the Pipeline section as an ordinary
 	// `### ` group, so the existing body-budget logic can drop it whole rather
 	// than competing with the attestation it must never displace.
-	if conversationMD := buildReviewConversationSection(sctx); conversationMD != "" && pipelineMD != "" {
-		pipelineMD += "\n\n" + conversationMD
-	}
+	conversationMD := buildReviewConversationSection(sctx)
 	// Ordinary Bitbucket descriptions keep their existing Markdown-only skin.
 	// Owned templates additionally carry the exact existing declaration as
 	// visible text; the raw consumer/restamper uses the same marker and schema.
-	if owned && provider == scm.ProviderBitbucket && pipelineMD != "" {
-		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
+	var visibleAttestation string
+	if owned && provider == scm.ProviderBitbucket {
+		visibleAttestation = "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 	}
+	pipelineMD = pipelineMD.render(func(markdown string) string {
+		if s.headProofUnavailable != "" {
+			intro := noMistakesPRSignature + " " + s.headProofUnavailable
+			if markdown == "" {
+				markdown = "## Pipeline\n\n" + intro + "\n\n"
+			} else {
+				markdown = strings.Replace(markdown, noMistakesPRSignature, intro, 1)
+			}
+		}
+		if markdown != "" {
+			if conversationMD != "" {
+				markdown += "\n\n" + conversationMD
+			}
+			markdown += visibleAttestation
+		}
+		return markdown
+	})
 	compact := true
 	if sctx.Config != nil {
 		compact = sctx.Config.Test.Evidence.Compact
@@ -1931,7 +1950,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
+func (s *PRStep) fallbackPRContentWithPreview(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD string, pipelineMD prBodyVariants, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}
@@ -1951,7 +1970,7 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	if keepsPRUpdateText(sctx) {
 		return s.publishKeptDraft(sctx, provider, title, body, bodyLimit)
 	}
-	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
+	body = assembleDraftPRBodyWithPreview(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 	return prContent{
 		Title: title,
 		Body:  body,

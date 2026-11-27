@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -45,6 +47,141 @@ func TestAxiLogsReadsARepositoryGateStepLog(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "mutation score 41%") {
 		t.Fatalf("gate step log was not rendered:\n%s", out.String())
+	}
+}
+
+func TestAxiDocumentOffChangePathsOnDeliveryRetry(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+	source, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := database.InsertStepResult(source.ID, types.StepDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertAgentInvocation(db.AgentInvocation{
+		RunID: source.ID, StepName: string(types.StepDocument), Round: 1,
+		Purpose: "housekeeping", Agent: "codex", SessionMode: db.InvocationModeCold,
+		StartedAt: 1, CompletedAt: 2, DurationMS: 1000, ExitStatus: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"findings":[],"document_off_change_paths":["README.md"],"document_off_change_omitted":true}`
+	insertAxiRound(t, database, document.ID, 1, "initial", &raw)
+	if err := database.UpdateStepStatus(document.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	document, err = database.GetStepResult(document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := source.ID
+	for range 2 {
+		retry, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err = database.InsertCarriedStepResult(retry.ID, document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runID = retry.ID
+	}
+	logDir := p.RunLogDir(source.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "document.log"), []byte("Full path: owner.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiStatus(cmd, runID); err != nil {
+		t.Fatalf("status: %v\n%s", err, &out)
+	}
+	if !strings.Contains(out.String(), "README.md") || !strings.Contains(out.String(), "More paths in the Document step log.") {
+		t.Fatalf("retry status lost original Document metadata:\n%s", &out)
+	}
+	if strings.Contains(out.String(), "shared_work") {
+		t.Fatalf("retry status reported source-run housekeeping:\n%s", &out)
+	}
+	out.Reset()
+	if err := runAxiLogs(cmd, "document", runID, true); err != nil {
+		t.Fatalf("logs: %v\n%s", err, &out)
+	}
+	var doc struct {
+		SourceRun string   `toon:"source_run"`
+		Log       []logRow `toon:"log"`
+	}
+	if err := toon.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode retry logs: %v\n%s", err, &out)
+	}
+	if doc.SourceRun != source.ID || len(doc.Log) != 1 || doc.Log[0].Line != "Full path: owner.md" {
+		t.Fatalf("retry logs returned source %q and rows %v, want source %q and the original Document log", doc.SourceRun, doc.Log, source.ID)
+	}
+}
+
+func TestAxiDocumentLogsUseRequestedRunWithoutOffChangeReport(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+	source, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := database.InsertStepResult(source.ID, types.StepDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"findings":[],"summary":"No documentation updates needed"}`
+	insertAxiRound(t, database, document.ID, 1, "initial", &raw)
+	if err := database.UpdateStepStatus(document.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	document, err = database.GetStepResult(document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertCarriedStepResult(retry.ID, document); err != nil {
+		t.Fatal(err)
+	}
+	for _, log := range []struct{ runID, line string }{
+		{source.ID, "Source Document log"},
+		{retry.ID, "Requested run Document log"},
+	} {
+		dir := p.RunLogDir(log.runID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "document.log"), []byte(log.line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiLogs(cmd, "document", retry.ID, true); err != nil {
+		t.Fatalf("logs: %v\n%s", err, &out)
+	}
+	var doc struct {
+		SourceRun string   `toon:"source_run"`
+		Log       []logRow `toon:"log"`
+	}
+	if err := toon.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode retry logs: %v\n%s", err, &out)
+	}
+	if doc.SourceRun != "" || len(doc.Log) != 1 || doc.Log[0].Line != "Requested run Document log" {
+		t.Fatalf("expected requested-run log without a source_run field:\n%s", &out)
 	}
 }
 

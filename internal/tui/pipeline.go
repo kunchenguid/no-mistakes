@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,6 +119,10 @@ func formatDuration(ms int64) string {
 // renderPipelineView renders the step list with status indicators inside a boxed section.
 // When height < 30, connector lines between steps are suppressed to save vertical space.
 func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int, spinnerFrame int, height int) string {
+	return renderPipelineViewWithPreview(run, steps, width, spinnerFrame, height, awaitingStep(steps) != nil)
+}
+
+func renderPipelineViewWithPreview(run *ipc.RunInfo, steps []ipc.StepResultInfo, width, spinnerFrame, height int, inlinePreview bool) string {
 	if run == nil {
 		return "No active run."
 	}
@@ -177,13 +182,30 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 				line += " " + dimStyle.Render(errText)
 			}
 		}
+		fixedLabel := ""
 		if step.ReportedFindings > 0 && (step.FixedFindings > 0 || step.Status == types.StepStatusFixing) {
-			fixedLabel := dimStyle.Render(fmt.Sprintf("%d/%d fixed", step.FixedFindings, step.ReportedFindings))
-			line = appendRightLabel(line, fixedLabel, contentWidth)
+			fixedLabel = fmt.Sprintf("%d/%d fixed", step.FixedFindings, step.ReportedFindings)
 		}
 
-		b.WriteString(line)
-		b.WriteString("\n")
+		previewWidth := contentWidth - 2
+		if inlinePreview {
+			previewWidth = contentWidth - lipgloss.Width(line) - 2
+			if fixedLabel != "" {
+				previewWidth -= lipgloss.Width(fixedLabel) + 1
+			}
+		}
+		detail := documentPipelinePreview(step, previewWidth, inlinePreview && height > 0 && height < 24)
+		if inlinePreview && detail != "" {
+			line += "  " + dimStyle.Render(detail)
+		}
+		if fixedLabel != "" {
+			line = appendRightLabel(line, dimStyle.Render(fixedLabel), contentWidth)
+		}
+		b.WriteString(line + "\n")
+		if !inlinePreview && detail != "" {
+			b.WriteString("  ")
+			b.WriteString(dimStyle.Render(detail) + "\n")
+		}
 
 		// Connector between steps (suppressed in compact mode for small terminals).
 		if i < len(steps)-1 && height >= 30 {
@@ -199,6 +221,54 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString("\n" + errStyle.Render(errText) + "\n")
 	}
 	return renderBox("Pipeline", b.String(), boxWidth)
+}
+
+func documentPipelinePreview(step ipc.StepResultInfo, width int, pointerOnly bool) string {
+	if step.StepName != types.StepDocument {
+		return ""
+	}
+	switch step.Status {
+	case types.StepStatusAwaitingApproval, types.StepStatusFixReview, types.StepStatusCompleted:
+	default:
+		return ""
+	}
+	metadata := types.DocumentOffChangeMetadata(step.FindingsJSON)
+	if !metadata.HasDocumentOffChangePaths() {
+		return ""
+	}
+	const label = "Outside submission:"
+	const pointer = "see step log"
+	const suffix = " (see step log)"
+	if width < len(pointer) {
+		return ""
+	}
+	if pointerOnly || width < len(label)+len(suffix) {
+		return pointer
+	}
+	paths := make([]string, 0, len(metadata.DocumentOffChangePaths))
+	for _, path := range metadata.DocumentOffChangePaths {
+		if !strings.HasPrefix(path, `"`) {
+			path = strconv.Quote(path)
+		}
+		paths = append(paths, path)
+	}
+	if !metadata.DocumentOffChangeOmitted {
+		detail := label + " " + strings.Join(paths, ", ")
+		if lipgloss.Width(detail) <= width {
+			return detail
+		}
+	}
+	detail := label
+	for _, path := range paths {
+		part := " " + path
+		if detail != label {
+			part = "," + part
+		}
+		if lipgloss.Width(detail+part)+len(suffix) <= width {
+			detail += part
+		}
+	}
+	return detail + suffix
 }
 
 func appendRightLabel(line, label string, width int) string {

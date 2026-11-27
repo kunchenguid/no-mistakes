@@ -219,6 +219,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		rv.PRURL = *r.PRURL
 	}
 	for _, s := range steps {
+		findings := s.FindingsJSON
 		sv := stepView{
 			ID:             s.ID,
 			Name:           string(s.StepName),
@@ -241,12 +242,14 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 			sv.DurationMS = *s.DurationMS
 		}
 		if database != nil && s.StepName == types.StepDocument {
+			_, raw, _ := database.DocumentStepReport(s)
+			findings = raw
 			if combined, err := database.HasAgentInvocationPurpose(s.RunID, string(s.StepName), "housekeeping"); err == nil && combined {
 				sv.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
 			}
 		}
-		if s.FindingsJSON != nil {
-			sv.FindingsJSON = *s.FindingsJSON
+		if findings != nil {
+			sv.FindingsJSON = *findings
 		}
 		if reason := s.TestOverrideReason(); reason != "" {
 			rv.TestOverrideReason = reason
@@ -558,6 +561,10 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	sharedRows := make([]sharedWorkRow, 0, 1)
 	for _, s := range rv.Steps {
 		rows = append(rows, stepRow{Step: s.Name, Status: s.Status, Findings: s.findingCount(), DurationMS: s.DurationMS})
+		if s.Name == string(types.StepDocument) && s.Status != string(types.StepStatusAwaitingApproval) && s.Status != string(types.StepStatusFixReview) {
+			findings, _ := types.ParseFindingsJSON(s.FindingsJSON)
+			fields = appendDocumentOffChangeFields(fields, findings)
+		}
 		if s.WorkScope != "" {
 			sharedRows = append(sharedRows, sharedWorkRow{AttributedTo: s.Name, Scope: s.WorkScope, DurationMS: s.DurationMS})
 		}
@@ -731,6 +738,17 @@ func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	})
 }
 
+func appendDocumentOffChangeFields(fields []toon.Field, findings types.Findings) []toon.Field {
+	paths, omitted := types.DocumentOffChangePreview(findings.DocumentOffChangePaths)
+	if len(paths) > 0 {
+		fields = append(fields, toon.Field{Key: "document_off_change_paths", Value: paths})
+	}
+	if omitted || findings.DocumentOffChangeOmitted {
+		fields = append(fields, toon.Field{Key: "document_off_change_note", Value: types.DocumentOffChangeOmission})
+	}
+	return fields
+}
+
 func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	parsed, _ := types.ParseFindingsJSON(gate.FindingsJSON)
 	gfields := []toon.Field{
@@ -742,6 +760,9 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	}
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
+	}
+	if gate.Name == string(types.StepDocument) {
+		gfields = appendDocumentOffChangeFields(gfields, parsed)
 	}
 	// Point-of-use reminder at the review gate: review auto-fix defaults to
 	// disabled, so agents should expect blocking and ask-user findings to park

@@ -2,15 +2,45 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func composeOwnedPRContent(parts prOwnedBody, provider scm.Provider, title, appendix string, bodyLimit int, runWorktree, worktreesRoot string) (prContent, error) {
+	return composeOwnedPRContentWithPreview(parts, provider, title, prBodyVariants{full: appendix}, "", bodyLimit, runWorktree, worktreesRoot)
+}
+
+func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
+	return updateOwnedPRWithNarrative(sctx, host, pr, initial, title, emptyNarrative, appendix, bodyLimit, nil)
+}
+
+func updateOwnedPRWithNarrative(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int, suppliedNarrative *string) error {
+	return updateOwnedPRWithPreview(sctx, host, pr, initial, title, emptyNarrative, prBodyVariants{full: appendix}, bodyLimit, suppliedNarrative)
+}
+
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD, evidenceMD string) {
+	rendered, riskLine, testingMD, evidenceMD := s.buildPipelineSectionFor(sctx, provider, false)
+	return rendered.full, riskLine, testingMD, evidenceMD
+}
+
+func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
+	return s.fallbackPRContentWithPreview(sctx, finalDiff, riskLine, testingMD, prBodyVariants{full: pipelineMD}, evidenceMD, bodyLimit, provider)
+}
+
+func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	rendered, err := s.buildPRAppendixVariants(sctx, provider)
+	return rendered.full, err
+}
 
 func ownedFixture(t *testing.T) (prContent, string) {
 	t.Helper()
@@ -20,6 +50,184 @@ func ownedFixture(t *testing.T) (prContent, string) {
 		t.Fatal(err)
 	}
 	return content, appendix
+}
+
+func TestComposeOwnedPRContent_RefusesOversizedQuotedDocumentReport(t *testing.T) {
+	t.Parallel()
+	const provider = scm.ProviderAzureDevOps
+	const limit = 4000
+	sctx, _, _ := templateTestContext(t)
+	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["generated.md"]}`, "")
+	sctx.UserIntent = "Preserve this example from an earlier PR.\n\n" +
+		"<details>\n<summary>✅ **Document** - passed</summary>\n\n" +
+		"Paths Document committed outside the submitted change\n\n- <code>owner.md</code>\n\n" +
+		"✅ No issues found.\n</details>"
+	appendix, err := (&PRStep{}).buildPRAppendixVariants(sctx, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const generatedPath = "- <code>generated.md</code>"
+	if !strings.Contains(appendix.full, generatedPath) || appendix.withoutDocumentPreview == "" {
+		t.Fatal("fixture needs a generated preview and a preview-free appendix")
+	}
+	parts := prOwnedBody{before: "Author notes."}
+	withoutPreview, err := composeOwnedPRContent(parts, provider, "", appendix.withoutDocumentPreview, 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := limit - scm.PRBodyLen(withoutPreview.Body)
+	if padding < 0 {
+		t.Fatal("fixture needs the preview-free body to fit before padding")
+	}
+	parts.before += strings.Repeat("a", padding)
+	fitting, err := composeOwnedPRContentWithPreview(parts, provider, "", appendix, "", limit, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scm.PRBodyLen(fitting.Body) != limit || strings.Contains(fitting.Body, generatedPath) ||
+		!strings.Contains(fitting.Body, "## Intent\n\n"+sctx.UserIntent) {
+		t.Fatal("the fitting body should omit the generated preview and preserve the quoted Intent")
+	}
+	parts.before += "a"
+	if _, err := composeOwnedPRContentWithPreview(parts, provider, "", appendix, "", limit, "", ""); err == nil || !strings.Contains(err.Error(), "exceeds provider budget") {
+		t.Fatalf("expected the owned budget refusal for quoted Intent, got %v", err)
+	}
+}
+
+func TestPRBodyFitsByOmittingOnlyDocumentPreview(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		provider scm.Provider
+		limit    int
+		budget   int
+		mode     string
+	}{
+		{"draft/provider", scm.ProviderAzureDevOps, 4000, 4000, "draft"},
+		{"draft/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, "draft"},
+		{"owned/provider", scm.ProviderAzureDevOps, 4000, 4000, "kept"},
+		{"owned/global", scm.ProviderGitHub, 0, maxPullRequestBodyBytes, "kept"},
+		{"draft/bitbucket", scm.ProviderBitbucket, 0, maxPullRequestBodyBytes, "draft"},
+		{"fallback/bitbucket", scm.ProviderBitbucket, 0, maxPullRequestBodyBytes, "fallback"},
+		{"owned-update/bitbucket", scm.ProviderBitbucket, 0, maxPullRequestBodyBytes, "update"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx, ag, _ := templateTestContext(t)
+			sctx.Config.PR.Template = ""
+			if tc.provider == scm.ProviderBitbucket {
+				sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo"
+			}
+			doc := insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[]}`, "")
+			const title = "feat: document scope"
+			const body = "## What Changed\n\nAuthor note about `owner.md`."
+			step := &PRStep{}
+			draft := func(narrative string, limit int) (prContent, error) {
+				switch tc.mode {
+				case "kept":
+					return step.publishKeptDraft(sctx, tc.provider, title, narrative, limit)
+				case "fallback":
+					pipelineMD, risk, testing, evidence := step.buildPipelineSectionFor(sctx, tc.provider, false)
+					return step.fallbackPRContentWithPreview(sctx, narrative, risk, testing, pipelineMD, evidence, limit, tc.provider)
+				case "update":
+					appendix, err := step.buildPRAppendixVariants(sctx, tc.provider)
+					if err != nil {
+						return prContent{}, err
+					}
+					initial := scm.PRContent{Title: "Author title", Body: narrative + "\n\n" + wrapPRAppendix(carriedAttestation(appendix.full))}
+					host := &ownershipRaceHost{body: initial.Body}
+					err = updateOwnedPRWithPreview(sctx, host, &scm.PR{Number: "42"}, initial, "", "", appendix, limit, nil)
+					return prContent{Body: host.body}, err
+				}
+				ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					data, err := json.Marshal(prContent{Title: title, Body: narrative})
+					return &agent.Result{Output: data}, err
+				}
+				return step.buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, tc.provider, limit)
+			}
+			small, err := draft(body, tc.limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			measure := func(body string) int { return len(body) }
+			if tc.limit != 0 {
+				measure = scm.PRBodyLen
+			}
+			padding := tc.budget - measure(small.Body)
+			if padding <= 0 {
+				t.Fatalf("fixture needs padding to reach the budget: got size %d for budget %d", measure(small.Body), tc.budget)
+			}
+			narrative := body + strings.Repeat("a", padding)
+			want, err := draft(narrative, tc.limit)
+			if err != nil || measure(want.Body) != tc.budget {
+				t.Fatalf("fixture without report has size %d, want %d, err %v", measure(want.Body), tc.budget, err)
+			}
+			if tc.provider == scm.ProviderBitbucket && !strings.Contains(want.Body+"\n", "\n✅ **Document** - passed\n") {
+				t.Fatal("fixture without a report must use main's plain Bitbucket Document status row")
+			}
+
+			if err := sctx.DB.SetStepFindings(doc.ID, `{"findings":[],"document_off_change_paths":["owner.md"]}`); err != nil {
+				t.Fatal(err)
+			}
+			fitting, err := draft(body, tc.limit)
+			if err != nil || !strings.Contains(fitting.Body, "Paths Document committed outside the submitted change") {
+				t.Fatalf("fitting body omitted the preview: %v", err)
+			}
+			got, err := draft(narrative, tc.limit)
+			if err != nil {
+				t.Fatalf("Document preview blocked an otherwise-fitting body: %v", err)
+			}
+			if got.Body != want.Body {
+				t.Fatal("the limited body differs from the body rendered without the Document preview")
+			}
+		})
+	}
+}
+
+func TestAssembleDraftPRBody_OmitsDocumentPreviewBeforeBudgetFitting(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := templateTestContext(t)
+	insertCompletedStep(t, sctx, types.StepDocument, `{"findings":[],"document_off_change_paths":["README.md"]}`, "")
+	sctx.UserIntent = "Change the default setting."
+	sctx.ClosingIssueRefs = []string{"42"}
+	const (
+		whatChanged = "## What Changed\n\nUpdated settings."
+		risk        = "Low risk."
+		evidence    = "[Recorded evidence](https://example.com/evidence)"
+		testingEnd  = "End of recorded Testing evidence."
+	)
+	testingMD := "## Testing\n\n" + strings.Repeat("- Recorded test result.\n", 1400) + testingEnd
+	history := "\n<details>\n<summary>Earlier pipeline result</summary>\n\n" +
+		strings.Repeat("- Earlier pipeline finding.\n", 1300) + "</details>\n"
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed} {
+		sctx.Config.PR.Appendix = mode
+		for _, tc := range []struct {
+			name     string
+			provider scm.Provider
+			limit    int
+			history  string
+		}{
+			{"provider", scm.ProviderAzureDevOps, 4000, ""},
+			{"bytes", scm.ProviderGitHub, 0, history},
+			{"bytes-with-provider-limit", scm.ProviderGitHub, 65536, history},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				variants, _, _, _ := (&PRStep{}).buildPipelineSectionFor(sctx, tc.provider, false)
+				variants = variants.render(func(markdown string) string { return markdown + tc.history })
+				if !strings.Contains(variants.full, "README.md") || variants.withoutDocumentPreview == "" {
+					t.Fatal("fixture needs both generated Pipeline variants")
+				}
+				want := assembleDraftPRBody(sctx, whatChanged, risk, testingMD, variants.withoutDocumentPreview, evidence, tc.limit, tc.provider)
+				if tc.limit == 0 && mode == config.PRAppendixFull && !strings.Contains(want, testingEnd) {
+					t.Fatal("fixture needs the byte fitter to retain Testing while shortening Pipeline history")
+				}
+				got := assembleDraftPRBodyWithPreview(sctx, whatChanged, risk, testingMD, variants, evidence, tc.limit, tc.provider)
+				if got != want {
+					t.Fatalf("body differs from standard fitting without the preview: got %d bytes, want %d", len(got), len(want))
+				}
+			})
+		}
+	}
 }
 
 func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {
