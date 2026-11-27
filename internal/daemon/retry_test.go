@@ -460,6 +460,12 @@ func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {
 			}
 			return f.source.ID
 		}},
+		{name: "an agent timeout", proof: "eligible failure", reason: "outside retry's scope", breakProof: func(t *testing.T, f *retryFixture) string {
+			if err := f.d.FailStep(f.stepRow(t, types.StepReview).ID, "review agent: agent timed out after 30m0s", 1); err != nil {
+				t.Fatal(err)
+			}
+			return f.source.ID
+		}},
 		{name: "an incomplete record", proof: "durable checkpoint", breakProof: func(t *testing.T, f *retryFixture) string {
 			if err := f.d.CompleteStepWithStatus(f.stepRow(t, types.StepTest).ID, types.StepStatusCompleted, 0, 1, ""); err != nil {
 				t.Fatal(err)

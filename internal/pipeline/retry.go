@@ -138,7 +138,7 @@ func PlanRetryCheckpoint(database *db.DB, run *db.Run, steps []Step) (*RetryChec
 		return planDeliveryCheckpoint(database, run, rows, failed)
 	}
 	if row.FailureCause == nil || *row.FailureCause != db.StepFailureCauseAgentInvocation {
-		return nil, refuseCheckpoint(RetryProofCause, "step %s did not fail on an agent invocation error (provider, transport, or agent process), so the failure may be about the change itself", row.StepName)
+		return nil, refuseCheckpoint(RetryProofCause, "step %s did not fail on an agent invocation error (provider, transport, or agent process), so it is outside retry's scope: retry never continues an agent timeout, a cancellation, or a failure about the change itself; an agent timeout is retried only inside the live run, by the global `agent_crash_retries` setting", row.StepName)
 	}
 	for _, carried := range rows[:failed] {
 		if carried.StepName.Order() >= types.StepTest.Order() {

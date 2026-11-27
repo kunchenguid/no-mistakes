@@ -216,6 +216,29 @@ func TestPlanRetryCheckpointRefusesAnUnprovenBoundary(t *testing.T) {
 	}
 }
 
+func TestPlanRetryCheckpointRefusalNamesTheSettingThatRetriesATimeout(t *testing.T) {
+	core := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint}
+	database, _, _, repo := setupTest(t)
+	run := failedSourceRun(t, database, repo, core, types.StepLint)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FailStep(steps[4].ID, "agent lint: agent timed out after 30m0s", 10); err != nil {
+		t.Fatal(err)
+	}
+	_, err = PlanRetryCheckpoint(database, run, stepsNamed(core...))
+	var refusal *RetryRefusal
+	if !errors.As(err, &refusal) || refusal.Proof != RetryProofCause {
+		t.Fatalf("err = %v, want a refusal on the %s proof", err, RetryProofCause)
+	}
+	for _, want := range []string{"step lint did not fail on an agent invocation error", "outside retry's scope", "agent timeout", "`agent_crash_retries`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestPlanRetryCheckpointNeverCarriesTestOrALaterStep(t *testing.T) {
 	core := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument}
 	database, _, _, repo := setupTest(t)
