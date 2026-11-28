@@ -1,32 +1,19 @@
 package intent
 
 import (
-	"regexp"
 	"strings"
-)
 
-// secretPatterns redacts common credential shapes before transcript text
-// reaches the summarizer. Matching is intentionally loose - we'd rather
-// redact a few innocent strings than leak a real key.
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|secret[_-]?(?:key|token)?|password|passwd|bearer|authorization)\s*[:=]\s*['"]?([A-Za-z0-9_\-./+=]{12,})`),
-	regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`ghp_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`gho_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`),
-	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
-	regexp.MustCompile(`eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+`),
-}
+	"github.com/kunchenguid/no-mistakes/internal/safesecret"
+)
 
 // RedactSecrets returns text with likely credentials replaced by [REDACTED].
 // Exported for use at prompt-construction boundaries outside this package
 // (e.g. when injecting cached intent summaries into step prompts) so the
 // same redaction shape applies on the way into the LLM and on the way out.
+// The patterns are owned by internal/safesecret, which the evidence publish
+// path shares.
 func RedactSecrets(text string) string {
-	for _, pat := range secretPatterns {
-		text = pat.ReplaceAllString(text, "[REDACTED]")
-	}
-	return text
+	return safesecret.Redact(text)
 }
 
 // redactSecrets is the unexported shim retained for in-package callers

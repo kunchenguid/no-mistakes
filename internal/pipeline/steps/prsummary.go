@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/safesecret"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -34,7 +35,10 @@ func prBodyFlavorFor(provider scm.Provider) prBodyFlavor {
 }
 
 const (
-	maxEmbeddedArtifactBytes               = 16 * 1024
+	maxEmbeddedArtifactBytes = 16 * 1024
+	// maxRedactedArtifactsTotalBytes caps the evidence bytes one testing
+	// section reads whole for redaction, across all its embedded files.
+	maxRedactedArtifactsTotalBytes         = 8 << 20
 	maxEmbeddedArtifactsTotalBytes         = 32 * 1024
 	noMistakesPRSignature                  = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
 	pipelineAttestationCommentPrefix       = "<!-- no-mistakes-pipeline-attestation:v1 "
@@ -82,6 +86,7 @@ type pipelineAttestationLiveValidation struct {
 
 type testingArtifactRenderState struct {
 	remainingEmbeddedBytes int
+	remainingReadBytes     int64
 }
 
 type testingSummaryOptions struct {
@@ -429,7 +434,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 		}
-		renderState := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes}
+		renderState := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes, remainingReadBytes: maxRedactedArtifactsTotalBytes}
 		previousArtifact := ""
 		previousAttachment := false
 		for _, artifact := range artifacts {
@@ -616,7 +621,7 @@ func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool
 		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
 		artifact.Path = sanitizeArtifactPath(artifact.Path, opts)
 		artifact.URL = sanitizeArtifactURL(artifact.URL)
-		artifact.Content = sanitizePromptMultilineText(artifact.Content)
+		artifact.Content = safesecret.RedactEvidence(sanitizePromptMultilineText(artifact.Content))
 		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
 		if artifact.Label == "" || seen[key] {
 			continue
@@ -826,10 +831,12 @@ func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) st
 	return fmt.Sprintf("![%s](%s)\n", markdownAltText(label), url)
 }
 
-// embeddedArtifactText reads a file artifact and returns its text content,
-// truncated from the middle when it exceeds maxEmbeddedArtifactBytes. ok is
-// false when the artifact has no path, points at an image/video, resolves
-// outside the allowed roots, is missing, empty, or is not UTF-8 text.
+// embeddedArtifactText reads a file artifact and returns its text content with
+// likely credentials redacted (see readEmbeddedArtifactText), truncated from
+// the middle when it exceeds maxEmbeddedArtifactBytes. ok is false when the
+// artifact has no path, points at an image/video, resolves outside the allowed
+// roots, is missing, empty, larger than the read budget left in state, or is
+// not UTF-8 text.
 func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) (string, bool) {
 	if artifact.Path == "" {
 		return "", false
@@ -844,7 +851,7 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if fsPath == "" {
 		return "", false
 	}
-	text, err := readEmbeddedArtifactText(fsPath)
+	text, err := readEmbeddedArtifactText(fsPath, &state.remainingReadBytes)
 	if err != nil {
 		return "", false
 	}
@@ -875,41 +882,35 @@ func artifactFilesystemPath(p string, opts testingSummaryOptions) string {
 	return p
 }
 
-func readEmbeddedArtifactText(fsPath string) (string, error) {
+func readEmbeddedArtifactText(fsPath string, readBudget *int64) (string, error) {
 	info, err := os.Stat(fsPath)
 	if err != nil || info.IsDir() {
 		return "", err
 	}
-	if info.Size() <= int64(maxEmbeddedArtifactBytes) {
-		data, err := os.ReadFile(fsPath)
-		if err != nil || !looksLikeTextArtifact(data) {
-			return "", err
-		}
-		return neutralizePRControls(string(data)), nil
+	// Credential redaction runs on the whole file before the middle cut: a
+	// cut can then only split a [REDACTED] marker, never a secret whose
+	// pattern needs both sides ("Authorization:" and its value, a HAR name
+	// line and its value line). Every file read draws on readBudget, and a
+	// file larger than what is left is not embedded, so the read and redact
+	// work stays bounded even when later files no longer fit the output.
+	if info.Size() > *readBudget {
+		return "", nil
 	}
-
-	file, err := os.Open(fsPath)
-	if err != nil {
+	*readBudget -= info.Size()
+	data, err := os.ReadFile(fsPath)
+	if err != nil || !looksLikeTextArtifact(data) {
 		return "", err
 	}
-	defer file.Close()
+	text := safesecret.RedactEvidence(string(data))
+	if len(text) <= maxEmbeddedArtifactBytes {
+		return neutralizePRControls(text), nil
+	}
 
 	headSize := maxEmbeddedArtifactBytes / 2
 	tailSize := maxEmbeddedArtifactBytes - headSize
-	head := make([]byte, headSize)
-	if _, err := file.ReadAt(head, 0); err != nil {
-		return "", err
-	}
-	tail := make([]byte, tailSize)
-	if _, err := file.ReadAt(tail, info.Size()-int64(tailSize)); err != nil {
-		return "", err
-	}
-	head = trimUTF8End(head)
-	tail = trimUTF8Start(tail)
-	if !looksLikeTextArtifact(head) || !looksLikeTextArtifact(tail) {
-		return "", nil
-	}
-	omitted := info.Size() - int64(len(head)+len(tail))
+	head := trimUTF8End([]byte(text[:headSize]))
+	tail := trimUTF8Start([]byte(text[len(text)-tailSize:]))
+	omitted := len(text) - (len(head) + len(tail))
 	return neutralizePRControls(string(head) + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + string(tail)), nil
 }
 

@@ -925,6 +925,39 @@ func TestBuildTestingSummaryForPR_EmbedsLocalTextEvidenceContent(t *testing.T) {
 	}
 }
 
+// TestBuildTestingSummaryForPR_RedactsSecretsInArtifactContent pins that a
+// credential the test agent captured, either inline as artifact content or in
+// an embedded evidence file, never reaches the PR body. The PAT-shaped value
+// is built at runtime so the source tree holds no literal.
+func TestBuildTestingSummaryForPR_RedactsSecretsInArtifactContent(t *testing.T) {
+	t.Parallel()
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	fileBody := "> GET /api/me\n> Cookie: session=s3cr3t-session-value\n< 200 OK"
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Login log","content":"Authorization: Bearer %s\nlogin ok"},{"kind":"log","label":"HTTP trace","path":%q}]}`, pat, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+	t.Logf("rendered PR testing markdown:\n%s", md)
+
+	for _, secret := range []string{pat, "s3cr3t-session-value"} {
+		if strings.Contains(md, secret) {
+			t.Fatalf("did not expect secret %q in the PR body, got:\n%s", secret, md)
+		}
+	}
+	for _, kept := range []string{"[REDACTED]\nlogin ok", "> GET /api/me\n> [REDACTED]\n< 200 OK"} {
+		if !strings.Contains(md, kept) {
+			t.Fatalf("expected redacted evidence %q to stay in the PR body, got:\n%s", kept, md)
+		}
+	}
+}
+
 func TestBuildTestingSummaryForPR_PreservesPublicURLForEmbeddedTextEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
@@ -1057,6 +1090,168 @@ func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testin
 	}
 	if len(md) >= len(fileBody) {
 		t.Fatalf("expected rendered output to be shorter than the full file (%d bytes), got %d", len(fileBody), len(md))
+	}
+}
+
+// TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret pins that a
+// middle-truncated file is redacted whole before the middle cut: redacting
+// after the cut would leave the head ending mid-token (too short to match)
+// and the tail starting mid-header ("ization: Bearer ..."), and both leak.
+func TestBuildTestingSummaryForPR_TruncationCutCannotSplitASecret(t *testing.T) {
+	t.Parallel()
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	headSize := maxEmbeddedArtifactBytes / 2
+	tailSize := maxEmbeddedArtifactBytes - headSize
+	// The head cut falls 15 bytes into the PAT.
+	headLine := strings.Repeat("h", headSize-len("token ")-15-1) + "\n"
+	patLine := "token " + pat + "\n"
+	// The tail cut falls 10 bytes into the Authorization line.
+	authLine := "> Authorization: Bearer opaque-tail-token-77\n"
+	suffix := strings.Repeat("c", tailSize+10-len(authLine)-1) + "\n"
+	fileBody := headLine + patLine + strings.Repeat("m\n", 20*1024) + authLine + suffix
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"HTTP trace","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	if !strings.Contains(md, "bytes truncated") {
+		t.Fatalf("expected the file to be middle-truncated, got:\n%s", md[:min(len(md), 600)])
+	}
+	for _, leak := range []string{pat[:len("ghp_")+11], "opaque-tail-token-77"} {
+		if strings.Contains(md, leak) {
+			t.Fatalf("did not expect %q in the PR body", leak)
+		}
+	}
+}
+
+// TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret
+// covers a cut with no line break on either side (a large one-line JSON
+// response): the whole file is redacted before the middle cut, so neither
+// side can publish a secret split mid-token.
+func TestBuildTestingSummaryForPR_TruncationOfOneLineFileCannotLeakASecret(t *testing.T) {
+	t.Parallel()
+	pat := "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	headSize := maxEmbeddedArtifactBytes / 2
+	tailSize := maxEmbeddedArtifactBytes - headSize
+	// The head cut falls 15 bytes into the PAT, the tail cut 10 bytes into
+	// the Authorization value, and the file has no line break at all.
+	start := strings.Repeat("h", headSize-len(`{"t":"`)-15) + `{"t":"` + pat + `",`
+	end := `"h":"Authorization: Bearer opaque-tail-token-77"`
+	end += strings.Repeat("c", tailSize+10-len(end)) + "}"
+	fileBody := start + strings.Repeat("m", 40*1024) + end
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "response.json", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"API response","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	for _, leak := range []string{pat[:len("ghp_")+11], "opaque-tail", "tail-token-77"} {
+		if strings.Contains(md, leak) {
+			t.Fatalf("did not expect %q in the PR body", leak)
+		}
+	}
+}
+
+// TestBuildTestingSummaryForPR_TruncationCannotSplitAHARHeader covers a
+// pretty-printed HAR file whose tail cut lands inside the "name" line of an
+// Authorization entry: the value line alone matches no pattern, so the file
+// has to be redacted before it is cut.
+func TestBuildTestingSummaryForPR_TruncationCannotSplitAHARHeader(t *testing.T) {
+	t.Parallel()
+	tailSize := maxEmbeddedArtifactBytes - maxEmbeddedArtifactBytes/2
+	nameLine := "      \"name\": \"Authorization\",\n"
+	entry := nameLine + "      \"value\": \"Bearer opaque-okta-token\"\n    }\n"
+	suffix := strings.Repeat("    {\"name\": \"Accept\", \"value\": \"*/*\"},\n", tailSize/60)
+	// The tail cut falls 10 bytes before the end of the name line.
+	pad := tailSize - (len(entry) - len(nameLine) + 10) - len(suffix)
+	suffix += strings.Repeat(" ", pad-1) + "\n"
+	fileBody := "{\"log\": {\"entries\": [\n" + strings.Repeat("    {},\n", 4*1024) + "    {\n" + entry + suffix
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.har", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"HAR trace","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	if !strings.Contains(md, "bytes truncated") {
+		t.Fatalf("expected the file to be middle-truncated, got:\n%s", md[:min(len(md), 600)])
+	}
+	if strings.Contains(md, "opaque-okta-token") {
+		t.Fatalf("did not expect the HAR token in the PR body")
+	}
+}
+
+// TestBuildTestingSummaryForPR_RedactsReorderedHARHeaderEntry pins that an
+// embedded HAR header entry with "value" before "name" is redacted too.
+func TestBuildTestingSummaryForPR_RedactsReorderedHARHeaderEntry(t *testing.T) {
+	t.Parallel()
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	body := "{\"headers\": [\n  {\"value\": \"sid=opaque-session-42\", \"name\": \"Cookie\"}\n]}\n"
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "trace.har", []byte(body))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"HAR trace","path":%q},{"label":"Inline HAR","content":"{\"value\":\"sid=opaque-inline-43\",\"name\":\"Cookie\"}"}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil)
+
+	if !strings.Contains(md, "{[REDACTED]}") {
+		t.Fatalf("expected the HAR entry to be embedded redacted, got:\n%s", md)
+	}
+	for _, leak := range []string{"opaque-session-42", "opaque-inline-43"} {
+		if strings.Contains(md, leak) {
+			t.Fatalf("did not expect %q in the PR body", leak)
+		}
+	}
+}
+
+// TestReadEmbeddedArtifactTextDrawsOnOneReadBudget pins that every read
+// spends the shared budget by the file's size, and that a file larger than
+// what is left is not read at all, while a later file that fits still is.
+func TestReadEmbeddedArtifactTextDrawsOnOneReadBudget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	first := write("first.txt", strings.Repeat("a", 60))
+	tooBig := write("big.txt", strings.Repeat("b", 50))
+	small := write("small.txt", strings.Repeat("c", 40))
+
+	budget := int64(100)
+	if got, err := readEmbeddedArtifactText(first, &budget); err != nil || got != strings.Repeat("a", 60) || budget != 40 {
+		t.Fatalf("first = %q, %v, budget %d; want it read and the budget at 40", got, err, budget)
+	}
+	if got, err := readEmbeddedArtifactText(tooBig, &budget); err != nil || got != "" || budget != 40 {
+		t.Fatalf("over-budget = %q, %v, budget %d; want it skipped and the budget kept at 40", got, err, budget)
+	}
+	if got, err := readEmbeddedArtifactText(small, &budget); err != nil || got != strings.Repeat("c", 40) || budget != 0 {
+		t.Fatalf("small = %q, %v, budget %d; want it read and the budget at 0", got, err, budget)
 	}
 }
 

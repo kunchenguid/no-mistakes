@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
+	"github.com/kunchenguid/no-mistakes/internal/safesecret"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
@@ -209,15 +210,22 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 // its blob id. A readable UTF-8 text file first gets the same home-directory
 // redaction the PR title and body get, because captured command output carries
 // absolute paths under the operator's home, after the run worktree paths are
-// rewritten. Binary and visual artifacts, and the local file itself, are left
-// untouched.
+// rewritten. Any file without NUL bytes then gets credential redaction
+// (safesecret.RedactEvidence), because a captured HTTP trace or verbose command output
+// can carry a live token, and one stray non-UTF-8 byte in such a log must not
+// let it through raw; the regexp copies every unmatched byte as is. Binary
+// artifacts (NUL bytes) and the local file itself are left untouched.
 func hashEvidenceFile(ctx context.Context, req Request, env []string, abs string) (string, error) {
 	content, err := os.ReadFile(abs)
 	if err != nil {
 		return "", err
 	}
-	if utf8.Valid(content) && !bytes.Contains(content, []byte{0}) {
-		redacted := safepath.RedactText(safepath.RedactWorktrees(string(content), req.RunWorktree, req.WorktreesRoot))
+	if !bytes.Contains(content, []byte{0}) {
+		redacted := string(content)
+		if utf8.Valid(content) {
+			redacted = safepath.RedactText(safepath.RedactWorktrees(redacted, req.RunWorktree, req.WorktreesRoot))
+		}
+		redacted = safesecret.RedactEvidence(redacted)
 		if redacted != string(content) {
 			return git.RunWithInput(ctx, req.RepoDir, redacted, "hash-object", "-w", "--stdin")
 		}

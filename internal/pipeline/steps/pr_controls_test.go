@@ -117,7 +117,8 @@ func TestReadEmbeddedArtifactTextNeutralizesControls(t *testing.T) {
 	if err := os.WriteFile(small, []byte("Ready in 576ms\n \x1b[32mPOST\x1b[39m 200\n\x1b[?25h"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := readEmbeddedArtifactText(small)
+	budget := int64(maxRedactedArtifactsTotalBytes)
+	got, err := readEmbeddedArtifactText(small, &budget)
 	if err != nil || got != "Ready in 576ms\n POST 200\n" {
 		t.Fatalf("small = %q, %v", got, err)
 	}
@@ -126,7 +127,7 @@ func TestReadEmbeddedArtifactTextNeutralizesControls(t *testing.T) {
 	if err := os.WriteFile(large, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err = readEmbeddedArtifactText(large)
+	got, err = readEmbeddedArtifactText(large, &budget)
 	if err != nil || strings.ContainsAny(got, "\x1b\x07") || !strings.HasPrefix(got, "head\n") || !strings.Contains(got, "bytes truncated") {
 		t.Fatalf("large = %q..., %v", got[:min(len(got), 60)], err)
 	}

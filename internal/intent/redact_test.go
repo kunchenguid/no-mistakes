@@ -47,7 +47,7 @@ func TestRedactSecrets(t *testing.T) {
 // (not just a partial match somewhere inside it) proves the concatenated
 // value is recognized as a genuine credential, the same as a real GitHub PAT
 // or AWS access key would be. If a future edit shortens or further splits
-// either fixture so it stops matching the real secretPatterns entries, this
+// either fixture so it stops matching the real safesecret patterns, this
 // fails loudly instead of the redaction tests above silently degrading into
 // testing nothing.
 func TestFakeCredentialFixturesStillMatchRealShapes(t *testing.T) {
