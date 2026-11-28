@@ -69,6 +69,10 @@ const (
 	// reconciliation check (including host.Available / gh auth status).
 	// Global-config-only; a pushed branch cannot change it.
 	DefaultGateReconcileTimeout = 30 * time.Second
+	// DefaultCandidateStartupTimeout is the deadline for an agent in a
+	// multi-agent fallback chain to produce its first output before it is
+	// treated as unavailable and fallback advances to the next candidate.
+	DefaultCandidateStartupTimeout = 2 * time.Minute
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, handed off, or aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -243,6 +247,7 @@ type GlobalConfig struct {
 	AgentWorkingTimeout       time.Duration `yaml:"-"`
 	ReviewAgentWorkingTimeout time.Duration `yaml:"-"`
 	TestAgentWorkingTimeout   time.Duration `yaml:"-"`
+	CandidateStartupTimeout   time.Duration `yaml:"-"`
 	DaemonConnectTimeout      time.Duration `yaml:"-"`
 	BranchSyncRemoteTimeout   time.Duration `yaml:"-"`
 	// GateReconcileInterval / GateReconcileTimeout bound how often and how
@@ -326,6 +331,7 @@ type globalConfigRaw struct {
 	AgentWorkingTimeout       string                     `yaml:"agent_working_timeout"`
 	ReviewAgentWorkingTimeout string                     `yaml:"review_agent_working_timeout"`
 	TestAgentWorkingTimeout   string                     `yaml:"test_agent_working_timeout"`
+	CandidateStartupTimeout   string                     `yaml:"candidate_startup_timeout"`
 	LogLevel                  string                     `yaml:"log_level"`
 	EvidenceDir               string                     `yaml:"evidence_dir"`
 	SessionReuse              *bool                      `yaml:"session_reuse"`
@@ -1018,6 +1024,7 @@ type Config struct {
 	AgentWorkingTimeout       time.Duration
 	ReviewAgentWorkingTimeout time.Duration
 	TestAgentWorkingTimeout   time.Duration
+	CandidateStartupTimeout   time.Duration
 	GateReconcileInterval     time.Duration
 	GateReconcileTimeout      time.Duration
 	LogLevel                  string
@@ -1747,6 +1754,12 @@ test_agent_timeout: "30m"
 # Optional still-working cap for Test. Unset means no extension past
 # test_agent_timeout. Must be at least test_agent_timeout.
 # test_agent_working_timeout: "1h"
+
+# Maximum time an earlier fallback candidate agent may run without producing any
+# text output or lifecycle activity before falling back to the next candidate.
+# Disabled for the final candidate in the list.
+# Set to "off", "none", or "0" to disable candidate startup deadlines.
+candidate_startup_timeout: "2m"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
@@ -2714,6 +2727,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		AgentTimeout:            DefaultAgentTimeout,
 		ReviewAgentTimeout:      DefaultReviewAgentTimeout,
 		TestAgentTimeout:        DefaultTestAgentTimeout,
+		CandidateStartupTimeout: DefaultCandidateStartupTimeout,
 		DaemonConnectTimeout:    DefaultDaemonConnectTimeout,
 		BranchSyncRemoteTimeout: DefaultBranchSyncRemoteTimeout,
 		GateReconcileInterval:   DefaultGateReconcileInterval,
@@ -3058,6 +3072,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		cfg.TestAgentWorkingTimeout = d
 		configuredTimeout = true
 	}
+	if raw.CandidateStartupTimeout != "" {
+		d, err := parseCandidateStartupTimeout("candidate_startup_timeout", raw.CandidateStartupTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.CandidateStartupTimeout = d
+	}
 	cfg.AgentTimeoutsConfigured = configuredTimeout
 	if err := validateWorkingCap("agent_working_timeout", "agent_timeout", cfg.AgentWorkingTimeout, cfg.AgentTimeout); err != nil {
 		return nil, err
@@ -3256,6 +3277,22 @@ func parseCITimeout(value string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return CITimeoutUnlimited, nil
+	}
+	return d, nil
+}
+
+func parseCandidateStartupTimeout(name, value string) (time.Duration, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "off", "none", "disabled", "0", "0s":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s %q: %w", name, value, err)
+	}
+	if d <= 0 {
+		return 0, nil
 	}
 	return d, nil
 }
@@ -4445,6 +4482,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		AgentWorkingTimeout:       global.AgentWorkingTimeout,
 		ReviewAgentWorkingTimeout: global.ReviewAgentWorkingTimeout,
 		TestAgentWorkingTimeout:   global.TestAgentWorkingTimeout,
+		CandidateStartupTimeout:   global.CandidateStartupTimeout,
 		GateReconcileInterval:     global.GateReconcileInterval,
 		GateReconcileTimeout:      global.GateReconcileTimeout,
 		LogLevel:                  global.LogLevel,

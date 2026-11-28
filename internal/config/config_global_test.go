@@ -35,6 +35,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.TestAgentTimeout != DefaultTestAgentTimeout {
 		t.Errorf("test_agent_timeout = %v, want %v", cfg.TestAgentTimeout, DefaultTestAgentTimeout)
 	}
+	if cfg.CandidateStartupTimeout != DefaultCandidateStartupTimeout {
+		t.Errorf("candidate_startup_timeout = %v, want %v", cfg.CandidateStartupTimeout, DefaultCandidateStartupTimeout)
+	}
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
 	}
@@ -76,6 +79,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"review_agent_timeout:",
 		"agent_timeout:",
 		"test_agent_timeout:",
+		"candidate_startup_timeout:",
 		"daemon_connect_timeout:",
 		"branch_sync_remote_timeout:",
 		"log_level: info",
@@ -116,6 +120,9 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 	if cfg.TestAgentTimeout != DefaultTestAgentTimeout {
 		t.Errorf("test_agent_timeout = %v, want %v", cfg.TestAgentTimeout, DefaultTestAgentTimeout)
+	}
+	if cfg.CandidateStartupTimeout != DefaultCandidateStartupTimeout {
+		t.Errorf("candidate_startup_timeout = %v, want %v", cfg.CandidateStartupTimeout, DefaultCandidateStartupTimeout)
 	}
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
@@ -849,3 +856,65 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
 	}
 }
+
+func TestLoadGlobal_CandidateStartupTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		want    time.Duration
+		wantErr bool
+	}{
+		{
+			name: "custom duration",
+			yaml: "candidate_startup_timeout: 45s\n",
+			want: 45 * time.Second,
+		},
+		{
+			name: "off disables timeout",
+			yaml: "candidate_startup_timeout: off\n",
+			want: 0,
+		},
+		{
+			name: "0 disables timeout",
+			yaml: "candidate_startup_timeout: 0\n",
+			want: 0,
+		},
+		{
+			name: "none disables timeout",
+			yaml: "candidate_startup_timeout: none\n",
+			want: 0,
+		},
+		{
+			name: "disabled disables timeout",
+			yaml: "candidate_startup_timeout: disabled\n",
+			want: 0,
+		},
+		{
+			name:    "invalid duration returns error",
+			yaml:    "candidate_startup_timeout: invalid_timeout\n",
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadGlobal(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.CandidateStartupTimeout != tc.want {
+				t.Errorf("CandidateStartupTimeout = %v, want %v", cfg.CandidateStartupTimeout, tc.want)
+			}
+		})
+	}
+}
+
