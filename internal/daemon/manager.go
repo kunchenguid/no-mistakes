@@ -486,6 +486,7 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 		}
 		fallbackOpts = append(fallbackOpts, agent.WithQuotaSwitch(start))
 	}
+	fallbackOpts = append(fallbackOpts, agent.WithCandidateStartupTimeout(cfg.CandidateStartupTimeout))
 	ag := agent.NewFallback(created, fallbackOpts...)
 	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
 	// unverified harness when the repo disabled project settings; otherwise run

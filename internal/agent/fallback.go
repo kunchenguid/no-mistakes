@@ -11,18 +11,37 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// DefaultCandidateStartupTimeout is the maximum duration a candidate agent
+// with fallback alternatives may run without producing observable output
+// before it is considered unavailable.
+const DefaultCandidateStartupTimeout = 2 * time.Minute
+
+// ErrCandidateStartupTimeout is returned when a candidate agent produces no
+// observable output within its startup deadline while fallback candidates remain.
+var ErrCandidateStartupTimeout = errors.New("candidate startup deadline exceeded: agent produced no output")
+
 type fallbackAgent struct {
-	agents            []Agent
-	quotaSwitch       bool
-	position          atomic.Int64
-	freshSession      atomic.Bool
-	reviewerQuotaOnly bool
-	exhausted         atomic.Bool
-	configuredModels  []string
+	agents                  []Agent
+	quotaSwitch             bool
+	position                atomic.Int64
+	freshSession            atomic.Bool
+	reviewerQuotaOnly       bool
+	exhausted               atomic.Bool
+	configuredModels        []string
+	candidateStartupTimeout time.Duration
 }
 
 // FallbackOption customizes a fallback chain.
 type FallbackOption func(*fallbackAgent)
+
+// WithCandidateStartupTimeout sets the deadline for a candidate agent to produce
+// its first output before falling back to the next candidate. A non-positive
+// duration disables candidate startup timeouts.
+func WithCandidateStartupTimeout(d time.Duration) FallbackOption {
+	return func(f *fallbackAgent) {
+		f.candidateStartupTimeout = d
+	}
+}
 
 // WithReviewerQuotaFallback enables an operator-owned reviewer chain. Unlike
 // general fallback, it advances only on recognized quota exhaustion and never
@@ -65,11 +84,27 @@ func NewFallback(agents []Agent, opts ...FallbackOption) Agent {
 	}
 	copied := make([]Agent, len(agents))
 	copy(copied, agents)
-	f := &fallbackAgent{agents: copied}
+	f := &fallbackAgent{
+		agents:                  copied,
+		candidateStartupTimeout: DefaultCandidateStartupTimeout,
+	}
 	for _, opt := range opts {
 		opt(f)
 	}
 	return f
+}
+
+func (a *fallbackAgent) startupTimeout(opts RunOpts) time.Duration {
+	if opts.CandidateStartupTimeout > 0 {
+		return opts.CandidateStartupTimeout
+	}
+	if opts.CandidateStartupTimeout < 0 {
+		return 0
+	}
+	if a.candidateStartupTimeout > 0 {
+		return a.candidateStartupTimeout
+	}
+	return 0
 }
 
 func (a *fallbackAgent) Name() string {
@@ -175,8 +210,72 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (result *Result, 
 				currentOpts.SessionFallback = false
 			}
 		}
+		startupTimeout := a.startupTimeout(opts)
+		startupDeadlineOn := !a.reviewerQuotaOnly && i < len(candidates)-1 && startupTimeout > 0
+
+		runCtx := ctx
+		var (
+			cancelCandidate context.CancelCauseFunc
+			disarmTimer     func()
+			startupTimedOut atomic.Bool
+		)
+
+		if startupDeadlineOn {
+			var cancel context.CancelCauseFunc
+			runCtx, cancel = context.WithCancelCause(ctx)
+			cancelCandidate = cancel
+
+			var (
+				disarmed atomic.Bool
+				timer    *time.Timer
+			)
+			disarmTimer = func() {
+				if disarmed.CompareAndSwap(false, true) {
+					if timer != nil {
+						timer.Stop()
+					}
+				}
+			}
+			timer = time.AfterFunc(startupTimeout, func() {
+				if !disarmed.Load() && startupTimedOut.CompareAndSwap(false, true) {
+					cancelCandidate(ErrCandidateStartupTimeout)
+				}
+			})
+
+			origChunk := currentOpts.OnChunk
+			currentOpts.OnChunk = func(text string) {
+				if text != "" {
+					disarmTimer()
+				}
+				if origChunk != nil {
+					origChunk(text)
+				}
+			}
+
+			origLifecycle := currentOpts.OnLifecycle
+			currentOpts.OnLifecycle = func(event LifecycleEvent) {
+				if event.Phase == LifecyclePhaseActivity {
+					disarmTimer()
+				}
+				if origLifecycle != nil {
+					origLifecycle(event)
+				}
+			}
+		}
+
 		startedAt := time.Now()
-		result, err := current.Run(ctx, currentOpts)
+		result, err := current.Run(runCtx, currentOpts)
+		if startupDeadlineOn {
+			disarmTimer()
+			cancelCandidate(nil)
+			if startupTimedOut.Load() && context.Cause(ctx) == nil {
+				if err == nil {
+					err = ErrCandidateStartupTimeout
+				} else {
+					err = fmt.Errorf("%w: %v", ErrCandidateStartupTimeout, err)
+				}
+			}
+		}
 		quotaExhausted := a.quotaSwitch && IsQuotaExhaustionError(err)
 		if err != nil {
 			if result == nil {
@@ -274,6 +373,9 @@ func isAgentUnavailableError(err error) bool {
 	}
 	var incompatibility *codexSchemaIncompatibility
 	if errors.As(err, &incompatibility) {
+		return true
+	}
+	if errors.Is(err, ErrCandidateStartupTimeout) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())

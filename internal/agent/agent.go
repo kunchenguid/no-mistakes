@@ -79,6 +79,10 @@ type RunOpts struct {
 	// only and must not change invocation behavior.
 	OnAttempt       func(Attempt)
 	ConfiguredModel string
+	// CandidateStartupTimeout overrides the per-candidate startup deadline
+	// for this invocation. A positive duration enforces that deadline; a
+	// negative duration disables startup deadlines for this invocation.
+	CandidateStartupTimeout time.Duration
 }
 
 // IsStructuredOutputRejected reports whether an invocation completed but its

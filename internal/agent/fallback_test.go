@@ -9,17 +9,21 @@ import (
 )
 
 type fallbackTestAgent struct {
-	name      string
-	run       func() (*Result, error)
-	runCtx    func(context.Context) (*Result, error)
-	calls     int
-	resumable bool
+	name        string
+	run         func() (*Result, error)
+	runCtx      func(context.Context) (*Result, error)
+	runWithOpts func(context.Context, RunOpts) (*Result, error)
+	calls       int
+	resumable   bool
 }
 
 func (a *fallbackTestAgent) Name() string { return a.name }
 
-func (a *fallbackTestAgent) Run(ctx context.Context, _ RunOpts) (*Result, error) {
+func (a *fallbackTestAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	a.calls++
+	if a.runWithOpts != nil {
+		return a.runWithOpts(ctx, opts)
+	}
 	if a.runCtx != nil {
 		return a.runCtx(ctx)
 	}
@@ -250,5 +254,166 @@ func TestFallbackAgent_AlreadyExpiredContextStartsNoCandidate(t *testing.T) {
 	}
 	if first.calls != 0 || second.calls != 0 {
 		t.Fatalf("calls = first %d second %d, want 0/0", first.calls, second.calls)
+	}
+}
+
+func TestFallbackAgent_SilentPrimaryFallsBackToHealthyCandidate(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		runCtx: func(ctx context.Context) (*Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return &Result{Text: "fallback success"}, nil
+		},
+	}
+	var chunks []string
+	var attempts []Attempt
+	result, err := NewFallback([]Agent{first, second}, WithCandidateStartupTimeout(30*time.Millisecond)).Run(context.Background(), RunOpts{
+		OnChunk:   func(text string) { chunks = append(chunks, text) },
+		OnAttempt: func(attempt Attempt) { attempts = append(attempts, attempt) },
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Text != "fallback success" {
+		t.Fatalf("Run() result = %+v, want fallback success", result)
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("calls = first %d second %d, want 1/1", first.calls, second.calls)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	if !errors.Is(attempts[0].Err, ErrCandidateStartupTimeout) {
+		t.Fatalf("first attempt err = %v, want ErrCandidateStartupTimeout", attempts[0].Err)
+	}
+	joined := strings.Join(chunks, "\n")
+	if !strings.Contains(joined, "candidate startup deadline exceeded") || !strings.Contains(joined, "falling back to claude") {
+		t.Fatalf("fallback log missing timeout info, got %q", joined)
+	}
+}
+
+func TestFallbackAgent_CandidateProducingOutputDoesNotFallBack(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		runWithOpts: func(ctx context.Context, opts RunOpts) (*Result, error) {
+			if opts.OnChunk != nil {
+				opts.OnChunk("generating review...")
+			}
+			select {
+			case <-time.After(50 * time.Millisecond):
+				return &Result{Text: "primary success"}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return &Result{Text: "must not run"}, nil
+		},
+	}
+	result, err := NewFallback([]Agent{first, second}, WithCandidateStartupTimeout(25*time.Millisecond)).Run(context.Background(), RunOpts{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Text != "primary success" {
+		t.Fatalf("Run() result = %+v, want primary success", result)
+	}
+	if first.calls != 1 || second.calls != 0 {
+		t.Fatalf("calls = first %d second %d, want 1/0", first.calls, second.calls)
+	}
+}
+
+func TestFallbackAgent_CandidateProducingLifecycleActivityDoesNotFallBack(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		runWithOpts: func(ctx context.Context, opts RunOpts) (*Result, error) {
+			if opts.OnLifecycle != nil {
+				opts.OnLifecycle(LifecycleEvent{Phase: LifecyclePhaseActivity, Agent: "codex"})
+			}
+			select {
+			case <-time.After(50 * time.Millisecond):
+				return &Result{Text: "primary success with activity"}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return &Result{Text: "must not run"}, nil
+		},
+	}
+	result, err := NewFallback([]Agent{first, second}, WithCandidateStartupTimeout(25*time.Millisecond)).Run(context.Background(), RunOpts{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Text != "primary success with activity" {
+		t.Fatalf("Run() result = %+v, want primary success with activity", result)
+	}
+	if first.calls != 1 || second.calls != 0 {
+		t.Fatalf("calls = first %d second %d, want 1/0", first.calls, second.calls)
+	}
+}
+
+func TestFallbackAgent_SingleAgentSilentDoesNotApplyStartupTimeout(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		runCtx: func(ctx context.Context) (*Result, error) {
+			select {
+			case <-time.After(50 * time.Millisecond):
+				return &Result{Text: "single agent success"}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	result, err := NewFallback([]Agent{first}, WithCandidateStartupTimeout(25*time.Millisecond)).Run(context.Background(), RunOpts{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Text != "single agent success" {
+		t.Fatalf("Run() result = %+v, want single agent success", result)
+	}
+	if first.calls != 1 {
+		t.Fatalf("first.calls = %d, want 1", first.calls)
+	}
+}
+
+func TestFallbackAgent_LastCandidateSilentDoesNotApplyStartupTimeout(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		run: func() (*Result, error) {
+			return nil, errors.New("codex start: executable not found")
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		runCtx: func(ctx context.Context) (*Result, error) {
+			select {
+			case <-time.After(50 * time.Millisecond):
+				return &Result{Text: "last candidate success"}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	result, err := NewFallback([]Agent{first, second}, WithCandidateStartupTimeout(25*time.Millisecond)).Run(context.Background(), RunOpts{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Text != "last candidate success" {
+		t.Fatalf("Run() result = %+v, want last candidate success", result)
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("calls = first %d second %d, want 1/1", first.calls, second.calls)
 	}
 }
